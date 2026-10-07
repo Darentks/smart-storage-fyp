@@ -1,0 +1,203 @@
+"""
+Vision Validation Engine for Smart Storage FYP
+Orchestrates macro CCTV ingestion, YOLO11-Pose tracking, spatial ROI mapping, and MQTT hardware triggering.
+Complies with Figure 4.11 (Class Diagram), Figure 4.7 (Sequence Diagram), and Figure 4.8 (Activity Diagram).
+"""
+
+import time
+import cv2
+from .pose_estimator import PoseEstimator
+from .spatial_mapper import SpatialMapper
+from .behavior_classifier import BehaviorClassifier
+from .video_processor import VideoProcessor
+from .mqtt_client import MQTTClientNode
+
+
+class VisionValidationEngine:
+    """
+    Central orchestration engine executed on the backend processing server.
+    """
+
+    def __init__(
+        self,
+        camera_source=0,
+        model_path="models/yolo11n-pose.pt",
+        roi_config_path="config/roi_config.json",
+        mqtt_broker="localhost",
+        mqtt_port=1883,
+        privacy_mode=False,
+    ):
+        self.camera_source = camera_source
+        self.model_path = model_path
+        self.roi_config_path = roi_config_path
+        self.mqtt_broker = mqtt_broker
+        self.mqtt_port = mqtt_port
+        self.privacy_mode = privacy_mode
+
+        self.current_state = "INITIALIZING"
+        self.is_running = False
+
+        # Subsystems
+        self.video_processor = None
+        self.pose_estimator = None
+        self.spatial_mapper = None
+        self.behavior_classifier = None
+        self.mqtt_client = None
+
+        # Notification banner for recent trigger
+        self.active_alert = None
+        self.alert_expiry_time = 0.0
+
+    def initialize_system(self):
+        """Initializes all sub-modules."""
+        print("=================================================================")
+        print("    VISION-BASED HUMAN INTERACTION ANALYSIS ENGINE INITIALIZING  ")
+        print("    Final Year Project: RFID-Vision Integrated Smart Storage     ")
+        print("=================================================================")
+
+        # 1. Initialize Spatial Mapper
+        self.spatial_mapper = SpatialMapper(self.roi_config_path)
+
+        # 2. Initialize Pose Estimator
+        self.pose_estimator = PoseEstimator(model_path=self.model_path, oks_threshold=0.50)
+
+        # 3. Initialize MQTT Client
+        self.mqtt_client = MQTTClientNode(
+            broker_address=self.mqtt_broker,
+            port=self.mqtt_port,
+            rack_id=self.spatial_mapper.rack_id
+        )
+        self.mqtt_client.connect_broker()
+
+        # 4. Initialize Behavior Classifier
+        self.behavior_classifier = BehaviorClassifier(
+            spatial_mapper=self.spatial_mapper,
+            on_intent_confirmed=self._on_intent_confirmed
+        )
+
+        # 5. Initialize Video Processor
+        self.video_processor = VideoProcessor(source=self.camera_source)
+
+        self.current_state = "READY"
+        print("[VisionValidationEngine] System initialized and ready.")
+
+    def _on_intent_confirmed(self, event):
+        """Callback invoked when 1.2s dwell threshold is sustained."""
+        shelf_id = event["shelf_id"]
+        action = event["expected_action"]
+        conf = event.get("oks_confidence", 1.0)
+
+        # Publish MQTT trigger to wake compartment ESP32-CAM
+        self.mqtt_client.publish_trigger(shelf_id=shelf_id, expected_action=action, confidence=conf)
+
+        # Set HUD visual alert banner for 3 seconds
+        self.active_alert = f"INTENT VERIFIED: [{action}] at {shelf_id} (Dwell: {event['dwell_duration_seconds']}s)"
+        self.alert_expiry_time = time.time() + 3.0
+
+    def run_pipeline(self, window_name="Smart Storage - Vision Validation Engine"):
+        """
+        Executes the continuous video processing and inference pipeline.
+        Press 'q' to quit, 'p' to toggle privacy anonymization, 'r' to reload ROI config.
+        """
+        if self.video_processor is None or not self.video_processor.is_streaming:
+            print("[-] Error: Video stream is not active. Attempting reconnection...")
+            if not self.video_processor.connect():
+                print("[-] Could not start pipeline. Exiting.")
+                return
+
+        self.is_running = True
+        self.current_state = "MONITORING"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+        print("[VisionValidationEngine] Pipeline running. Press 'q' to quit, 'p' to toggle privacy mode.")
+
+        try:
+            while self.is_running:
+                ret, frame = self.video_processor.capture_frame()
+                if not ret or frame is None:
+                    # Alternative flow: attempt reconnect
+                    time.sleep(0.5)
+                    self.video_processor.connect()
+                    continue
+
+                # 1. Pose estimation keypoint extraction
+                detections = self.pose_estimator.extract_keypoints(frame)
+
+                # 2. Behavioral dwell tracking and intent classification
+                self.behavior_classifier.process_detections(detections)
+
+                # 3. Render skeleton and privacy anonymization
+                annotated = self.pose_estimator.draw_skeleton(frame, detections, privacy_mode=self.privacy_mode)
+
+                # 4. Render Dynamic ROIs and live dwell progress
+                active_states = self.behavior_classifier.get_all_states()
+                annotated = self.spatial_mapper.draw_rois(annotated, active_states)
+
+                # 5. Render HUD telemetry bar
+                annotated = self._render_hud(annotated, detections)
+
+                # Display frame
+                cv2.imshow(window_name, annotated)
+
+                # Key controls
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord('q'):
+                    print("[VisionValidationEngine] Stop command received. Terminating...")
+                    break
+                elif key == ord('p'):
+                    self.privacy_mode = not self.privacy_mode
+                    print(f"[VisionValidationEngine] Privacy mode toggled: {self.privacy_mode}")
+                elif key == ord('r'):
+                    self.spatial_mapper.load_roi_config()
+                    print("[VisionValidationEngine] Reloaded ROI configuration from disk.")
+
+        finally:
+            self.stop()
+            cv2.destroyAllWindows()
+
+    def _render_hud(self, frame, detections):
+        """Renders high-fidelity telemetry bar matching thesis UI specifications."""
+        h, w = frame.shape[:2]
+
+        # Top diagnostic banner
+        bar_height = 42
+        hud_overlay = frame.copy()
+        cv2.rectangle(hud_overlay, (0, 0), (w, bar_height), (20, 20, 20), -1)
+        cv2.addWeighted(hud_overlay, 0.75, frame, 0.25, 0, frame)
+
+        # Telemetry metrics
+        fps_text = f"FPS: {self.video_processor.fps:.1f}"
+        latency_text = f"Inference: {self.pose_estimator.last_inference_time_ms:.1f}ms"
+        persons_text = f"Subjects: {len(detections)}"
+        rois_text = f"ROIs: {len(self.spatial_mapper.compartments)}"
+        privacy_text = f"Privacy: {'ON' if self.privacy_mode else 'OFF'}"
+
+        cv2.putText(frame, "SMART STORAGE VALIDATION", (12, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"{fps_text} | {latency_text} | {persons_text} | {rois_text} | {privacy_text}", (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (220, 220, 220), 1, cv2.LINE_AA)
+
+        # Active event notification banner (green alert pill)
+        if self.active_alert and time.time() < self.alert_expiry_time:
+            alert_bar_y = h - 45
+            pill_w = min(w - 40, 560)
+            cv2.rectangle(frame, (20, alert_bar_y), (20 + pill_w, h - 10), (0, 180, 0), -1)
+            cv2.rectangle(frame, (20, alert_bar_y), (20 + pill_w, h - 10), (255, 255, 255), 1)
+            cv2.putText(
+                frame, self.active_alert,
+                (30, alert_bar_y + 24),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA
+            )
+        elif self.active_alert and time.time() >= self.alert_expiry_time:
+            self.active_alert = None
+
+        return frame
+
+    def stop(self):
+        """Stops pipeline and frees hardware resources."""
+        self.is_running = False
+        self.current_state = "STOPPED"
+        if self.video_processor:
+            self.video_processor.release_stream()
+        if self.mqtt_client:
+            self.mqtt_client.disconnect()
+        print("[VisionValidationEngine] Pipeline stopped successfully.")
+

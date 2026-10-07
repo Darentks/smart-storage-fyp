@@ -1,0 +1,29 @@
+{
+  "rack_id": "RACK_01",
+  "compartments": [
+    {
+      "shelf_id": "SHELF_R1_C1",
+      "x_min": 193,
+      "y_min": 136,
+      "x_max": 304,
+      "y_max": 234,
+      "dwell_threshold_seconds": 1.2
+    },
+    {
+      "shelf_id": "SHELF_R1_C2",
+      "x_min": 338,
+      "y_min": 235,
+      "x_max": 410,
+      "y_max": 320,
+      "dwell_threshold_seconds": 1.2
+    },
+    {
+      "shelf_id": "SHELF_R1_C3",
+      "x_min": 386,
+      "y_min": 86,
+      "x_max": 506,
+      "y_max": 179,
+      "dwell_threshold_seconds": 1.2
+    }
+  ]
+}
