@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C / C++ build output
+*.o
+*.obj
+*.elf
+*.bin
+
+# PlatformIO build output
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+
+# Environment Variables & Secrets (Wi-Fi passwords, broker keys)
+.env
+*.local
+
+# IDE / Editor configuration
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS Metadata
+.DS_Store
+Thumbs.db

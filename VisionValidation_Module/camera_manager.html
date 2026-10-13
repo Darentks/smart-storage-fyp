@@ -1,0 +1,1401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hikvision CCTV Control & Diagnostics | Vision Validation Module</title>
+  <!-- Supabase JS Client via CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    :root {
+      --bg: #090d16;
+      --surface: #111827;
+      --surface-card: #1f2937;
+      --surface-card-hover: #283548;
+      --border: #374151;
+      --border-active: #10b981;
+      --text: #f9fafb;
+      --text-muted: #9ca3af;
+      --primary: #38bdf8;
+      --primary-hover: #0284c7;
+      --success: #10b981;
+      --success-bg: rgba(16, 185, 129, 0.12);
+      --danger: #f43f5e;
+      --danger-bg: rgba(244, 63, 94, 0.12);
+      --warning: #f59e0b;
+      --warning-bg: rgba(245, 158, 11, 0.12);
+      --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.5;
+      min-height: 100vh;
+      padding: 24px 20px 60px;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    /* Header */
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 15px;
+    }
+
+    .brand-title {
+      font-size: 20px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      letter-spacing: -0.4px;
+    }
+
+    .brand-title span {
+      color: var(--primary);
+    }
+
+    .brand-subtitle {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .status-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 12px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #eab308;
+    }
+
+    .status-dot.connected {
+      background: var(--success);
+      box-shadow: 0 0 8px var(--success);
+    }
+
+    .status-dot.error {
+      background: var(--danger);
+      box-shadow: 0 0 8px var(--danger);
+    }
+
+    /* Views container */
+    .view-section {
+      display: none;
+    }
+
+    .view-section.active-view {
+      display: block;
+      animation: fadeIn 0.2s ease-in-out;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Navigation Bar inside App */
+    .breadcrumb-nav {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 20px;
+      font-size: 13px;
+    }
+
+    .btn-back {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s;
+    }
+
+    .btn-back:hover {
+      background: var(--surface-card-hover);
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    /* Grid Layout for Main View */
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: 360px 1fr;
+      gap: 24px;
+      align-items: start;
+    }
+
+    @media (max-width: 960px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Cards & Panels */
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 22px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+    }
+
+    .panel-title {
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-desc {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 18px;
+    }
+
+    /* Form Fields */
+    .form-group {
+      margin-bottom: 14px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    input, select {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 10px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+    }
+
+    .preview-box {
+      background: var(--bg);
+      border: 1px dashed var(--border);
+      padding: 10px;
+      border-radius: 6px;
+      margin-bottom: 16px;
+    }
+
+    .preview-label {
+      font-size: 10px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .preview-text {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--primary);
+      word-break: break-all;
+    }
+
+    button.btn-primary {
+      width: 100%;
+      background: var(--primary);
+      color: #04101e;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.2s, transform 0.1s;
+    }
+
+    button.btn-primary:hover {
+      background: var(--primary-hover);
+    }
+
+    button.btn-primary:active {
+      transform: scale(0.98);
+    }
+
+    /* Camera Cards List */
+    .camera-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .camera-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+
+    .camera-card:hover {
+      border-color: #4b5563;
+    }
+
+    .camera-card.active {
+      border-color: var(--border-active);
+      background: linear-gradient(180deg, rgba(16, 185, 129, 0.07) 0%, rgba(31, 41, 55, 1) 100%);
+      box-shadow: 0 0 20px rgba(16, 185, 129, 0.12);
+    }
+
+    .card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      margin-bottom: 10px;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .card-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 9px;
+      border-radius: 9999px;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+    }
+
+    .badge-active {
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .badge-active .pulse-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--success);
+      border-radius: 50%;
+      animation: pulse 1.8s infinite;
+    }
+
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+
+    .badge-inactive {
+      background: rgba(156, 163, 175, 0.1);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+
+    .card-meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+      background: var(--bg);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+    }
+
+    .meta-item {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .meta-label {
+      color: var(--text-muted);
+      font-size: 9px;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    .meta-value {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: #e5e7eb;
+    }
+
+    .rtsp-row {
+      display: flex;
+      align-items: center;
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      margin-bottom: 12px;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: #93c5fd;
+      word-break: break-all;
+    }
+
+    .card-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .card-actions-right {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-action {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      padding: 5px 12px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.15s;
+    }
+
+    .btn-action:hover {
+      background: var(--surface-card-hover);
+      border-color: var(--primary);
+    }
+
+    .btn-inspect {
+      background: rgba(56, 189, 248, 0.1);
+      color: var(--primary);
+      border-color: rgba(56, 189, 248, 0.3);
+    }
+
+    .btn-inspect:hover {
+      background: rgba(56, 189, 248, 0.2);
+      border-color: var(--primary);
+    }
+
+    .btn-activate {
+      background: var(--success-bg);
+      color: var(--success);
+      border-color: rgba(16, 185, 129, 0.4);
+    }
+
+    .btn-activate:hover {
+      background: rgba(16, 185, 129, 0.25);
+      border-color: var(--success);
+    }
+
+    .btn-delete {
+      color: var(--danger);
+      border-color: rgba(244, 63, 94, 0.3);
+    }
+
+    .btn-delete:hover {
+      background: var(--danger-bg);
+      border-color: var(--danger);
+    }
+
+    /* Detail View Styling */
+    .detail-layout {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+
+    @media (max-width: 900px) {
+      .detail-layout {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .spec-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+    }
+
+    .spec-table td {
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+
+    .spec-table tr:last-child td {
+      border-bottom: none;
+    }
+
+    .spec-key {
+      color: var(--text-muted);
+      width: 35%;
+      font-weight: 600;
+    }
+
+    .spec-val {
+      color: var(--text);
+      font-family: var(--font-mono);
+      font-size: 12px;
+    }
+
+    /* Snapshot Container */
+    .snapshot-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      min-height: 240px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    .snapshot-img {
+      width: 100%;
+      height: auto;
+      max-height: 380px;
+      object-fit: contain;
+      display: block;
+    }
+
+    .snapshot-placeholder {
+      color: var(--text-muted);
+      font-size: 13px;
+      text-align: center;
+      padding: 20px;
+    }
+
+    .snapshot-metrics {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .metric-pill {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .metric-pill .lbl {
+      font-size: 9px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    .metric-pill .val {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--primary);
+      font-family: var(--font-mono);
+    }
+
+    .action-btn-large {
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 700;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: all 0.15s;
+    }
+
+    .btn-test {
+      background: var(--primary);
+      color: #04101e;
+    }
+
+    .btn-test:hover {
+      background: var(--primary-hover);
+    }
+
+    .btn-calib {
+      background: #8b5cf6;
+      color: #ffffff;
+    }
+
+    .btn-calib:hover {
+      background: #7c3aed;
+    }
+
+    /* Warning callout */
+    .callout {
+      padding: 12px 14px;
+      border-radius: 8px;
+      font-size: 12px;
+      margin-top: 14px;
+      line-height: 1.5;
+    }
+
+    .callout-info {
+      background: rgba(56, 189, 248, 0.08);
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      color: #bae6fd;
+    }
+
+    .callout-warn {
+      background: var(--warning-bg);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      color: #fde68a;
+    }
+
+    .callout-error {
+      background: var(--danger-bg);
+      border: 1px solid rgba(244, 63, 94, 0.3);
+      color: #fecdd3;
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed;
+      bottom: 25px;
+      right: 25px;
+      background: #1f2937;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      font-size: 13px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      z-index: 1000;
+    }
+
+    #toast.show {
+      display: flex;
+      animation: slideIn 0.3s ease;
+    }
+
+    #toast.success { border-color: var(--success); }
+    #toast.error { border-color: var(--danger); }
+    #toast.info { border-color: var(--primary); }
+
+    @keyframes slideIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <div>
+        <div class="brand-title">
+          <span>Hikvision CCTV</span> Diagnostics & Control
+        </div>
+        <div class="brand-subtitle">
+          Smart Storage FYP &bull; Local Vision Validation Engine Stream Manager
+        </div>
+      </div>
+      <div class="status-group">
+        <!-- Supabase Cloud DB Status -->
+        <div class="status-pill" title="Supabase Cloud Database connectivity">
+          <div id="dbStatusDot" class="status-dot"></div>
+          <span id="dbStatusText">Cloud DB: Checking...</span>
+        </div>
+        <!-- Local Python Bridge Status -->
+        <div class="status-pill" title="Local Python Control Bridge (camera_service.py:8008)">
+          <div id="bridgeStatusDot" class="status-dot"></div>
+          <span id="bridgeStatusText">Local Bridge: Checking...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- VIEW 1: Main Camera List & Registration -->
+    <div id="listView" class="view-section active-view">
+      <div class="dashboard-grid">
+        <!-- Left Column: Add New Camera Form -->
+        <section class="panel">
+          <h2 class="panel-title">Add CCTV Camera Feed</h2>
+          <p class="panel-desc">Register a Hikvision camera on the local network (DS-2CD1023G0E-I).</p>
+
+          <form id="cameraForm">
+            <div class="form-group">
+              <label for="camName">Camera Name / Label</label>
+              <input type="text" id="camName" required placeholder="e.g. Hikvision Rack Camera 01" value="Hikvision Rack Camera 01" />
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="camIp">IP Address</label>
+                <input type="text" id="camIp" required placeholder="192.168.100.1" value="192.168.100.1" />
+              </div>
+              <div class="form-group">
+                <label for="camRtspPort">RTSP Port</label>
+                <input type="number" id="camRtspPort" required value="554" />
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="camHttpPort">HTTP Port</label>
+                <input type="number" id="camHttpPort" value="80" />
+              </div>
+              <div class="form-group">
+                <label for="camChannel">Stream Channel</label>
+                <select id="camChannel">
+                  <option value="102" selected>102 (Sub-Stream / Recommended)</option>
+                  <option value="101">101 (Main-Stream / High Res)</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="camUser">Username</label>
+                <input type="text" id="camUser" required value="admin" />
+              </div>
+              <div class="form-group">
+                <label for="camPwd">Password</label>
+                <input type="password" id="camPwd" required placeholder="Camera Password" value="Password" />
+              </div>
+            </div>
+
+            <!-- Live Preview -->
+            <div class="preview-box">
+              <div class="preview-label">Live RTSP Format Preview</div>
+              <div id="rtspPreview" class="preview-text">rtsp://admin:••••@192.168.100.1:554/Streaming/Channels/102</div>
+            </div>
+
+            <button type="submit" id="submitBtn" class="btn-primary">
+              <span>+</span> Register & Activate Stream
+            </button>
+          </form>
+        </section>
+
+        <!-- Right Column: Registered Cameras List -->
+        <section class="panel">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <h2 class="panel-title">Configured Cameras (<span id="cameraCount">0</span>)</h2>
+            <button id="refreshBtn" class="btn-action" style="padding: 4px 10px; font-size: 11px;">
+              &circlearrowright; Refresh
+            </button>
+          </div>
+          <p class="panel-desc">The active stream is dynamically ingested by the local YOLO11-Pose pipeline on startup.</p>
+
+          <div id="cameraList" class="camera-list">
+            <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
+              Loading cameras from Supabase...
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <!-- VIEW 2: Detail & Diagnostics View -->
+    <div id="detailView" class="view-section">
+      <div class="breadcrumb-nav">
+        <button id="backToListBtn" class="btn-back">
+          &larr; Back to Camera Grid
+        </button>
+        <span style="color: var(--border);">/</span>
+        <span style="color: var(--text-muted);">Camera Diagnostics:</span>
+        <strong id="detailBreadcrumbName">Hikvision Camera</strong>
+      </div>
+
+      <div class="detail-layout">
+        <!-- Left: Specifications Card -->
+        <section class="panel">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h2 class="panel-title">Camera Specifications</h2>
+            <div id="detailActiveBadge"></div>
+          </div>
+          <p class="panel-desc">Hardware, network topology, and RTSP stream channel bindings.</p>
+
+          <table class="spec-table">
+            <tbody>
+              <tr>
+                <td class="spec-key">Camera Model</td>
+                <td class="spec-val" style="color: var(--primary);">Hikvision DS-2CD1023G0E-I</td>
+              </tr>
+              <tr>
+                <td class="spec-key">Camera Name</td>
+                <td class="spec-val" id="specName">-</td>
+              </tr>
+              <tr>
+                <td class="spec-key">IP Address</td>
+                <td class="spec-val" id="specIp">-</td>
+              </tr>
+              <tr>
+                <td class="spec-key">RTSP Port</td>
+                <td class="spec-val" id="specRtspPort">554</td>
+              </tr>
+              <tr>
+                <td class="spec-key">HTTP Port</td>
+                <td class="spec-val" id="specHttpPort">80</td>
+              </tr>
+              <tr>
+                <td class="spec-key">Stream Channel</td>
+                <td class="spec-val" id="specChannel">102 (Sub-stream)</td>
+              </tr>
+              <tr>
+                <td class="spec-key">Username</td>
+                <td class="spec-val" id="specUser">admin</td>
+              </tr>
+              <tr>
+                <td class="spec-key">RTSP URL</td>
+                <td class="spec-val" id="specRtspUrl" style="word-break: break-all; color: #93c5fd;">-</td>
+              </tr>
+              <tr>
+                <td class="spec-key">Created At</td>
+                <td class="spec-val" id="specCreated" style="font-size: 11px; color: var(--text-muted);">-</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <div style="margin-top: 20px; display: flex; gap: 10px;">
+            <button id="detailToggleActiveBtn" class="btn-action btn-activate" style="padding: 8px 14px;">
+              &check; Set as Active Stream
+            </button>
+          </div>
+
+          <!-- ROI Calibration Section -->
+          <div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border);">
+            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 6px;">
+              Interactive ROI Calibration
+            </h3>
+            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 14px;">
+              Launch the native OpenCV canvas on your local desktop to draw and adjust shelf bounding boxes for this camera.
+            </p>
+
+            <button id="launchCalibBtn" class="action-btn-large btn-calib" style="width: 100%;">
+              <span>&#9881;</span> Launch Desktop ROI Calibrator
+            </button>
+
+            <div id="calibStatusBox" class="callout callout-info" style="display: none;">
+              <strong>Calibrator Launched!</strong> Check your desktop for the OpenCV window. Draw boxes, press <kbd>S</kbd> to save, or <kbd>ESC</kbd> to exit.
+            </div>
+          </div>
+        </section>
+
+        <!-- Right: On-Demand Connectivity & Frame Test -->
+        <section class="panel">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <h2 class="panel-title">On-Demand Stream Connectivity Test</h2>
+            <span style="font-size: 11px; color: var(--text-muted);">Single-Frame Snapshot</span>
+          </div>
+          <p class="panel-desc">Verifies network reachability, RTSP handshake, and frame decoding via the local bridge.</p>
+
+          <!-- Snapshot Image Container -->
+          <div id="snapshotBox" class="snapshot-box">
+            <div id="snapshotPlaceholder" class="snapshot-placeholder">
+              <svg width="42" height="42" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 10px; display: block; opacity: 0.5;">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+              No test frame captured yet.<br />Click <strong>"Capture Test Frame"</strong> below.
+            </div>
+            <img id="snapshotImg" class="snapshot-img" style="display: none;" alt="Camera Test Frame" />
+          </div>
+
+          <!-- Capture Button -->
+          <button id="testFrameBtn" class="action-btn-large btn-test" style="width: 100%;">
+            <span>&#9654;</span> Capture Test Frame
+          </button>
+
+          <!-- Metrics Panel -->
+          <div id="metricsRow" class="snapshot-metrics" style="display: none;">
+            <div class="metric-pill">
+              <div class="lbl">Latency</div>
+              <div class="val" id="metricLatency">-</div>
+            </div>
+            <div class="metric-pill">
+              <div class="lbl">Resolution</div>
+              <div class="val" id="metricResolution">-</div>
+            </div>
+            <div class="metric-pill">
+              <div class="lbl">Format</div>
+              <div class="val" id="metricFormat">JPEG / RGB</div>
+            </div>
+            <div class="metric-pill">
+              <div class="lbl">Status</div>
+              <div class="val" id="metricStatus" style="color: var(--success);">ONLINE</div>
+            </div>
+          </div>
+
+          <!-- Error / Info Callout -->
+          <div id="testErrorBox" class="callout callout-error" style="display: none;"></div>
+
+          <div id="bridgeNoticeBox" class="callout callout-warn" style="display: none;">
+            <strong>Local Bridge Offline:</strong> Make sure the Python control bridge is running on your machine:
+            <code style="display: block; margin-top: 6px; font-family: var(--font-mono); background: rgba(0,0,0,0.3); padding: 4px 6px; border-radius: 4px;">
+              python VisionValidation_Module/camera_service.py
+            </code>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="toast"></div>
+
+  <script>
+    // Configuration
+    const SUPABASE_URL = 'https://hrufeowqpnyjfwxydocm.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt';
+    const BRIDGE_API_BASE = 'http://localhost:8008';
+
+    // Supabase Client
+    let client = null;
+    try {
+      client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+    } catch (e) {
+      console.error('Failed to init Supabase client:', e);
+    }
+
+    // App State
+    let cameras = [];
+    let selectedCamera = null;
+    let bridgeOnline = false;
+
+    // DOM Elements - Status
+    const dbStatusDot = document.getElementById('dbStatusDot');
+    const dbStatusText = document.getElementById('dbStatusText');
+    const bridgeStatusDot = document.getElementById('bridgeStatusDot');
+    const bridgeStatusText = document.getElementById('bridgeStatusText');
+    const bridgeNoticeBox = document.getElementById('bridgeNoticeBox');
+
+    // DOM Elements - Views
+    const listView = document.getElementById('listView');
+    const detailView = document.getElementById('detailView');
+    const backToListBtn = document.getElementById('backToListBtn');
+    const detailBreadcrumbName = document.getElementById('detailBreadcrumbName');
+
+    // DOM Elements - List & Form
+    const cameraList = document.getElementById('cameraList');
+    const cameraCount = document.getElementById('cameraCount');
+    const cameraForm = document.getElementById('cameraForm');
+    const submitBtn = document.getElementById('submitBtn');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const rtspPreview = document.getElementById('rtspPreview');
+
+    const camName = document.getElementById('camName');
+    const camIp = document.getElementById('camIp');
+    const camRtspPort = document.getElementById('camRtspPort');
+    const camHttpPort = document.getElementById('camHttpPort');
+    const camChannel = document.getElementById('camChannel');
+    const camUser = document.getElementById('camUser');
+    const camPwd = document.getElementById('camPwd');
+
+    // DOM Elements - Details View
+    const specName = document.getElementById('specName');
+    const specIp = document.getElementById('specIp');
+    const specRtspPort = document.getElementById('specRtspPort');
+    const specHttpPort = document.getElementById('specHttpPort');
+    const specChannel = document.getElementById('specChannel');
+    const specUser = document.getElementById('specUser');
+    const specRtspUrl = document.getElementById('specRtspUrl');
+    const specCreated = document.getElementById('specCreated');
+    const detailActiveBadge = document.getElementById('detailActiveBadge');
+    const detailToggleActiveBtn = document.getElementById('detailToggleActiveBtn');
+
+    // DOM Elements - Testing & Calib
+    const testFrameBtn = document.getElementById('testFrameBtn');
+    const snapshotImg = document.getElementById('snapshotImg');
+    const snapshotPlaceholder = document.getElementById('snapshotPlaceholder');
+    const metricsRow = document.getElementById('metricsRow');
+    const metricLatency = document.getElementById('metricLatency');
+    const metricResolution = document.getElementById('metricResolution');
+    const metricStatus = document.getElementById('metricStatus');
+    const testErrorBox = document.getElementById('testErrorBox');
+    const launchCalibBtn = document.getElementById('launchCalibBtn');
+    const calibStatusBox = document.getElementById('calibStatusBox');
+
+    // Toast Helper
+    function showToast(message, type = 'info') {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.className = `show ${type}`;
+      setTimeout(() => {
+        toast.className = '';
+      }, 3500);
+    }
+
+    // Helper: Mask Password in RTSP URL
+    function maskRtspUrl(url) {
+      if (!url) return '';
+      return url.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:••••@');
+    }
+
+    // Live preview update in form
+    function updateLivePreview() {
+      const user = camUser.value.trim() || 'admin';
+      const ip = camIp.value.trim() || '192.168.100.1';
+      const port = camRtspPort.value || 554;
+      const ch = camChannel.value || 102;
+      rtspPreview.textContent = `rtsp://${user}:••••@${ip}:${port}/Streaming/Channels/${ch}`;
+    }
+
+    [camUser, camIp, camRtspPort, camChannel].forEach((el) => {
+      el.addEventListener('input', updateLivePreview);
+    });
+
+    // Check Local Python Bridge Status
+    async function checkBridgeHealth() {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1500);
+        const resp = await fetch(`${BRIDGE_API_BASE}/status`, { signal: controller.signal });
+        clearTimeout(timeoutId);
+
+        if (resp.ok) {
+          bridgeOnline = true;
+          bridgeStatusDot.className = 'status-dot connected';
+          bridgeStatusText.textContent = 'Local Bridge: Active (8008)';
+          bridgeNoticeBox.style.display = 'none';
+        } else {
+          throw new Error('Not OK');
+        }
+      } catch (e) {
+        bridgeOnline = false;
+        bridgeStatusDot.className = 'status-dot error';
+        bridgeStatusText.textContent = 'Local Bridge: Offline';
+        if (detailView.classList.contains('active-view')) {
+          bridgeNoticeBox.style.display = 'block';
+        }
+      }
+    }
+
+    // Fetch Cameras from Supabase
+    async function loadCameras() {
+      if (!client) {
+        dbStatusDot.className = 'status-dot error';
+        dbStatusText.textContent = 'Supabase SDK Error';
+        return;
+      }
+
+      try {
+        const { data, error } = await client
+          .from('cameras')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (error) {
+          console.error('Fetch error:', error);
+          dbStatusDot.className = 'status-dot error';
+          dbStatusText.textContent = 'Cloud DB: Error';
+          cameraList.innerHTML = `
+            <div style="text-align: center; padding: 30px; color: var(--danger)">
+              Query Error: ${error.message}
+            </div>
+          `;
+          return;
+        }
+
+        dbStatusDot.className = 'status-dot connected';
+        dbStatusText.textContent = 'Cloud DB: Connected';
+        cameras = data || [];
+        renderCameraList(cameras);
+
+        // If currently in detail view, refresh selected camera object
+        if (selectedCamera) {
+          const updated = cameras.find((c) => c.id === selectedCamera.id);
+          if (updated) {
+            selectedCamera = updated;
+            renderCameraDetails(selectedCamera);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching cameras:', err);
+        dbStatusDot.className = 'status-dot error';
+        dbStatusText.textContent = 'Cloud DB: Disconnected';
+      }
+    }
+
+    // Render Camera Cards
+    function renderCameraList(items) {
+      cameraCount.textContent = items.length;
+
+      if (items.length === 0) {
+        cameraList.innerHTML = `
+          <div style="text-align: center; padding: 40px; color: var(--text-muted)">
+            <h4 style="color: var(--text); margin-bottom: 6px;">No Cameras Found</h4>
+            <p style="font-size: 13px;">Use the form on the left to configure your first Hikvision CCTV feed.</p>
+          </div>
+        `;
+        return;
+      }
+
+      cameraList.innerHTML = items.map((cam) => {
+        const isActive = cam.is_active === true;
+        const masked = maskRtspUrl(cam.rtsp_url);
+
+        return `
+          <div class="camera-card ${isActive ? 'active' : ''}" id="card-${cam.id}">
+            <div class="card-header">
+              <div class="card-title">
+                ${cam.name}
+              </div>
+              <div>
+                ${isActive
+                  ? '<span class="badge badge-active"><span class="pulse-dot"></span>Active Stream</span>'
+                  : '<span class="badge badge-inactive">Inactive</span>'
+                }
+              </div>
+            </div>
+
+            <div class="card-meta">
+              <div class="meta-item">
+                <span class="meta-label">IP Address</span>
+                <span class="meta-value">${cam.ip_address}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">RTSP Port</span>
+                <span class="meta-value">${cam.rtsp_port || 554}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">HTTP Port</span>
+                <span class="meta-value">${cam.http_port || 80}</span>
+              </div>
+              <div class="meta-item">
+                <span class="meta-label">Channel</span>
+                <span class="meta-value">Ch-${cam.stream_channel} (${cam.stream_channel == 102 ? 'Sub' : 'Main'})</span>
+              </div>
+            </div>
+
+            <div class="rtsp-row" title="${masked}">
+              ${masked}
+            </div>
+
+            <div class="card-actions">
+              <button class="btn-action btn-inspect" onclick="openDetails('${cam.id}')">
+                <span>&#128065;</span> View Details & Diagnostics
+              </button>
+
+              <div class="card-actions-right">
+                ${!isActive ? `
+                  <button class="btn-action btn-activate" onclick="setActiveCamera('${cam.id}', '${cam.name.replace(/'/g, "\\'")}')">
+                    &check; Set Active
+                  </button>
+                ` : `
+                  <span style="font-size: 11px; color: var(--success); font-weight: 600; padding: 4px 6px;">Ingesting</span>
+                `}
+                <button class="btn-action btn-delete" onclick="deleteCamera('${cam.id}', '${cam.name.replace(/'/g, "\\'")}')">
+                  Delete
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Switch to Details View
+    function openDetails(id) {
+      const cam = cameras.find((c) => c.id === id);
+      if (!cam) return;
+
+      selectedCamera = cam;
+      renderCameraDetails(cam);
+
+      listView.classList.remove('active-view');
+      detailView.classList.add('active-view');
+
+      // Reset testing states
+      snapshotImg.style.display = 'none';
+      snapshotPlaceholder.style.display = 'block';
+      metricsRow.style.display = 'none';
+      testErrorBox.style.display = 'none';
+      calibStatusBox.style.display = 'none';
+
+      checkBridgeHealth();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // Render Camera Details
+    function renderCameraDetails(cam) {
+      detailBreadcrumbName.textContent = cam.name;
+      specName.textContent = cam.name;
+      specIp.textContent = cam.ip_address;
+      specRtspPort.textContent = cam.rtsp_port || 554;
+      specHttpPort.textContent = cam.http_port || 80;
+      specChannel.textContent = `${cam.stream_channel} (${cam.stream_channel == 102 ? 'Sub-Stream' : 'Main-Stream'})`;
+      specUser.textContent = cam.username || 'admin';
+      specRtspUrl.textContent = maskRtspUrl(cam.rtsp_url);
+      specCreated.textContent = new Date(cam.created_at).toLocaleString();
+
+      if (cam.is_active) {
+        detailActiveBadge.innerHTML = '<span class="badge badge-active"><span class="pulse-dot"></span>Currently Active</span>';
+        detailToggleActiveBtn.style.display = 'none';
+      } else {
+        detailActiveBadge.innerHTML = '<span class="badge badge-inactive">Inactive</span>';
+        detailToggleActiveBtn.style.display = 'inline-flex';
+        detailToggleActiveBtn.onclick = () => setActiveCamera(cam.id, cam.name);
+      }
+    }
+
+    // Back to List View
+    backToListBtn.addEventListener('click', () => {
+      detailView.classList.remove('active-view');
+      listView.classList.add('active-view');
+      selectedCamera = null;
+    });
+
+    // Set Active Camera
+    async function setActiveCamera(id, name) {
+      showToast(`Activating stream: "${name}"...`, 'info');
+
+      try {
+        await client.from('cameras').update({ is_active: false }).neq('id', id);
+        const { error } = await client.from('cameras').update({ is_active: true }).eq('id', id);
+
+        if (error) {
+          showToast('Failed to switch camera: ' + error.message, 'error');
+        } else {
+          showToast(`"${name}" is now the active stream!`, 'success');
+          loadCameras();
+        }
+      } catch (err) {
+        showToast('Error switching active camera: ' + err.message, 'error');
+      }
+    }
+
+    // Delete Camera
+    async function deleteCamera(id, name) {
+      if (!confirm(`Are you sure you want to permanently delete "${name}"?`)) return;
+
+      try {
+        const { error } = await client.from('cameras').delete().eq('id', id);
+        if (error) {
+          showToast('Failed to delete camera: ' + error.message, 'error');
+        } else {
+          showToast(`Camera "${name}" removed.`, 'success');
+          if (selectedCamera && selectedCamera.id === id) {
+            backToListBtn.click();
+          }
+          loadCameras();
+        }
+      } catch (err) {
+        showToast('Error deleting camera: ' + err.message, 'error');
+      }
+    }
+
+    // Form Submission: Add Camera
+    cameraForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      const name = camName.value.trim();
+      const ip = camIp.value.trim();
+      const rtspPort = parseInt(camRtspPort.value) || 554;
+      const httpPort = parseInt(camHttpPort.value) || 80;
+      const channel = parseInt(camChannel.value) || 102;
+      const user = camUser.value.trim();
+      const pwd = camPwd.value;
+
+      const rawRtspUrl = `rtsp://${user}:${pwd}@${ip}:${rtspPort}/Streaming/Channels/${channel}`;
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Registering & Activating...';
+
+      try {
+        await client.from('cameras').update({ is_active: false }).neq('id', '00000000-0000-0000-0000-000000000000');
+
+        const { error } = await client.from('cameras').insert([{
+          name: name,
+          ip_address: ip,
+          rtsp_port: rtspPort,
+          http_port: httpPort,
+          stream_channel: channel,
+          username: user,
+          password: pwd,
+          rtsp_url: rawRtspUrl,
+          is_active: true
+        }]);
+
+        if (error) {
+          showToast('Failed to add camera: ' + error.message, 'error');
+        } else {
+          showToast(`"${name}" registered and activated!`, 'success');
+          camName.value = `Hikvision Rack Camera 0${cameras.length + 2}`;
+          loadCameras();
+        }
+      } catch (err) {
+        showToast('Error adding camera: ' + err.message, 'error');
+      } finally {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<span>+</span> Register & Activate Stream';
+      }
+    });
+
+    // Refresh Button
+    refreshBtn.addEventListener('click', () => {
+      showToast('Refreshing camera list...', 'info');
+      loadCameras();
+      checkBridgeHealth();
+    });
+
+    // On-Demand Camera Test (Single Snapshot)
+    testFrameBtn.addEventListener('click', async () => {
+      if (!selectedCamera) return;
+
+      testFrameBtn.disabled = true;
+      testFrameBtn.innerHTML = '<span>&#8987;</span> Connecting & Grabbing Frame...';
+      testErrorBox.style.display = 'none';
+
+      try {
+        const url = `${BRIDGE_API_BASE}/test_feed?source=${encodeURIComponent(selectedCamera.rtsp_url)}`;
+        const resp = await fetch(url);
+        const data = await resp.json();
+
+        if (resp.ok && data.status === 'success') {
+          snapshotImg.src = data.image;
+          snapshotImg.style.display = 'block';
+          snapshotPlaceholder.style.display = 'none';
+
+          metricLatency.textContent = `${data.latency_ms} ms`;
+          metricResolution.textContent = `${data.width} x ${data.height}`;
+          metricStatus.textContent = 'ONLINE';
+          metricStatus.style.color = 'var(--success)';
+          metricsRow.style.display = 'grid';
+
+          showToast('Snapshot captured successfully!', 'success');
+        } else {
+          throw new Error(data.error || 'Failed to capture frame from video source');
+        }
+      } catch (err) {
+        console.error('Snapshot test error:', err);
+        testErrorBox.textContent = `Stream Error: ${err.message}. Ensure camera_service.py is running and the camera is reachable on LAN.`;
+        testErrorBox.style.display = 'block';
+
+        metricLatency.textContent = 'Timeout';
+        metricResolution.textContent = 'N/A';
+        metricStatus.textContent = 'OFFLINE';
+        metricStatus.style.color = 'var(--danger)';
+        metricsRow.style.display = 'grid';
+
+        showToast('Snapshot capture failed', 'error');
+      } finally {
+        testFrameBtn.disabled = false;
+        testFrameBtn.innerHTML = '<span>&#9654;</span> Capture Test Frame';
+      }
+    });
+
+    // Launch Desktop ROI Calibrator
+    launchCalibBtn.addEventListener('click', async () => {
+      if (!selectedCamera) return;
+
+      launchCalibBtn.disabled = true;
+      launchCalibBtn.innerHTML = '<span>&#8987;</span> Opening Calibrator...';
+
+      try {
+        const resp = await fetch(`${BRIDGE_API_BASE}/run_calibration`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: selectedCamera.rtsp_url })
+        });
+        const data = await resp.json();
+
+        if (resp.ok && data.status === 'launched') {
+          calibStatusBox.style.display = 'block';
+          showToast('Desktop ROI Calibrator launched!', 'success');
+        } else {
+          throw new Error(data.error || 'Failed to launch calibration GUI');
+        }
+      } catch (err) {
+        console.error('Calibration launch error:', err);
+        showToast('Could not launch calibrator: ' + err.message, 'error');
+      } finally {
+        launchCalibBtn.disabled = false;
+        launchCalibBtn.innerHTML = '<span>&#9881;</span> Launch Desktop ROI Calibrator';
+      }
+    });
+
+    // Initial setup
+    loadCameras();
+    checkBridgeHealth();
+    setInterval(checkBridgeHealth, 5000);
+  </script>
+</body>
+</html>

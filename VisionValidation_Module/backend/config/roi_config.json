@@ -3,26 +3,26 @@
   "compartments": [
     {
       "shelf_id": "SHELF_R1_C1",
-      "x_min": 193,
-      "y_min": 136,
-      "x_max": 304,
-      "y_max": 234,
+      "x_min": 49,
+      "y_min": 45,
+      "x_max": 108,
+      "y_max": 109,
       "dwell_threshold_seconds": 1.2
     },
     {
       "shelf_id": "SHELF_R1_C2",
-      "x_min": 338,
-      "y_min": 235,
-      "x_max": 410,
-      "y_max": 320,
+      "x_min": 180,
+      "y_min": 67,
+      "x_max": 409,
+      "y_max": 232,
       "dwell_threshold_seconds": 1.2
     },
     {
       "shelf_id": "SHELF_R1_C3",
-      "x_min": 386,
-      "y_min": 86,
-      "x_max": 506,
-      "y_max": 179,
+      "x_min": 47,
+      "y_min": 128,
+      "x_max": 140,
+      "y_max": 241,
       "dwell_threshold_seconds": 1.2
     }
   ]

@@ -32,8 +32,9 @@ import time
 import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from VisionValidation_Module.backend.src.spatial_mapper import SpatialMapper
-from VisionValidation_Module.backend.src.video_processor import VideoProcessor
+from src.spatial_mapper import SpatialMapper
+from src.video_processor import VideoProcessor
+from src.config_loader import get_active_rtsp_url
 
 # State variables
 spatial_mapper = None
@@ -250,12 +251,20 @@ def main():
     if len(spatial_mapper.compartments) > 0:
         selected_idx = 0
 
-    cam_idx = 0
     if len(sys.argv) > 1:
+        arg_val = sys.argv[1]
+        if arg_val == "--source" and len(sys.argv) > 2:
+            arg_val = sys.argv[2]
         try:
-            cam_idx = int(sys.argv[1])
+            cam_idx = int(arg_val)
         except ValueError:
-            cam_idx = sys.argv[1]
+            cam_idx = arg_val
+    else:
+        cam_idx = get_active_rtsp_url(default_source=0)
+        try:
+            cam_idx = int(cam_idx)
+        except (ValueError, TypeError):
+            pass
 
     video = VideoProcessor(source=cam_idx, width=640, height=480)
     if not video.is_streaming:

@@ -11,13 +11,13 @@ import time
 import json
 import cv2
 
-# Ensure backend root is in import path
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from VisionValidation_Module.backend.src.pose_estimator import PoseEstimator
-from VisionValidation_Module.backend.src.spatial_mapper import SpatialMapper
-from VisionValidation_Module.backend.src.behavior_classifier import BehaviorClassifier
-from VisionValidation_Module.backend.src.video_processor import VideoProcessor
-from VisionValidation_Module.backend.src.mqtt_client import MQTTClientNode
+from src.pose_estimator import PoseEstimator
+from src.spatial_mapper import SpatialMapper
+from src.behavior_classifier import BehaviorClassifier
+from src.video_processor import VideoProcessor
+from src.mqtt_client import MQTTClientNode
 
 
 def on_intent_trigger(event_payload):
@@ -63,6 +63,7 @@ def main():
     mqtt_node.connect_broker()
 
     # 5. Open Macro Camera Feed
+    # CAMERA_INDEX = 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102'
     CAMERA_INDEX = 0
     print(f"[+] Step 5: Ingesting video stream from camera index {CAMERA_INDEX}...")
     video = VideoProcessor(source=CAMERA_INDEX, width=640, height=480)

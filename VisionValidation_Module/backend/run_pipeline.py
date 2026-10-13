@@ -8,9 +8,9 @@ import argparse
 import os
 import sys
 
-# Ensure backend root is on Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from VisionValidation_Module.backend.src.vision_engine import VisionValidationEngine
+from src.vision_engine import VisionValidationEngine
+from src.config_loader import get_active_rtsp_url, mask_rtsp_url
 
 
 def main():
@@ -19,8 +19,8 @@ def main():
     )
     parser.add_argument(
         "--source",
-        default="0",
-        help="Camera index (0, 1) or RTSP stream URL or video file path (default: 0)",
+        default=None,
+        help="Camera index (0, 1), RTSP URL, or video path. If omitted, dynamically fetches active camera from Supabase.",
     )
     parser.add_argument(
         "--model",
@@ -51,11 +51,18 @@ def main():
 
     args = parser.parse_args()
 
+    # Determine camera source: Manual CLI override or Dynamic Supabase ingestion
+    if args.source is not None and args.source.strip().lower() != "auto":
+        source = args.source.strip()
+        print(f"[run_pipeline] Using manual camera source override: {mask_rtsp_url(source)}")
+    else:
+        print("[run_pipeline] Dynamic Ingestion: Querying active camera stream from Supabase...")
+        source = get_active_rtsp_url(default_source=0)
+
     # Convert source to int if numeric
-    source = args.source
     try:
         source = int(source)
-    except ValueError:
+    except (ValueError, TypeError):
         pass
 
     engine = VisionValidationEngine(
@@ -73,4 +80,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
