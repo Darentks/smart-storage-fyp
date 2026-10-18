@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hikvision CCTV Control & Diagnostics | Vision Validation Module</title>
+  <title>Smart Storage &bull; 30s Baseline &amp; ESP32-CAM Inventory Monitor</title>
   <!-- Supabase JS Client via CDN -->
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
@@ -39,11 +39,11 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
       line-height: 1.5;
       min-height: 100vh;
-      padding: 24px 20px 60px;
+      padding: 20px 20px 60px;
     }
 
     .container {
-      max-width: 1200px;
+      max-width: 1380px;
       margin: 0 auto;
     }
 
@@ -89,7 +89,7 @@
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 5px 12px;
+      padding: 6px 14px;
       border-radius: 9999px;
       font-size: 11px;
       font-weight: 600;
@@ -98,50 +98,66 @@
     }
 
     .status-dot {
-      width: 7px;
-      height: 7px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
-      background: #eab308;
+      background: var(--danger);
+      box-shadow: 0 0 8px rgba(244, 63, 94, 0.6);
     }
 
     .status-dot.connected {
       background: var(--success);
-      box-shadow: 0 0 8px var(--success);
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.6);
     }
 
-    .status-dot.error {
-      background: var(--danger);
-      box-shadow: 0 0 8px var(--danger);
+    /* Config Bar */
+    .config-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 12px 18px;
+      border-radius: 10px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
     }
 
-    /* Views container */
-    .view-section {
-      display: none;
-    }
-
-    .view-section.active-view {
-      display: block;
-      animation: fadeIn 0.2s ease-in-out;
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
-    }
-
-    /* Navigation Bar inside App */
-    .breadcrumb-nav {
+    .config-bar-left {
       display: flex;
       align-items: center;
       gap: 10px;
-      margin-bottom: 20px;
-      font-size: 13px;
+      flex-wrap: wrap;
     }
 
-    .btn-back {
+    .config-bar-left label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .config-bar-left input {
       background: var(--surface-card);
       border: 1px solid var(--border);
       color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: var(--font-mono);
+      width: 100%;
+      max-width: 260px;
+      outline: none;
+    }
+
+    .config-bar-left input:focus {
+      border-color: var(--primary);
+    }
+
+    .btn-action {
+      background: var(--surface-card);
+      color: var(--text);
+      border: 1px solid var(--border);
       padding: 6px 14px;
       border-radius: 6px;
       font-size: 12px;
@@ -153,39 +169,69 @@
       transition: all 0.15s;
     }
 
-    .btn-back:hover {
+    .btn-action:hover {
       background: var(--surface-card-hover);
       border-color: var(--primary);
       color: var(--primary);
     }
 
-    /* Grid Layout for Main View */
-    .dashboard-grid {
-      display: grid;
-      grid-template-columns: 360px 1fr;
-      gap: 24px;
-      align-items: start;
+    .btn-primary {
+      background: var(--primary);
+      color: #04101e;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.2s;
     }
 
-    @media (max-width: 960px) {
-      .dashboard-grid {
-        grid-template-columns: 1fr;
-      }
+    .btn-primary:hover {
+      background: var(--primary-hover);
     }
 
-    /* Cards & Panels */
+    .btn-danger {
+      background: var(--danger-bg);
+      color: var(--danger);
+      border: 1px solid var(--danger);
+      padding: 4px 10px;
+      border-radius: 5px;
+      font-size: 11px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-danger:hover {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    /* Panels */
     .panel {
       background: var(--surface);
       border: 1px solid var(--border);
       border-radius: 12px;
       padding: 22px;
+      margin-bottom: 26px;
       box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
     }
 
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 18px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
     .panel-title {
-      font-size: 15px;
+      font-size: 16px;
       font-weight: 700;
-      margin-bottom: 4px;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -194,221 +240,408 @@
     .panel-desc {
       font-size: 12px;
       color: var(--text-muted);
-      margin-bottom: 18px;
+      margin-top: 2px;
     }
 
-    /* Form Fields */
-    .form-group {
-      margin-bottom: 14px;
-    }
-
-    .form-row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-    }
-
-    label {
-      display: block;
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-muted);
-      margin-bottom: 5px;
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
-
-    input, select {
-      width: 100%;
-      background: var(--bg);
-      border: 1px solid var(--border);
-      color: var(--text);
-      padding: 8px 10px;
-      border-radius: 6px;
-      font-size: 13px;
-      outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
-    }
-
-    input:focus, select:focus {
-      border-color: var(--primary);
-      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
-    }
-
-    .preview-box {
-      background: var(--bg);
-      border: 1px dashed var(--border);
-      padding: 10px;
-      border-radius: 6px;
-      margin-bottom: 16px;
-    }
-
-    .preview-label {
-      font-size: 10px;
-      color: var(--text-muted);
-      margin-bottom: 4px;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-
-    .preview-text {
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: var(--primary);
-      word-break: break-all;
-    }
-
-    button.btn-primary {
-      width: 100%;
-      background: var(--primary);
-      color: #04101e;
-      border: none;
-      padding: 10px 16px;
-      border-radius: 6px;
-      font-size: 13px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      justify-content: center;
+    /* Badges */
+    .badge {
+      display: inline-flex;
       align-items: center;
-      gap: 6px;
-      transition: background 0.2s, transform 0.1s;
+      gap: 5px;
+      padding: 3px 9px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
     }
 
-    button.btn-primary:hover {
-      background: var(--primary-hover);
+    .badge-online { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
+    .badge-offline { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger); }
+    .badge-removed { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); }
+    .badge-returned { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
+    .badge-nochange { background: var(--surface-card); color: var(--text-muted); border: 1px solid var(--border); }
+
+    .pulse-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 1.8s infinite;
     }
 
-    button.btn-primary:active {
-      transform: scale(0.98);
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.3); }
     }
 
-    /* Camera Cards List */
-    .camera-list {
-      display: flex;
-      flex-direction: column;
-      gap: 14px;
+    /* Panel 1: Compartment Inventory Grid */
+    .compartments-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+      gap: 20px;
     }
 
-    .camera-card {
+    .compartment-card {
       background: var(--surface-card);
       border: 1px solid var(--border);
       border-radius: 10px;
-      padding: 16px 18px;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: transform 0.15s, border-color 0.15s;
     }
 
-    .camera-card:hover {
-      border-color: #4b5563;
+    .compartment-card:hover {
+      border-color: var(--primary);
+      transform: translateY(-2px);
     }
 
-    .camera-card.active {
-      border-color: var(--border-active);
-      background: linear-gradient(180deg, rgba(16, 185, 129, 0.07) 0%, rgba(31, 41, 55, 1) 100%);
-      box-shadow: 0 0 20px rgba(16, 185, 129, 0.12);
-    }
-
-    .card-header {
+    .card-top {
+      padding: 14px 16px;
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
-      margin-bottom: 10px;
-      gap: 10px;
-      flex-wrap: wrap;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     }
 
     .card-title {
       font-size: 15px;
       font-weight: 700;
-      color: var(--text);
+    }
+
+    .card-subtitle {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-family: var(--font-mono);
+    }
+
+    .snapshot-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #060910;
       display: flex;
       align-items: center;
-      gap: 8px;
+      justify-content: center;
+      overflow: hidden;
     }
 
-    .badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 10px;
-      font-weight: 700;
-      padding: 3px 9px;
-      border-radius: 9999px;
-      letter-spacing: 0.5px;
-      text-transform: uppercase;
+    .snapshot-img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
     }
 
-    .badge-active {
-      background: var(--success-bg);
-      color: var(--success);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-    }
-
-    .badge-active .pulse-dot {
-      width: 6px;
-      height: 6px;
-      background: var(--success);
-      border-radius: 50%;
-      animation: pulse 1.8s infinite;
-    }
-
-    @keyframes pulse {
-      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-      70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
-      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-    }
-
-    .badge-inactive {
-      background: rgba(156, 163, 175, 0.1);
+    .snapshot-placeholder {
+      font-size: 12px;
       color: var(--text-muted);
-      border: 1px solid var(--border);
-    }
-
-    .card-meta {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+      display: flex;
+      flex-direction: column;
+      align-items: center;
       gap: 8px;
-      margin-bottom: 12px;
-      background: var(--bg);
-      padding: 8px 12px;
-      border-radius: 6px;
-      font-size: 11px;
     }
 
-    .meta-item {
+    .snapshot-tag {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      background: rgba(0, 0, 0, 0.7);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--primary);
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      backdrop-filter: blur(4px);
+    }
+
+    .snapshot-timestamp {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      background: rgba(0, 0, 0, 0.75);
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      color: #e5e7eb;
+      font-family: var(--font-mono);
+    }
+
+    .card-stats {
+      padding: 14px 16px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .stat-item {
       display: flex;
       flex-direction: column;
     }
 
-    .meta-label {
+    .stat-lbl {
+      font-size: 11px;
       color: var(--text-muted);
-      font-size: 9px;
       text-transform: uppercase;
       font-weight: 600;
+      margin-bottom: 4px;
     }
 
-    .meta-value {
+    .stat-val {
+      font-size: 16px;
+      font-weight: 700;
       font-family: var(--font-mono);
-      font-size: 12px;
-      font-weight: 600;
-      color: #e5e7eb;
     }
 
-    .rtsp-row {
+    .stat-val.qty {
+      color: var(--success);
+      display: flex;
+      align-items: baseline;
+      gap: 4px;
+    }
+
+    .slot-bar {
+      display: flex;
+      gap: 5px;
+      margin-top: 6px;
+    }
+
+    .slot-pill {
+      flex: 1;
+      height: 7px;
+      border-radius: 3px;
+      background: #374151;
+      transition: background 0.2s;
+    }
+
+    .slot-pill.active {
+      background: var(--success);
+      box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
+    }
+
+    .card-footer {
+      padding: 12px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: rgba(0, 0, 0, 0.15);
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    /* Panel 2: Live Angle Tester & Scenario Reference Collector */
+    .tester-grid {
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 22px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) {
+      .tester-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .preview-canvas-box {
+      background: #040810;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      position: relative;
+      aspect-ratio: 16 / 9;
       display: flex;
       align-items: center;
-      background: rgba(15, 23, 42, 0.8);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 10px;
-      margin-bottom: 12px;
-      font-family: var(--font-mono);
-      font-size: 11px;
-      color: #93c5fd;
-      word-break: break-all;
+      justify-content: center;
+      overflow: hidden;
     }
 
-    .card-actions {
+    .preview-canvas-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+    }
+
+    .preview-overlay-info {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(0, 0, 0, 0.75);
+      padding: 4px 10px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--primary);
+    }
+
+    .tester-form {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+    }
+
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .form-group label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+    }
+
+    .form-control {
+      background: #111827;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      font-family: var(--font-mono);
+    }
+
+    .form-control:focus {
+      border-color: var(--primary);
+    }
+
+    .slots-checkbox-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background: #111827;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+    }
+
+    .slot-check-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      font-family: var(--font-mono);
+    }
+
+    /* Stored References Gallery */
+    .refs-gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 20px;
+    }
+
+    .ref-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      transition: border-color 0.15s;
+    }
+
+    .ref-card:hover {
+      border-color: var(--primary);
+    }
+
+    .ref-card-img {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      object-fit: cover;
+      background: #000;
+    }
+
+    .ref-card-body {
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+    }
+
+    .ref-card-title {
+      font-weight: 700;
+      color: var(--text);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Panel 3: OpenCV Comparison Logs */
+    .logs-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .log-card {
+      background: var(--surface-card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      display: grid;
+      grid-template-columns: 260px 1fr;
+      gap: 18px;
+      align-items: center;
+    }
+
+    @media (max-width: 800px) {
+      .log-card {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .log-images-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .log-thumb-box {
+      aspect-ratio: 4 / 3;
+      background: #060910;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .log-thumb-box img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+
+    .log-thumb-label {
+      position: absolute;
+      bottom: 4px;
+      left: 4px;
+      background: rgba(0, 0, 0, 0.75);
+      color: #fff;
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 5px;
+      border-radius: 3px;
+      text-transform: uppercase;
+    }
+
+    .log-details {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .log-header-line {
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -416,221 +649,27 @@
       gap: 8px;
     }
 
-    .card-actions-right {
+    .log-title {
+      font-size: 15px;
+      font-weight: 700;
       display: flex;
+      align-items: center;
       gap: 8px;
     }
 
-    .btn-action {
-      background: var(--surface);
-      color: var(--text);
-      border: 1px solid var(--border);
-      padding: 5px 12px;
-      border-radius: 6px;
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-      display: inline-flex;
+    .log-metrics-row {
+      display: flex;
       align-items: center;
-      gap: 5px;
-      transition: all 0.15s;
-    }
-
-    .btn-action:hover {
-      background: var(--surface-card-hover);
-      border-color: var(--primary);
-    }
-
-    .btn-inspect {
-      background: rgba(56, 189, 248, 0.1);
-      color: var(--primary);
-      border-color: rgba(56, 189, 248, 0.3);
-    }
-
-    .btn-inspect:hover {
-      background: rgba(56, 189, 248, 0.2);
-      border-color: var(--primary);
-    }
-
-    .btn-activate {
-      background: var(--success-bg);
-      color: var(--success);
-      border-color: rgba(16, 185, 129, 0.4);
-    }
-
-    .btn-activate:hover {
-      background: rgba(16, 185, 129, 0.25);
-      border-color: var(--success);
-    }
-
-    .btn-delete {
-      color: var(--danger);
-      border-color: rgba(244, 63, 94, 0.3);
-    }
-
-    .btn-delete:hover {
-      background: var(--danger-bg);
-      border-color: var(--danger);
-    }
-
-    /* Detail View Styling */
-    .detail-layout {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 24px;
-    }
-
-    @media (max-width: 900px) {
-      .detail-layout {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .spec-table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 10px;
-    }
-
-    .spec-table td {
-      padding: 9px 12px;
-      border-bottom: 1px solid var(--border);
-      font-size: 13px;
-    }
-
-    .spec-table tr:last-child td {
-      border-bottom: none;
-    }
-
-    .spec-key {
+      gap: 16px;
+      font-size: 12px;
       color: var(--text-muted);
-      width: 35%;
-      font-weight: 600;
+      flex-wrap: wrap;
+      margin-top: 4px;
     }
 
-    .spec-val {
+    .log-metrics-row span strong {
       color: var(--text);
       font-family: var(--font-mono);
-      font-size: 12px;
-    }
-
-    /* Snapshot Container */
-    .snapshot-box {
-      background: var(--bg);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      min-height: 240px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      position: relative;
-      overflow: hidden;
-      margin-bottom: 16px;
-    }
-
-    .snapshot-img {
-      width: 100%;
-      height: auto;
-      max-height: 380px;
-      object-fit: contain;
-      display: block;
-    }
-
-    .snapshot-placeholder {
-      color: var(--text-muted);
-      font-size: 13px;
-      text-align: center;
-      padding: 20px;
-    }
-
-    .snapshot-metrics {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-      gap: 8px;
-      margin-top: 10px;
-    }
-
-    .metric-pill {
-      background: var(--surface-card);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 8px;
-      text-align: center;
-    }
-
-    .metric-pill .lbl {
-      font-size: 9px;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      font-weight: 600;
-      margin-bottom: 2px;
-    }
-
-    .metric-pill .val {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--primary);
-      font-family: var(--font-mono);
-    }
-
-    .action-btn-large {
-      padding: 10px 16px;
-      font-size: 13px;
-      font-weight: 700;
-      border-radius: 6px;
-      border: none;
-      cursor: pointer;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      transition: all 0.15s;
-    }
-
-    .btn-test {
-      background: var(--primary);
-      color: #04101e;
-    }
-
-    .btn-test:hover {
-      background: var(--primary-hover);
-    }
-
-    .btn-calib {
-      background: #8b5cf6;
-      color: #ffffff;
-    }
-
-    .btn-calib:hover {
-      background: #7c3aed;
-    }
-
-    /* Warning callout */
-    .callout {
-      padding: 12px 14px;
-      border-radius: 8px;
-      font-size: 12px;
-      margin-top: 14px;
-      line-height: 1.5;
-    }
-
-    .callout-info {
-      background: rgba(56, 189, 248, 0.08);
-      border: 1px solid rgba(56, 189, 248, 0.25);
-      color: #bae6fd;
-    }
-
-    .callout-warn {
-      background: var(--warning-bg);
-      border: 1px solid rgba(245, 158, 11, 0.3);
-      color: #fde68a;
-    }
-
-    .callout-error {
-      background: var(--danger-bg);
-      border: 1px solid rgba(244, 63, 94, 0.3);
-      color: #fecdd3;
     }
 
     /* Toast */
@@ -673,327 +712,205 @@
     <header>
       <div>
         <div class="brand-title">
-          <span>Hikvision CCTV</span> Diagnostics & Control
+          <span>Smart Storage</span> &bull; 30s Baseline &amp; ESP32-CAM Monitor
         </div>
         <div class="brand-subtitle">
-          Smart Storage FYP &bull; Local Vision Validation Engine Stream Manager
+          Continuous Resting Baseline Comparison &bull; Scenario Reference Calibration &bull; Real-time Inventory Logs
         </div>
       </div>
       <div class="status-group">
-        <!-- Supabase Cloud DB Status -->
-        <div class="status-pill" title="Supabase Cloud Database connectivity">
+        <!-- Supabase Status -->
+        <div class="status-pill" title="Supabase Cloud DB Connectivity">
           <div id="dbStatusDot" class="status-dot"></div>
           <span id="dbStatusText">Cloud DB: Checking...</span>
         </div>
-        <!-- Local Python Bridge Status -->
-        <div class="status-pill" title="Local Python Control Bridge (camera_service.py:8008)">
+        <!-- Local Bridge Status -->
+        <div class="status-pill" title="Local Python Bridge (camera_service.py on port 8008)">
           <div id="bridgeStatusDot" class="status-dot"></div>
-          <span id="bridgeStatusText">Local Bridge: Checking...</span>
+          <span id="bridgeStatusText">Local Bridge: Idle</span>
         </div>
       </div>
     </header>
 
-    <!-- VIEW 1: Main Camera List & Registration -->
-    <div id="listView" class="view-section active-view">
-      <div class="dashboard-grid">
-        <!-- Left Column: Add New Camera Form -->
-        <section class="panel">
-          <h2 class="panel-title">Add CCTV Camera Feed</h2>
-          <p class="panel-desc">Register a Hikvision camera on the local network (DS-2CD1023G0E-I).</p>
-
-          <form id="cameraForm">
-            <div class="form-group">
-              <label for="camName">Camera Name / Label</label>
-              <input type="text" id="camName" required placeholder="e.g. Hikvision Rack Camera 01" value="Hikvision Rack Camera 01" />
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label for="camIp">IP Address</label>
-                <input type="text" id="camIp" required placeholder="192.168.100.1" value="192.168.100.1" />
-              </div>
-              <div class="form-group">
-                <label for="camRtspPort">RTSP Port</label>
-                <input type="number" id="camRtspPort" required value="554" />
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label for="camHttpPort">HTTP Port</label>
-                <input type="number" id="camHttpPort" value="80" />
-              </div>
-              <div class="form-group">
-                <label for="camChannel">Stream Channel</label>
-                <select id="camChannel">
-                  <option value="102" selected>102 (Sub-Stream / Recommended)</option>
-                  <option value="101">101 (Main-Stream / High Res)</option>
-                </select>
-              </div>
-            </div>
-
-            <div class="form-row">
-              <div class="form-group">
-                <label for="camUser">Username</label>
-                <input type="text" id="camUser" required value="admin" />
-              </div>
-              <div class="form-group">
-                <label for="camPwd">Password</label>
-                <input type="password" id="camPwd" required placeholder="Camera Password" value="Password" />
-              </div>
-            </div>
-
-            <!-- Live Preview -->
-            <div class="preview-box">
-              <div class="preview-label">Live RTSP Format Preview</div>
-              <div id="rtspPreview" class="preview-text">rtsp://admin:••••@192.168.100.1:554/Streaming/Channels/102</div>
-            </div>
-
-            <button type="submit" id="submitBtn" class="btn-primary">
-              <span>+</span> Register & Activate Stream
-            </button>
-          </form>
-        </section>
-
-        <!-- Right Column: Registered Cameras List -->
-        <section class="panel">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-            <h2 class="panel-title">Configured Cameras (<span id="cameraCount">0</span>)</h2>
-            <button id="refreshBtn" class="btn-action" style="padding: 4px 10px; font-size: 11px;">
-              &circlearrowright; Refresh
-            </button>
-          </div>
-          <p class="panel-desc">The active stream is dynamically ingested by the local YOLO11-Pose pipeline on startup.</p>
-
-          <div id="cameraList" class="camera-list">
-            <div style="text-align: center; padding: 40px 20px; color: var(--text-muted);">
-              Loading cameras from Supabase...
-            </div>
-          </div>
-        </section>
+    <!-- Bridge Config & Quick Action Bar -->
+    <div class="config-bar">
+      <div class="config-bar-left">
+        <label for="bridgeUrlInput">Local Bridge URL:</label>
+        <input type="text" id="bridgeUrlInput" value="http://localhost:8008" placeholder="http://localhost:8008" />
+        <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
+      </div>
+      <div style="display: flex; gap: 8px;">
+        <button type="button" class="btn-action" onclick="launchLocalCalibrator()">&#9881; Launch Desktop Calibrator</button>
+        <button type="button" class="btn-action" onclick="refreshAllData()">&circlearrowright; Refresh All</button>
       </div>
     </div>
 
-    <!-- VIEW 2: Detail & Diagnostics View -->
-    <div id="detailView" class="view-section">
-      <div class="breadcrumb-nav">
-        <button id="backToListBtn" class="btn-back">
-          &larr; Back to Camera Grid
-        </button>
-        <span style="color: var(--border);">/</span>
-        <span style="color: var(--text-muted);">Camera Diagnostics:</span>
-        <strong id="detailBreadcrumbName">Hikvision Camera</strong>
+    <!-- Panel 1: Compartment Inventory Grid & 30s Baselines -->
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">&#128230; Panel 1 &bull; Shelf Compartments, Live Inventory &amp; 30s Baselines</h2>
+          <p class="panel-desc">Real-time stock level, latest 30-second resting baseline snapshot, and hardware telemetry from <code>public.compartments</code>.</p>
+        </div>
+        <span class="badge badge-online" id="liveBadge"><span class="pulse-dot"></span>Live Sync Active</span>
       </div>
 
-      <div class="detail-layout">
-        <!-- Left: Specifications Card -->
-        <section class="panel">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <h2 class="panel-title">Camera Specifications</h2>
-            <div id="detailActiveBadge"></div>
+      <div id="compartmentsGrid" class="compartments-grid">
+        <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
+          Loading shelf compartments from Supabase...
+        </div>
+      </div>
+    </section>
+
+    <!-- Panel 2: ESP32-CAM Live Angle Tester & Scenario Reference Collector -->
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">&#128247; Panel 2 &bull; ESP32-CAM Live Angle Tester &amp; Scenario Reference Collector</h2>
+          <p class="panel-desc">Live preview current camera angle, confirm field of view, and capture tested reference scenario datasets into <code>public.esp32_reference_samples</code>.</p>
+        </div>
+        <span id="refCountBadge" style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">0 Samples</span>
+      </div>
+
+      <div class="tester-grid">
+        <!-- Live Angle Preview Box -->
+        <div class="preview-canvas-box" id="previewContainer">
+          <span class="preview-overlay-info" id="previewOverlayText">Live Preview Idle</span>
+          <div id="previewPlaceholder" class="snapshot-placeholder">
+            <span>&#128249; No snapshot yet. Click "Preview Live Angle".</span>
           </div>
-          <p class="panel-desc">Hardware, network topology, and RTSP stream channel bindings.</p>
+          <img id="livePreviewImg" src="" alt="Live ESP32 Angle Preview" style="display:none;" />
+        </div>
 
-          <table class="spec-table">
-            <tbody>
-              <tr>
-                <td class="spec-key">Camera Model</td>
-                <td class="spec-val" style="color: var(--primary);">Hikvision DS-2CD1023G0E-I</td>
-              </tr>
-              <tr>
-                <td class="spec-key">Camera Name</td>
-                <td class="spec-val" id="specName">-</td>
-              </tr>
-              <tr>
-                <td class="spec-key">IP Address</td>
-                <td class="spec-val" id="specIp">-</td>
-              </tr>
-              <tr>
-                <td class="spec-key">RTSP Port</td>
-                <td class="spec-val" id="specRtspPort">554</td>
-              </tr>
-              <tr>
-                <td class="spec-key">HTTP Port</td>
-                <td class="spec-val" id="specHttpPort">80</td>
-              </tr>
-              <tr>
-                <td class="spec-key">Stream Channel</td>
-                <td class="spec-val" id="specChannel">102 (Sub-stream)</td>
-              </tr>
-              <tr>
-                <td class="spec-key">Username</td>
-                <td class="spec-val" id="specUser">admin</td>
-              </tr>
-              <tr>
-                <td class="spec-key">RTSP URL</td>
-                <td class="spec-val" id="specRtspUrl" style="word-break: break-all; color: #93c5fd;">-</td>
-              </tr>
-              <tr>
-                <td class="spec-key">Created At</td>
-                <td class="spec-val" id="specCreated" style="font-size: 11px; color: var(--text-muted);">-</td>
-              </tr>
-            </tbody>
-          </table>
+        <!-- Scenario Form -->
+        <form class="tester-form" id="refCaptureForm" onsubmit="captureScenarioReference(event)">
+          <div class="form-group">
+            <label for="refShelfSelect">Target Shelf Compartment</label>
+            <select id="refShelfSelect" class="form-control" onchange="syncSelectedShelfTelemetry()">
+              <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
+              <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
+              <option value="SHELF_R1_C3">SHELF_R1_C3 (ESP32 Node R1-C3)</option>
+            </select>
+          </div>
 
-          <div style="margin-top: 20px; display: flex; gap: 10px;">
-            <button id="detailToggleActiveBtn" class="btn-action btn-activate" style="padding: 8px 14px;">
-              &check; Set as Active Stream
+          <div class="form-group">
+            <label for="refEspIpInput">ESP32-CAM LAN IP</label>
+            <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.1.120" value="192.168.1.120" />
+          </div>
+
+          <div style="display: flex; gap: 8px;">
+            <button type="button" class="btn-action" style="flex: 1;" onclick="fetchLiveAnglePreview()">
+              &#128065; Preview Live Angle (GET /esp32_preview)
             </button>
           </div>
 
-          <!-- ROI Calibration Section -->
-          <div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--border);">
-            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 6px;">
-              Interactive ROI Calibration
-            </h3>
-            <p style="font-size: 12px; color: var(--text-muted); margin-bottom: 14px;">
-              Launch the native OpenCV canvas on your local desktop to draw and adjust shelf bounding boxes for this camera.
-            </p>
+          <div class="form-group">
+            <label for="refBoxCountSelect">Scenario Box Count (Inventory State)</label>
+            <select id="refBoxCountSelect" class="form-control" onchange="autoConfigureSlotCheckboxes()">
+              <option value="4">4 / 4 Boxes (Full Baseline)</option>
+              <option value="3">3 / 4 Boxes (1 Removed)</option>
+              <option value="2">2 / 4 Boxes (2 Removed)</option>
+              <option value="1">1 / 4 Box (3 Removed)</option>
+              <option value="0">0 / 4 Boxes (Empty Baseline)</option>
+            </select>
+          </div>
 
-            <button id="launchCalibBtn" class="action-btn-large btn-calib" style="width: 100%;">
-              <span>&#9881;</span> Launch Desktop ROI Calibrator
-            </button>
-
-            <div id="calibStatusBox" class="callout callout-info" style="display: none;">
-              <strong>Calibrator Launched!</strong> Check your desktop for the OpenCV window. Draw boxes, press <kbd>S</kbd> to save, or <kbd>ESC</kbd> to exit.
+          <div class="form-group">
+            <label>2x2 Quadrant Slot Configuration</label>
+            <div class="slots-checkbox-grid">
+              <label class="slot-check-item">
+                <input type="checkbox" id="slot1Check" checked /> Slot 1 (TL)
+              </label>
+              <label class="slot-check-item">
+                <input type="checkbox" id="slot2Check" checked /> Slot 2 (TR)
+              </label>
+              <label class="slot-check-item">
+                <input type="checkbox" id="slot3Check" checked /> Slot 3 (BL)
+              </label>
+              <label class="slot-check-item">
+                <input type="checkbox" id="slot4Check" checked /> Slot 4 (BR)
+              </label>
             </div>
           </div>
-        </section>
 
-        <!-- Right: On-Demand Connectivity & Frame Test -->
-        <section class="panel">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <h2 class="panel-title">On-Demand Stream Connectivity Test</h2>
-            <span style="font-size: 11px; color: var(--text-muted);">Single-Frame Snapshot</span>
-          </div>
-          <p class="panel-desc">Verifies network reachability, RTSP handshake, and frame decoding via the local bridge.</p>
-
-          <!-- Snapshot Image Container -->
-          <div id="snapshotBox" class="snapshot-box">
-            <div id="snapshotPlaceholder" class="snapshot-placeholder">
-              <svg width="42" height="42" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="margin: 0 auto 10px; display: block; opacity: 0.5;">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-              </svg>
-              No test frame captured yet.<br />Click <strong>"Capture Test Frame"</strong> below.
-            </div>
-            <img id="snapshotImg" class="snapshot-img" style="display: none;" alt="Camera Test Frame" />
-          </div>
-
-          <!-- Capture Button -->
-          <button id="testFrameBtn" class="action-btn-large btn-test" style="width: 100%;">
-            <span>&#9654;</span> Capture Test Frame
+          <button type="submit" class="btn-primary" style="justify-content: center; margin-top: 4px;">
+            &#128190; Capture &amp; Save Scenario Reference to DB
           </button>
-
-          <!-- Metrics Panel -->
-          <div id="metricsRow" class="snapshot-metrics" style="display: none;">
-            <div class="metric-pill">
-              <div class="lbl">Latency</div>
-              <div class="val" id="metricLatency">-</div>
-            </div>
-            <div class="metric-pill">
-              <div class="lbl">Resolution</div>
-              <div class="val" id="metricResolution">-</div>
-            </div>
-            <div class="metric-pill">
-              <div class="lbl">Format</div>
-              <div class="val" id="metricFormat">JPEG / RGB</div>
-            </div>
-            <div class="metric-pill">
-              <div class="lbl">Status</div>
-              <div class="val" id="metricStatus" style="color: var(--success);">ONLINE</div>
-            </div>
-          </div>
-
-          <!-- Error / Info Callout -->
-          <div id="testErrorBox" class="callout callout-error" style="display: none;"></div>
-
-          <div id="bridgeNoticeBox" class="callout callout-warn" style="display: none;">
-            <strong>Local Bridge Offline:</strong> Make sure the Python control bridge is running on your machine:
-            <code style="display: block; margin-top: 6px; font-family: var(--font-mono); background: rgba(0,0,0,0.3); padding: 4px 6px; border-radius: 4px;">
-              python VisionValidation_Module/camera_service.py
-            </code>
-          </div>
-        </section>
+        </form>
       </div>
-    </div>
+
+      <!-- Stored References Gallery -->
+      <div style="margin-top: 26px; border-top: 1px solid var(--border); padding-top: 18px;">
+        <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-muted);">
+          Stored Angle Reference Samples (Supabase <code>public.esp32_reference_samples</code>)
+        </h3>
+        <div id="referencesGallery" class="refs-gallery">
+          <div style="grid-column: 1 / -1; text-align: center; padding: 25px; color: var(--text-muted);">
+            Loading reference samples...
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Panel 3: OpenCV Before vs. After Comparison Log -->
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">&#128248; Panel 3 &bull; OpenCV Before (30s Baseline) vs. After (Post-Trigger) Comparison Logs</h2>
+          <p class="panel-desc">Every physical inventory interaction verification recorded in <code>public.comparison_logs</code>.</p>
+        </div>
+        <span id="logCountBadge" style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">0 Logs</span>
+      </div>
+
+      <div id="comparisonLogsList" class="logs-list">
+        <div style="text-align: center; padding: 40px; color: var(--text-muted);">
+          Loading comparison logs from Supabase...
+        </div>
+      </div>
+    </section>
   </div>
 
   <!-- Toast Notification -->
   <div id="toast"></div>
 
   <script>
-    // Configuration
+    // =========================================================================
+    // SUPABASE CLIENT & CONFIGURATION
+    // =========================================================================
     const SUPABASE_URL = 'https://hrufeowqpnyjfwxydocm.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt';
-    const BRIDGE_API_BASE = 'http://localhost:8008';
 
-    // Supabase Client
-    let client = null;
+    let supabaseClient = null;
     try {
-      client = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
     } catch (e) {
-      console.error('Failed to init Supabase client:', e);
+      console.error('Failed to initialize Supabase client:', e);
     }
 
-    // App State
-    let cameras = [];
-    let selectedCamera = null;
-    let bridgeOnline = false;
-
-    // DOM Elements - Status
+    // DOM Elements
     const dbStatusDot = document.getElementById('dbStatusDot');
     const dbStatusText = document.getElementById('dbStatusText');
     const bridgeStatusDot = document.getElementById('bridgeStatusDot');
     const bridgeStatusText = document.getElementById('bridgeStatusText');
-    const bridgeNoticeBox = document.getElementById('bridgeNoticeBox');
+    const bridgeUrlInput = document.getElementById('bridgeUrlInput');
+    const compartmentsGrid = document.getElementById('compartmentsGrid');
+    const comparisonLogsList = document.getElementById('comparisonLogsList');
+    const logCountBadge = document.getElementById('logCountBadge');
+    const refCountBadge = document.getElementById('refCountBadge');
+    const referencesGallery = document.getElementById('referencesGallery');
+    const refShelfSelect = document.getElementById('refShelfSelect');
+    const refEspIpInput = document.getElementById('refEspIpInput');
+    const refBoxCountSelect = document.getElementById('refBoxCountSelect');
+    const livePreviewImg = document.getElementById('livePreviewImg');
+    const previewPlaceholder = document.getElementById('previewPlaceholder');
+    const previewOverlayText = document.getElementById('previewOverlayText');
 
-    // DOM Elements - Views
-    const listView = document.getElementById('listView');
-    const detailView = document.getElementById('detailView');
-    const backToListBtn = document.getElementById('backToListBtn');
-    const detailBreadcrumbName = document.getElementById('detailBreadcrumbName');
+    let compartmentsData = [];
+    let comparisonLogsData = [];
+    let referenceSamplesData = [];
+    let currentPreviewDataUrl = null;
 
-    // DOM Elements - List & Form
-    const cameraList = document.getElementById('cameraList');
-    const cameraCount = document.getElementById('cameraCount');
-    const cameraForm = document.getElementById('cameraForm');
-    const submitBtn = document.getElementById('submitBtn');
-    const refreshBtn = document.getElementById('refreshBtn');
-    const rtspPreview = document.getElementById('rtspPreview');
-
-    const camName = document.getElementById('camName');
-    const camIp = document.getElementById('camIp');
-    const camRtspPort = document.getElementById('camRtspPort');
-    const camHttpPort = document.getElementById('camHttpPort');
-    const camChannel = document.getElementById('camChannel');
-    const camUser = document.getElementById('camUser');
-    const camPwd = document.getElementById('camPwd');
-
-    // DOM Elements - Details View
-    const specName = document.getElementById('specName');
-    const specIp = document.getElementById('specIp');
-    const specRtspPort = document.getElementById('specRtspPort');
-    const specHttpPort = document.getElementById('specHttpPort');
-    const specChannel = document.getElementById('specChannel');
-    const specUser = document.getElementById('specUser');
-    const specRtspUrl = document.getElementById('specRtspUrl');
-    const specCreated = document.getElementById('specCreated');
-    const detailActiveBadge = document.getElementById('detailActiveBadge');
-    const detailToggleActiveBtn = document.getElementById('detailToggleActiveBtn');
-
-    // DOM Elements - Testing & Calib
-    const testFrameBtn = document.getElementById('testFrameBtn');
-    const snapshotImg = document.getElementById('snapshotImg');
-    const snapshotPlaceholder = document.getElementById('snapshotPlaceholder');
-    const metricsRow = document.getElementById('metricsRow');
-    const metricLatency = document.getElementById('metricLatency');
-    const metricResolution = document.getElementById('metricResolution');
-    const metricStatus = document.getElementById('metricStatus');
-    const testErrorBox = document.getElementById('testErrorBox');
-    const launchCalibBtn = document.getElementById('launchCalibBtn');
-    const calibStatusBox = document.getElementById('calibStatusBox');
-
-    // Toast Helper
+    // Toast helper
     function showToast(message, type = 'info') {
       const toast = document.getElementById('toast');
       toast.textContent = message;
@@ -1003,167 +920,367 @@
       }, 3500);
     }
 
-    // Helper: Mask Password in RTSP URL
-    function maskRtspUrl(url) {
-      if (!url) return '';
-      return url.replace(/:\/\/([^:@]+):([^@]+)@/, '://$1:••••@');
+    // Get current local bridge base
+    function getBridgeUrl() {
+      return (bridgeUrlInput.value || 'http://localhost:8008').trim().replace(/\/$/, '');
     }
 
-    // Live preview update in form
-    function updateLivePreview() {
-      const user = camUser.value.trim() || 'admin';
-      const ip = camIp.value.trim() || '192.168.100.1';
-      const port = camRtspPort.value || 554;
-      const ch = camChannel.value || 102;
-      rtspPreview.textContent = `rtsp://${user}:••••@${ip}:${port}/Streaming/Channels/${ch}`;
-    }
-
-    [camUser, camIp, camRtspPort, camChannel].forEach((el) => {
-      el.addEventListener('input', updateLivePreview);
-    });
-
-    // Check Local Python Bridge Status
-    async function checkBridgeHealth() {
+    // Check Local Bridge Health
+    async function checkLocalBridgeHealth() {
+      const url = getBridgeUrl();
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1500);
-        const resp = await fetch(`${BRIDGE_API_BASE}/status`, { signal: controller.signal });
+        const timeoutId = setTimeout(() => controller.abort(), 1800);
+        const resp = await fetch(`${url}/status`, { signal: controller.signal });
         clearTimeout(timeoutId);
 
         if (resp.ok) {
-          bridgeOnline = true;
           bridgeStatusDot.className = 'status-dot connected';
-          bridgeStatusText.textContent = 'Local Bridge: Active (8008)';
-          bridgeNoticeBox.style.display = 'none';
+          bridgeStatusText.textContent = `Local Bridge: Active (${url})`;
+          showToast('Local Python bridge connected!', 'success');
         } else {
           throw new Error('Not OK');
         }
-      } catch (e) {
-        bridgeOnline = false;
-        bridgeStatusDot.className = 'status-dot error';
+      } catch (err) {
+        bridgeStatusDot.className = 'status-dot';
         bridgeStatusText.textContent = 'Local Bridge: Offline';
-        if (detailView.classList.contains('active-view')) {
-          bridgeNoticeBox.style.display = 'block';
+      }
+    }
+
+    // Launch Desktop OpenCV Calibrator via Local Bridge
+    async function launchLocalCalibrator() {
+      const url = getBridgeUrl();
+      try {
+        const resp = await fetch(`${url}/run_calibration`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({})
+        });
+        if (resp.ok) {
+          showToast('Desktop ROI Calibrator launched on local machine!', 'success');
+        } else {
+          showToast('Failed to launch calibrator. Is camera_service.py running?', 'error');
+        }
+      } catch (e) {
+        showToast('Local bridge offline. Start camera_service.py to run local desktop OpenCV.', 'error');
+      }
+    }
+
+    // Trigger Test Capture via Local Bridge
+    async function triggerTestCapture(shelfId, action) {
+      const url = getBridgeUrl();
+      showToast(`Dispatching test ${action} trigger for ${shelfId}...`, 'info');
+      try {
+        const resp = await fetch(`${url}/esp32_trigger`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shelf_id: shelfId,
+            expected_action: action,
+          })
+        });
+        if (resp.ok) {
+          showToast(`Test ${action} trigger sent for ${shelfId}!`, 'success');
+          setTimeout(refreshAllData, 1200);
+        } else {
+          showToast('Trigger failed on bridge.', 'error');
+        }
+      } catch (e) {
+        showToast('Local bridge offline. Run python VisionValidation_Module/camera_service.py', 'error');
+      }
+    }
+
+    // =========================================================================
+    // PANEL 2: LIVE ANGLE TESTER & REFERENCE COLLECTOR
+    // =========================================================================
+    function syncSelectedShelfTelemetry() {
+      const selShelf = refShelfSelect.value;
+      const comp = compartmentsData.find(c => c.shelf_id === selShelf);
+      if (comp && comp.ip_address) {
+        refEspIpInput.value = comp.ip_address;
+      }
+    }
+
+    function autoConfigureSlotCheckboxes() {
+      const count = parseInt(refBoxCountSelect.value, 10);
+      document.getElementById('slot1Check').checked = count >= 1;
+      document.getElementById('slot2Check').checked = count >= 2;
+      document.getElementById('slot3Check').checked = count >= 3;
+      document.getElementById('slot4Check').checked = count >= 4;
+    }
+
+    async function fetchLiveAnglePreview() {
+      const shelfId = refShelfSelect.value;
+      const ip = refEspIpInput.value.trim();
+      const url = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&shelf_id=${encodeURIComponent(shelfId)}`;
+
+      previewOverlayText.textContent = `Fetching live snapshot from ${ip || 'Node'}...`;
+      showToast(`Fetching live preview from ${ip}...`, 'info');
+
+      try {
+        const resp = await fetch(url);
+        const data = await resp.json();
+        if (data.status === 'success' && data.image) {
+          currentPreviewDataUrl = data.image;
+          livePreviewImg.src = data.image;
+          livePreviewImg.style.display = 'block';
+          previewPlaceholder.style.display = 'none';
+          previewOverlayText.textContent = `Preview Live &bull; ${shelfId} (${ip || 'Local/Synth'})`;
+          showToast('Live angle preview updated!', 'success');
+        } else {
+          throw new Error('Image not returned');
+        }
+      } catch (err) {
+        console.warn('Live preview fetch failed:', err);
+        previewOverlayText.textContent = 'Preview Failed (Check Local Bridge)';
+        showToast('Could not fetch live preview. Is camera_service.py active?', 'error');
+      }
+    }
+
+    async function captureScenarioReference(event) {
+      event.preventDefault();
+      const shelfId = refShelfSelect.value;
+      const ip = refEspIpInput.value.trim();
+      const boxCount = parseInt(refBoxCountSelect.value, 10);
+      const label = `${shelfId} - ${boxCount} Boxes Scenario`;
+
+      const slotStates = {
+        slot_1_tl: document.getElementById('slot1Check').checked ? 1 : 0,
+        slot_2_tr: document.getElementById('slot2Check').checked ? 1 : 0,
+        slot_3_bl: document.getElementById('slot3Check').checked ? 1 : 0,
+        slot_4_br: document.getElementById('slot4Check').checked ? 1 : 0,
+      };
+
+      const payload = {
+        shelf_id: shelfId,
+        ip_address: ip,
+        box_count: boxCount,
+        sample_label: label,
+        slot_states: slotStates,
+        image: currentPreviewDataUrl || null,
+      };
+
+      showToast(`Saving ${boxCount}-box reference for ${shelfId}...`, 'info');
+
+      // 1. Try local bridge POST /esp32_reference_samples
+      try {
+        const resp = await fetch(`${getBridgeUrl()}/esp32_reference_samples`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (resp.ok) {
+          showToast(`Reference sample saved via bridge!`, 'success');
+          loadReferenceSamples();
+          return;
+        }
+      } catch (e) {
+        console.warn('Bridge POST failed, falling back to direct Supabase insert:', e);
+      }
+
+      // 2. Direct Supabase insert fallback if bridge is offline
+      if (supabaseClient) {
+        try {
+          const insertRecord = {
+            shelf_id: shelfId,
+            mqtt_client_id: `ESP32_${shelfId.replace('SHELF_', '')}`,
+            rack_id: 'RACK_01',
+            sample_label: label,
+            box_count: boxCount,
+            slot_states: slotStates,
+            flash_enabled: true,
+            image_url: currentPreviewDataUrl || `https://dummyimage.com/640x480/1f2937/38bdf8.jpg&text=${shelfId}+${boxCount}+Boxes`,
+          };
+          const { error } = await supabaseClient.from('esp32_reference_samples').insert([insertRecord]);
+          if (error) throw error;
+          showToast(`Saved reference sample directly to Supabase!`, 'success');
+          loadReferenceSamples();
+        } catch (dbErr) {
+          console.error('Supabase reference insert error:', dbErr);
+          showToast('Failed to insert reference into Supabase.', 'error');
         }
       }
     }
 
-    // Fetch Cameras from Supabase
-    async function loadCameras() {
-      if (!client) {
+    async function deleteReferenceSample(sampleId) {
+      if (!confirm('Are you sure you want to delete this angle test photo?')) return;
+
+      // Try bridge first
+      try {
+        const resp = await fetch(`${getBridgeUrl()}/esp32_reference_samples?sample_id=${encodeURIComponent(sampleId)}`, {
+          method: 'DELETE',
+        });
+        if (resp.ok) {
+          showToast('Sample deleted via bridge.', 'success');
+          loadReferenceSamples();
+          return;
+        }
+      } catch (e) {}
+
+      // Supabase direct fallback
+      if (supabaseClient) {
+        try {
+          const { error } = await supabaseClient.from('esp32_reference_samples').delete().eq('sample_id', sampleId);
+          if (error) throw error;
+          showToast('Sample deleted from Supabase.', 'success');
+          loadReferenceSamples();
+        } catch (dbErr) {
+          showToast('Failed to delete sample from Supabase.', 'error');
+        }
+      }
+    }
+
+    // =========================================================================
+    // FETCH COMPARTMENTS, COMPARISON LOGS, & REFERENCES
+    // =========================================================================
+    async function loadCompartments() {
+      if (!supabaseClient) {
         dbStatusDot.className = 'status-dot error';
-        dbStatusText.textContent = 'Supabase SDK Error';
+        dbStatusText.textContent = 'Cloud DB: SDK Missing';
         return;
       }
 
       try {
-        const { data, error } = await client
-          .from('cameras')
+        const { data, error } = await supabaseClient
+          .from('compartments')
           .select('*')
-          .order('created_at', { ascending: false });
+          .order('shelf_id', { ascending: true });
 
-        if (error) {
-          console.error('Fetch error:', error);
-          dbStatusDot.className = 'status-dot error';
-          dbStatusText.textContent = 'Cloud DB: Error';
-          cameraList.innerHTML = `
-            <div style="text-align: center; padding: 30px; color: var(--danger)">
-              Query Error: ${error.message}
-            </div>
-          `;
-          return;
-        }
+        if (error) throw error;
 
         dbStatusDot.className = 'status-dot connected';
         dbStatusText.textContent = 'Cloud DB: Connected';
-        cameras = data || [];
-        renderCameraList(cameras);
-
-        // If currently in detail view, refresh selected camera object
-        if (selectedCamera) {
-          const updated = cameras.find((c) => c.id === selectedCamera.id);
-          if (updated) {
-            selectedCamera = updated;
-            renderCameraDetails(selectedCamera);
-          }
-        }
+        compartmentsData = data || [];
+        renderCompartments(compartmentsData);
+        syncSelectedShelfTelemetry();
       } catch (err) {
-        console.error('Error fetching cameras:', err);
+        console.error('Error loading compartments:', err);
         dbStatusDot.className = 'status-dot error';
-        dbStatusText.textContent = 'Cloud DB: Disconnected';
+        dbStatusText.textContent = 'Cloud DB: Error';
       }
     }
 
-    // Render Camera Cards
-    function renderCameraList(items) {
-      cameraCount.textContent = items.length;
+    async function loadComparisonLogs() {
+      if (!supabaseClient) return;
 
-      if (items.length === 0) {
-        cameraList.innerHTML = `
-          <div style="text-align: center; padding: 40px; color: var(--text-muted)">
-            <h4 style="color: var(--text); margin-bottom: 6px;">No Cameras Found</h4>
-            <p style="font-size: 13px;">Use the form on the left to configure your first Hikvision CCTV feed.</p>
+      try {
+        const { data, error } = await supabaseClient
+          .from('comparison_logs')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+        if (error) throw error;
+
+        comparisonLogsData = data || [];
+        renderComparisonLogs(comparisonLogsData);
+      } catch (err) {
+        console.error('Error loading comparison logs:', err);
+      }
+    }
+
+    async function loadReferenceSamples() {
+      if (!supabaseClient) return;
+
+      try {
+        const { data, error } = await supabaseClient
+          .from('esp32_reference_samples')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(24);
+
+        if (error) throw error;
+
+        referenceSamplesData = data || [];
+        renderReferenceSamples(referenceSamplesData);
+      } catch (err) {
+        console.error('Error loading reference samples:', err);
+      }
+    }
+
+    function refreshAllData() {
+      loadCompartments();
+      loadComparisonLogs();
+      loadReferenceSamples();
+    }
+
+    // =========================================================================
+    // RENDER FUNCTIONS
+    // =========================================================================
+    function renderCompartments(items) {
+      if (!items || items.length === 0) {
+        compartmentsGrid.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
+            No compartments found in <code>public.compartments</code>. Run <code>supabase_schema.sql</code> seed queries.
           </div>
         `;
         return;
       }
 
-      cameraList.innerHTML = items.map((cam) => {
-        const isActive = cam.is_active === true;
-        const masked = maskRtspUrl(cam.rtsp_url);
+      compartmentsGrid.innerHTML = items.map((comp) => {
+        const isOnline = (comp.status || '').toUpperCase() === 'ONLINE';
+        const qty = comp.current_quantity ?? 4;
+        const maxQty = comp.max_capacity ?? 4;
+        const rssi = comp.rssi_dbm != null ? `${comp.rssi_dbm} dBm` : 'N/A';
+        const updatedTime = comp.baseline_updated_at ? new Date(comp.baseline_updated_at).toLocaleTimeString() : 'Pending';
+
+        let slotPillsHtml = '';
+        for (let i = 1; i <= maxQty; i++) {
+          slotPillsHtml += `<div class="slot-pill ${i <= qty ? 'active' : ''}"></div>`;
+        }
+
+        const snapshotImgHtml = comp.baseline_image_url
+          ? `<img src="${comp.baseline_image_url}" class="snapshot-img" alt="Baseline ${comp.shelf_id}" />`
+          : `<div class="snapshot-placeholder">&#128247; No 30s baseline snapshot captured yet.</div>`;
 
         return `
-          <div class="camera-card ${isActive ? 'active' : ''}" id="card-${cam.id}">
-            <div class="card-header">
-              <div class="card-title">
-                ${cam.name}
+          <div class="compartment-card ${isOnline ? 'online' : ''}">
+            <div class="card-top">
+              <div>
+                <div class="card-title">${comp.shelf_id}</div>
+                <div class="card-subtitle">${comp.mqtt_client_id} &bull; ${comp.camera_name || 'ESP32 Node'}</div>
               </div>
               <div>
-                ${isActive
-                  ? '<span class="badge badge-active"><span class="pulse-dot"></span>Active Stream</span>'
-                  : '<span class="badge badge-inactive">Inactive</span>'
+                ${isOnline
+                  ? '<span class="badge badge-online"><span class="pulse-dot"></span>Online</span>'
+                  : '<span class="badge badge-offline">Offline</span>'
                 }
               </div>
             </div>
 
-            <div class="card-meta">
-              <div class="meta-item">
-                <span class="meta-label">IP Address</span>
-                <span class="meta-value">${cam.ip_address}</span>
+            <!-- 30s Baseline Snapshot Window -->
+            <div class="snapshot-wrap">
+              <span class="snapshot-tag">&#9201; 30s Baseline Snapshot</span>
+              ${snapshotImgHtml}
+              <span class="snapshot-timestamp">${updatedTime}</span>
+            </div>
+
+            <!-- Stats & Capacity -->
+            <div class="card-stats">
+              <div class="stat-item">
+                <span class="stat-lbl">Stock Quantity</span>
+                <span class="stat-val qty">${qty} / ${maxQty} Boxes</span>
+                <div class="slot-bar">${slotPillsHtml}</div>
               </div>
-              <div class="meta-item">
-                <span class="meta-label">RTSP Port</span>
-                <span class="meta-value">${cam.rtsp_port || 554}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">HTTP Port</span>
-                <span class="meta-value">${cam.http_port || 80}</span>
-              </div>
-              <div class="meta-item">
-                <span class="meta-label">Channel</span>
-                <span class="meta-value">Ch-${cam.stream_channel} (${cam.stream_channel == 102 ? 'Sub' : 'Main'})</span>
+              <div class="stat-item">
+                <span class="stat-lbl">Wi-Fi RSSI / IP</span>
+                <span class="stat-val" style="font-size: 13px;">${rssi}</span>
+                <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 4px;">
+                  ${comp.ip_address || 'DHCP'}
+                </span>
               </div>
             </div>
 
-            <div class="rtsp-row" title="${masked}">
-              ${masked}
-            </div>
-
-            <div class="card-actions">
-              <button class="btn-action btn-inspect" onclick="openDetails('${cam.id}')">
-                <span>&#128065;</span> View Details & Diagnostics
-              </button>
-
-              <div class="card-actions-right">
-                ${!isActive ? `
-                  <button class="btn-action btn-activate" onclick="setActiveCamera('${cam.id}', '${cam.name.replace(/'/g, "\\'")}')">
-                    &check; Set Active
-                  </button>
-                ` : `
-                  <span style="font-size: 11px; color: var(--success); font-weight: 600; padding: 4px 6px;">Ingesting</span>
-                `}
-                <button class="btn-action btn-delete" onclick="deleteCamera('${cam.id}', '${cam.name.replace(/'/g, "\\'")}')">
-                  Delete
+            <div class="card-footer">
+              <div style="font-size: 11px; color: var(--text-muted);">
+                Heap: <strong>${comp.free_heap_bytes ? Math.round(comp.free_heap_bytes / 1024) + ' KB' : 'N/A'}</strong>
+              </div>
+              <div style="display: flex; gap: 6px;">
+                <button type="button" class="btn-action" style="padding: 4px 10px; font-size: 11px;" onclick="triggerTestCapture('${comp.shelf_id}', 'BORROW')">
+                  Test Borrow (-1)
+                </button>
+                <button type="button" class="btn-action" style="padding: 4px 10px; font-size: 11px;" onclick="triggerTestCapture('${comp.shelf_id}', 'RETURN')">
+                  Test Return (+1)
                 </button>
               </div>
             </div>
@@ -1172,230 +1289,167 @@
       }).join('');
     }
 
-    // Switch to Details View
-    function openDetails(id) {
-      const cam = cameras.find((c) => c.id === id);
-      if (!cam) return;
+    function renderReferenceSamples(samples) {
+      refCountBadge.textContent = `${samples.length} Samples`;
 
-      selectedCamera = cam;
-      renderCameraDetails(cam);
+      if (!samples || samples.length === 0) {
+        referencesGallery.innerHTML = `
+          <div style="grid-column: 1 / -1; text-align: center; padding: 25px; color: var(--text-muted);">
+            No reference scenario samples stored yet. Use the form above to capture calibrated angle snapshots for 4, 3, 2, 1, 0 boxes.
+          </div>
+        `;
+        return;
+      }
 
-      listView.classList.remove('active-view');
-      detailView.classList.add('active-view');
-
-      // Reset testing states
-      snapshotImg.style.display = 'none';
-      snapshotPlaceholder.style.display = 'block';
-      metricsRow.style.display = 'none';
-      testErrorBox.style.display = 'none';
-      calibStatusBox.style.display = 'none';
-
-      checkBridgeHealth();
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+      referencesGallery.innerHTML = samples.map((sample) => {
+        const timeStr = sample.created_at ? new Date(sample.created_at).toLocaleDateString() : '';
+        return `
+          <div class="ref-card">
+            <img src="${sample.image_url}" class="ref-card-img" alt="${sample.sample_label}" />
+            <div class="ref-card-body">
+              <div class="ref-card-title">
+                <span>${sample.shelf_id} &bull; ${sample.box_count} Boxes</span>
+                <button type="button" class="btn-danger" onclick="deleteReferenceSample('${sample.sample_id}')">Delete</button>
+              </div>
+              <div style="font-size: 11px; color: var(--text-muted);">${sample.sample_label}</div>
+              <div style="font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px;">
+                ${timeStr} &bull; Latency: ${sample.capture_latency_ms != null ? sample.capture_latency_ms + 'ms' : 'N/A'}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
     }
 
-    // Render Camera Details
-    function renderCameraDetails(cam) {
-      detailBreadcrumbName.textContent = cam.name;
-      specName.textContent = cam.name;
-      specIp.textContent = cam.ip_address;
-      specRtspPort.textContent = cam.rtsp_port || 554;
-      specHttpPort.textContent = cam.http_port || 80;
-      specChannel.textContent = `${cam.stream_channel} (${cam.stream_channel == 102 ? 'Sub-Stream' : 'Main-Stream'})`;
-      specUser.textContent = cam.username || 'admin';
-      specRtspUrl.textContent = maskRtspUrl(cam.rtsp_url);
-      specCreated.textContent = new Date(cam.created_at).toLocaleString();
+    function renderComparisonLogs(logs) {
+      logCountBadge.textContent = `${logs.length} Logs`;
 
-      if (cam.is_active) {
-        detailActiveBadge.innerHTML = '<span class="badge badge-active"><span class="pulse-dot"></span>Currently Active</span>';
-        detailToggleActiveBtn.style.display = 'none';
-      } else {
-        detailActiveBadge.innerHTML = '<span class="badge badge-inactive">Inactive</span>';
-        detailToggleActiveBtn.style.display = 'inline-flex';
-        detailToggleActiveBtn.onclick = () => setActiveCamera(cam.id, cam.name);
+      if (!logs || logs.length === 0) {
+        comparisonLogsList.innerHTML = `
+          <div style="text-align: center; padding: 40px; color: var(--text-muted);">
+            No OpenCV comparisons recorded yet. Dispatch a test borrow trigger or perform a physical interaction.
+          </div>
+        `;
+        return;
+      }
+
+      comparisonLogsList.innerHTML = logs.map((log) => {
+        let badgeClass = 'badge-nochange';
+        let deltaLabel = 'NO CHANGE (0)';
+        if (log.state_delta === 'ITEM_REMOVED') {
+          badgeClass = 'badge-removed';
+          deltaLabel = 'ITEM REMOVED (-1)';
+        } else if (log.state_delta === 'ITEM_RETURNED') {
+          badgeClass = 'badge-returned';
+          deltaLabel = 'ITEM RETURNED (+1)';
+        }
+
+        const timeStr = log.created_at ? new Date(log.created_at).toLocaleString() : 'Just now';
+        const diffText = log.diff_score != null ? `${log.diff_score}%` : 'N/A';
+
+        const beforeImg = log.before_image_url
+          ? `<img src="${log.before_image_url}" alt="Baseline Before" />`
+          : '<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:10px;color:var(--text-muted);">No Baseline</div>';
+
+        const afterImg = log.after_image_url
+          ? `<img src="${log.after_image_url}" alt="Trigger After" />`
+          : '<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:10px;color:var(--text-muted);">No Capture</div>';
+
+        return `
+          <div class="log-card">
+            <!-- Side-by-Side Images -->
+            <div class="log-images-pair">
+              <div class="log-thumb-box" title="30-Second Baseline Image (Before)">
+                ${beforeImg}
+                <span class="log-thumb-label">Before (30s)</span>
+              </div>
+              <div class="log-thumb-box" title="Post-Trigger Capture (After)">
+                ${afterImg}
+                <span class="log-thumb-label">After (Live)</span>
+              </div>
+            </div>
+
+            <!-- Log Details -->
+            <div class="log-details">
+              <div class="log-header-line">
+                <div class="log-title">
+                  <span>${log.shelf_id}</span>
+                  <span style="font-size: 13px; color: var(--text-muted); font-family: var(--font-mono);">&bull; ${log.mqtt_client_id}</span>
+                </div>
+                <div>
+                  <span class="badge ${badgeClass}">${deltaLabel}</span>
+                </div>
+              </div>
+
+              <div class="log-metrics-row">
+                <span>Action: <strong>${log.trigger_action || 'BORROW'}</strong></span>
+                <span>OpenCV Diff: <strong>${diffText}</strong></span>
+                <span>Inventory Shift: <strong>${log.quantity_before} &rarr; ${log.quantity_after} Boxes</strong></span>
+                <span>Logged: <strong style="color: var(--text-muted);">${timeStr}</strong></span>
+              </div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // =========================================================================
+    // REALTIME SUBSCRIPTIONS & POLLING FALLBACK
+    // =========================================================================
+    function setupRealtimeSubscriptions() {
+      if (!supabaseClient) return;
+
+      try {
+        // Subscribe to public.compartments changes
+        supabaseClient
+          .channel('compartments-changes')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'compartments' },
+            (payload) => {
+              loadCompartments();
+            }
+          )
+          .subscribe();
+
+        // Subscribe to public.esp32_reference_samples changes
+        supabaseClient
+          .channel('refs-changes')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'esp32_reference_samples' },
+            (payload) => {
+              loadReferenceSamples();
+            }
+          )
+          .subscribe();
+
+        // Subscribe to public.comparison_logs inserts
+        supabaseClient
+          .channel('logs-changes')
+          .on(
+            'postgres_changes',
+            { event: 'INSERT', schema: 'public', table: 'comparison_logs' },
+            (payload) => {
+              loadComparisonLogs();
+              showToast(`New verification log for ${payload.new.shelf_id}: ${payload.new.state_delta}`, 'info');
+            }
+          )
+          .subscribe();
+      } catch (err) {
+        console.warn('Realtime subscription fallback to polling:', err);
       }
     }
 
-    // Back to List View
-    backToListBtn.addEventListener('click', () => {
-      detailView.classList.remove('active-view');
-      listView.classList.add('active-view');
-      selectedCamera = null;
-    });
+    // Initialization
+    refreshAllData();
+    setupRealtimeSubscriptions();
+    checkLocalBridgeHealth();
 
-    // Set Active Camera
-    async function setActiveCamera(id, name) {
-      showToast(`Activating stream: "${name}"...`, 'info');
-
-      try {
-        await client.from('cameras').update({ is_active: false }).neq('id', id);
-        const { error } = await client.from('cameras').update({ is_active: true }).eq('id', id);
-
-        if (error) {
-          showToast('Failed to switch camera: ' + error.message, 'error');
-        } else {
-          showToast(`"${name}" is now the active stream!`, 'success');
-          loadCameras();
-        }
-      } catch (err) {
-        showToast('Error switching active camera: ' + err.message, 'error');
-      }
-    }
-
-    // Delete Camera
-    async function deleteCamera(id, name) {
-      if (!confirm(`Are you sure you want to permanently delete "${name}"?`)) return;
-
-      try {
-        const { error } = await client.from('cameras').delete().eq('id', id);
-        if (error) {
-          showToast('Failed to delete camera: ' + error.message, 'error');
-        } else {
-          showToast(`Camera "${name}" removed.`, 'success');
-          if (selectedCamera && selectedCamera.id === id) {
-            backToListBtn.click();
-          }
-          loadCameras();
-        }
-      } catch (err) {
-        showToast('Error deleting camera: ' + err.message, 'error');
-      }
-    }
-
-    // Form Submission: Add Camera
-    cameraForm.addEventListener('submit', async (e) => {
-      e.preventDefault();
-
-      const name = camName.value.trim();
-      const ip = camIp.value.trim();
-      const rtspPort = parseInt(camRtspPort.value) || 554;
-      const httpPort = parseInt(camHttpPort.value) || 80;
-      const channel = parseInt(camChannel.value) || 102;
-      const user = camUser.value.trim();
-      const pwd = camPwd.value;
-
-      const rawRtspUrl = `rtsp://${user}:${pwd}@${ip}:${rtspPort}/Streaming/Channels/${channel}`;
-
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Registering & Activating...';
-
-      try {
-        await client.from('cameras').update({ is_active: false }).neq('id', '00000000-0000-0000-0000-000000000000');
-
-        const { error } = await client.from('cameras').insert([{
-          name: name,
-          ip_address: ip,
-          rtsp_port: rtspPort,
-          http_port: httpPort,
-          stream_channel: channel,
-          username: user,
-          password: pwd,
-          rtsp_url: rawRtspUrl,
-          is_active: true
-        }]);
-
-        if (error) {
-          showToast('Failed to add camera: ' + error.message, 'error');
-        } else {
-          showToast(`"${name}" registered and activated!`, 'success');
-          camName.value = `Hikvision Rack Camera 0${cameras.length + 2}`;
-          loadCameras();
-        }
-      } catch (err) {
-        showToast('Error adding camera: ' + err.message, 'error');
-      } finally {
-        submitBtn.disabled = false;
-        submitBtn.innerHTML = '<span>+</span> Register & Activate Stream';
-      }
-    });
-
-    // Refresh Button
-    refreshBtn.addEventListener('click', () => {
-      showToast('Refreshing camera list...', 'info');
-      loadCameras();
-      checkBridgeHealth();
-    });
-
-    // On-Demand Camera Test (Single Snapshot)
-    testFrameBtn.addEventListener('click', async () => {
-      if (!selectedCamera) return;
-
-      testFrameBtn.disabled = true;
-      testFrameBtn.innerHTML = '<span>&#8987;</span> Connecting & Grabbing Frame...';
-      testErrorBox.style.display = 'none';
-
-      try {
-        const url = `${BRIDGE_API_BASE}/test_feed?source=${encodeURIComponent(selectedCamera.rtsp_url)}`;
-        const resp = await fetch(url);
-        const data = await resp.json();
-
-        if (resp.ok && data.status === 'success') {
-          snapshotImg.src = data.image;
-          snapshotImg.style.display = 'block';
-          snapshotPlaceholder.style.display = 'none';
-
-          metricLatency.textContent = `${data.latency_ms} ms`;
-          metricResolution.textContent = `${data.width} x ${data.height}`;
-          metricStatus.textContent = 'ONLINE';
-          metricStatus.style.color = 'var(--success)';
-          metricsRow.style.display = 'grid';
-
-          showToast('Snapshot captured successfully!', 'success');
-        } else {
-          throw new Error(data.error || 'Failed to capture frame from video source');
-        }
-      } catch (err) {
-        console.error('Snapshot test error:', err);
-        testErrorBox.textContent = `Stream Error: ${err.message}. Ensure camera_service.py is running and the camera is reachable on LAN.`;
-        testErrorBox.style.display = 'block';
-
-        metricLatency.textContent = 'Timeout';
-        metricResolution.textContent = 'N/A';
-        metricStatus.textContent = 'OFFLINE';
-        metricStatus.style.color = 'var(--danger)';
-        metricsRow.style.display = 'grid';
-
-        showToast('Snapshot capture failed', 'error');
-      } finally {
-        testFrameBtn.disabled = false;
-        testFrameBtn.innerHTML = '<span>&#9654;</span> Capture Test Frame';
-      }
-    });
-
-    // Launch Desktop ROI Calibrator
-    launchCalibBtn.addEventListener('click', async () => {
-      if (!selectedCamera) return;
-
-      launchCalibBtn.disabled = true;
-      launchCalibBtn.innerHTML = '<span>&#8987;</span> Opening Calibrator...';
-
-      try {
-        const resp = await fetch(`${BRIDGE_API_BASE}/run_calibration`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source: selectedCamera.rtsp_url })
-        });
-        const data = await resp.json();
-
-        if (resp.ok && data.status === 'launched') {
-          calibStatusBox.style.display = 'block';
-          showToast('Desktop ROI Calibrator launched!', 'success');
-        } else {
-          throw new Error(data.error || 'Failed to launch calibration GUI');
-        }
-      } catch (err) {
-        console.error('Calibration launch error:', err);
-        showToast('Could not launch calibrator: ' + err.message, 'error');
-      } finally {
-        launchCalibBtn.disabled = false;
-        launchCalibBtn.innerHTML = '<span>&#9881;</span> Launch Desktop ROI Calibrator';
-      }
-    });
-
-    // Initial setup
-    loadCameras();
-    checkBridgeHealth();
-    setInterval(checkBridgeHealth, 5000);
+    // 5-second resilient polling loop (guarantees updates across Vercel & cloud networks)
+    setInterval(() => {
+      refreshAllData();
+    }, 5000);
   </script>
 </body>
 </html>
