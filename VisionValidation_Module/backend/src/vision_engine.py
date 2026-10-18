@@ -1,6 +1,7 @@
 """
 Vision Validation Engine for Smart Storage FYP
-Orchestrates macro CCTV ingestion, YOLO11-Pose tracking, spatial ROI mapping, and MQTT hardware triggering.
+Orchestrates macro CCTV ingestion, YOLO11-Pose tracking, spatial ROI mapping,
+and bidirectional MQTT hardware triggering & verification.
 Complies with Figure 4.11 (Class Diagram), Figure 4.7 (Sequence Diagram), and Figure 4.8 (Activity Diagram).
 """
 
@@ -44,12 +45,13 @@ class VisionValidationEngine:
         self.behavior_classifier = None
         self.mqtt_client = None
 
-        # Notification banner for recent trigger
+        # Notification banners for trigger & ESP32 verification response
         self.active_alert = None
         self.alert_expiry_time = 0.0
+        self.alert_color = (0, 180, 0)
 
     def initialize_system(self):
-        """Initializes all sub-modules."""
+        """Initializes all sub-modules including bidirectional MQTT listeners."""
         print("=================================================================")
         print("    VISION-BASED HUMAN INTERACTION ANALYSIS ENGINE INITIALIZING  ")
         print("    Final Year Project: RFID-Vision Integrated Smart Storage     ")
@@ -61,11 +63,15 @@ class VisionValidationEngine:
         # 2. Initialize Pose Estimator
         self.pose_estimator = PoseEstimator(model_path=self.model_path, oks_threshold=0.50)
 
-        # 3. Initialize MQTT Client
+        # 3. Initialize Bidirectional MQTT Client
         self.mqtt_client = MQTTClientNode(
             broker_address=self.mqtt_broker,
             port=self.mqtt_port,
-            rack_id=self.spatial_mapper.rack_id
+            rack_id=self.spatial_mapper.rack_id,
+            on_verification_response=self._on_esp32_verification_response,
+            on_health_ping=self._on_esp32_health_ping,
+            on_roi_reload=self._on_mqtt_roi_reload,
+            sync_supabase=True,
         )
         self.mqtt_client.connect_broker()
 
@@ -91,8 +97,30 @@ class VisionValidationEngine:
         self.mqtt_client.publish_trigger(shelf_id=shelf_id, expected_action=action, confidence=conf)
 
         # Set HUD visual alert banner for 3 seconds
-        self.active_alert = f"INTENT VERIFIED: [{action}] at {shelf_id} (Dwell: {event['dwell_duration_seconds']}s)"
+        self.active_alert = f"TRIGGER SENT: [{action}] at {shelf_id} (Dwell: {event['dwell_duration_seconds']}s)"
+        self.alert_color = (0, 165, 255)
         self.alert_expiry_time = time.time() + 3.0
+
+    def _on_esp32_verification_response(self, payload):
+        """Callback invoked when ESP32-CAM publishes snapshot verification to iotlab/storage/{shelf_id}/response."""
+        device_id = payload.get("device_id", "ESP32")
+        shelf_id = payload.get("shelf_id", "UNKNOWN")
+        delta = payload.get("state_delta", "VERIFIED")
+        code = payload.get("status_code", 200)
+
+        self.active_alert = f"ESP32 CONFIRMED ({device_id}): {delta} @ {shelf_id} [HTTP {code}]"
+        self.alert_color = (0, 190, 0) if code == 200 else (0, 0, 220)
+        self.alert_expiry_time = time.time() + 4.0
+
+    def _on_esp32_health_ping(self, payload):
+        """Callback invoked when an ESP32 node publishes its 30s health ping or CRUD ack."""
+        pass
+
+    def _on_mqtt_roi_reload(self, payload):
+        """Automatically reloads ROI config when CRUD operations occur via camera_service.py."""
+        if self.spatial_mapper:
+            self.spatial_mapper.load_roi_config()
+            print("[VisionValidationEngine] Hot-reloaded ROI configuration after MQTT CRUD update.")
 
     def run_pipeline(self, window_name="Smart Storage - Vision Validation Engine"):
         """
@@ -115,7 +143,6 @@ class VisionValidationEngine:
             while self.is_running:
                 ret, frame = self.video_processor.capture_frame()
                 if not ret or frame is None:
-                    # Alternative flow: attempt reconnect
                     time.sleep(0.5)
                     self.video_processor.connect()
                     continue
@@ -159,32 +186,30 @@ class VisionValidationEngine:
         """Renders high-fidelity telemetry bar matching thesis UI specifications."""
         h, w = frame.shape[:2]
 
-        # Top diagnostic banner
         bar_height = 42
         hud_overlay = frame.copy()
         cv2.rectangle(hud_overlay, (0, 0), (w, bar_height), (20, 20, 20), -1)
         cv2.addWeighted(hud_overlay, 0.75, frame, 0.25, 0, frame)
 
-        # Telemetry metrics
         fps_text = f"FPS: {self.video_processor.fps:.1f}"
         latency_text = f"Inference: {self.pose_estimator.last_inference_time_ms:.1f}ms"
         persons_text = f"Subjects: {len(detections)}"
         rois_text = f"ROIs: {len(self.spatial_mapper.compartments)}"
-        privacy_text = f"Privacy: {'ON' if self.privacy_mode else 'OFF'}"
+        nodes_online = len(self.mqtt_client.edge_nodes) if self.mqtt_client else 0
+        mqtt_text = f"MQTT: {'ONLINE' if (self.mqtt_client and self.mqtt_client.is_connected) else 'SIM'} (Nodes:{nodes_online})"
 
         cv2.putText(frame, "SMART STORAGE VALIDATION", (12, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, f"{fps_text} | {latency_text} | {persons_text} | {rois_text} | {privacy_text}", (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(frame, f"{fps_text} | {latency_text} | {persons_text} | {rois_text} | {mqtt_text}", (12, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (220, 220, 220), 1, cv2.LINE_AA)
 
-        # Active event notification banner (green alert pill)
         if self.active_alert and time.time() < self.alert_expiry_time:
             alert_bar_y = h - 45
-            pill_w = min(w - 40, 560)
-            cv2.rectangle(frame, (20, alert_bar_y), (20 + pill_w, h - 10), (0, 180, 0), -1)
+            pill_w = min(w - 40, 580)
+            cv2.rectangle(frame, (20, alert_bar_y), (20 + pill_w, h - 10), self.alert_color, -1)
             cv2.rectangle(frame, (20, alert_bar_y), (20 + pill_w, h - 10), (255, 255, 255), 1)
             cv2.putText(
                 frame, self.active_alert,
                 (30, alert_bar_y + 24),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 255), 1, cv2.LINE_AA
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA
             )
         elif self.active_alert and time.time() >= self.alert_expiry_time:
             self.active_alert = None
@@ -200,4 +225,3 @@ class VisionValidationEngine:
         if self.mqtt_client:
             self.mqtt_client.disconnect()
         print("[VisionValidationEngine] Pipeline stopped successfully.")
-
