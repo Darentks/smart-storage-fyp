@@ -1,12 +1,22 @@
 """
-Local Camera Control API Bridge for Vision Validation Module
+Local Camera Control, MQTT Edge Hardware Bridge, & ESP32-CAM Reference Sample API Service
 Smart Storage FYP
 Author: Daren Tan Khai Shuen
 
 Runs a lightweight HTTP server on port 8008 providing:
-- On-demand single-frame snapshot capture with latency metrics (GET /test_feed)
-- Desktop OpenCV Shelf ROI Calibration launching (POST /run_calibration)
-- Health check (GET /status)
+1. Macro Hikvision CCTV Control:
+   - GET    /status                  : Service & MQTT health status
+   - GET    /test_feed               : Capture single CCTV frame snapshot & latency
+   - POST   /run_calibration         : Open desktop OpenCV ROI calibrator
+
+2. Micro ESP32-CAM Node & 30s Baseline Comparison Pipeline:
+   - GET    /esp32_nodes             : Read Shelf Compartments, 30s baselines, live MQTT health & recent comparison logs
+   - GET    /esp32_preview           : Live test preview from http://<esp32_ip>/capture
+   - POST   /esp32_trigger           : Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
+   - GET    /esp32_reference_samples : List stored ESP32-CAM reference samples
+   - POST   /esp32_reference_samples : Capture & store an ESP32-CAM scenario reference (4, 3, 2, 1, 0 boxes)
+   - DELETE /esp32_reference_samples : Delete an ESP32-CAM reference sample
+   - POST   /esp32_validate          : Run hybrid 30s baseline + reference validation and apply Supabase delta
 """
 
 import base64
@@ -26,30 +36,144 @@ if BACKEND_DIR not in sys.path:
 
 try:
     import cv2
+    import numpy as np
     _OPENCV_AVAILABLE = True
 except ImportError:
+    cv2 = None  # type: ignore
+    np = None  # type: ignore
     _OPENCV_AVAILABLE = False
 
-try:
-    from src.config_loader import get_active_rtsp_url, mask_rtsp_url
-    _CONFIG_LOADER_AVAILABLE = True
-except ImportError:
-    _CONFIG_LOADER_AVAILABLE = False
+from src.config_loader import (
+    get_active_rtsp_url,
+    mask_rtsp_url,
+    list_esp32_cameras,
+    apply_inventory_delta_in_supabase,
+    list_comparison_logs,
+    insert_esp32_reference_sample,
+    list_esp32_reference_samples,
+    delete_esp32_reference_sample,
+)
+from src.spatial_mapper import SpatialMapper
+from src.mqtt_client import MQTTClientNode
+from src.reference_validator import (
+    ESP32ReferenceManager,
+    extract_2x2_feature_signature,
+    encode_bgr_to_data_url,
+    decode_data_url_to_bgr,
+)
 
-    def mask_rtsp_url(url):
-        if not isinstance(url, str):
-            return str(url)
-        return re.sub(r"://([^:@]+):([^@]+)@", r"://\1:****@", url)
+# Global Managers
+ROI_CONFIG_PATH = os.path.join(BACKEND_DIR, "config", "roi_config.json")
+spatial_mapper = SpatialMapper(ROI_CONFIG_PATH)
 
-    def get_active_rtsp_url(default_source=0):
-        return default_source
+esp32_ref_manager = ESP32ReferenceManager()
+
+MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
+MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
+mqtt_bridge = MQTTClientNode(
+    broker_address=MQTT_BROKER,
+    port=MQTT_PORT,
+    rack_id=spatial_mapper.rack_id,
+    client_id_prefix="CameraServiceBridge",
+    sync_supabase=True,
+    esp32_validator=esp32_ref_manager,
+)
+
+
+def get_merged_compartments_and_nodes():
+    """
+    Combines local roi_config.json compartments, Supabase 'public.compartments' rows,
+    esp32_ref_manager baseline cache, and live MQTT health telemetry into a unified list.
+    """
+    spatial_mapper.load_roi_config()
+    local_comps = spatial_mapper.compartments
+    db_rows = list_esp32_cameras()
+    db_nodes = {row.get("mqtt_client_id"): row for row in db_rows if row.get("mqtt_client_id")}
+    db_by_shelf = {row.get("shelf_id"): row for row in db_rows if row.get("shelf_id")}
+    live_mqtt = mqtt_bridge.edge_nodes
+
+    merged = []
+    seen_mqtt_ids = set()
+
+    for comp in local_comps:
+        shelf_id = comp["shelf_id"]
+        mqtt_id = comp.get("mqtt_client_id") or shelf_id.replace("SHELF_", "ESP32_")
+        seen_mqtt_ids.add(mqtt_id)
+
+        db_row = db_nodes.get(mqtt_id) or db_by_shelf.get(shelf_id, {})
+        live_row = live_mqtt.get(mqtt_id, {})
+        cached_baseline = esp32_ref_manager.baseline_cache.get(shelf_id, {})
+
+        status = "ONLINE" if live_row else db_row.get("status", "OFFLINE")
+        baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
+        baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
+
+        merged.append({
+            "camera_id": db_row.get("camera_id"),
+            "shelf_id": shelf_id,
+            "rack_id": db_row.get("rack_id") or spatial_mapper.rack_id,
+            "mqtt_client_id": mqtt_id,
+            "camera_name": comp.get("camera_name") or db_row.get("camera_name") or f"ESP32 Node ({shelf_id})",
+            "container_id": comp.get("container_id") or db_row.get("container_id"),
+            "ip_address": live_row.get("ip_address") or db_row.get("ip_address") or "",
+            "x_min": comp["x_min"],
+            "y_min": comp["y_min"],
+            "x_max": comp["x_max"],
+            "y_max": comp["y_max"],
+            "dwell_threshold_seconds": comp.get("dwell_threshold_seconds", 1.2),
+            "status": status,
+            "current_quantity": db_row.get("current_quantity", 4),
+            "max_capacity": db_row.get("max_capacity", 4),
+            "baseline_image_url": baseline_url,
+            "baseline_updated_at": baseline_updated,
+            "rssi_dbm": live_row.get("rssi_dbm", db_row.get("rssi_dbm")),
+            "free_heap_bytes": live_row.get("free_heap_bytes", db_row.get("free_heap_bytes")),
+            "mac_address": live_row.get("mac_address", db_row.get("mac_address")),
+            "firmware_version": live_row.get("firmware_version", db_row.get("firmware_version")),
+            "bus_vcc": live_row.get("bus_vcc", db_row.get("bus_vcc")),
+            "last_seen_at": live_row.get("last_seen_at", db_row.get("last_seen_at")),
+        })
+
+    for mqtt_id, live_row in live_mqtt.items():
+        if mqtt_id not in seen_mqtt_ids:
+            db_row = db_nodes.get(mqtt_id, {})
+            shelf_id = live_row.get("shelf_id", db_row.get("shelf_id", "UNASSIGNED"))
+            cached_baseline = esp32_ref_manager.baseline_cache.get(shelf_id, {})
+            baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
+            baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
+
+            merged.append({
+                "camera_id": db_row.get("camera_id"),
+                "shelf_id": shelf_id,
+                "rack_id": live_row.get("rack_id", db_row.get("rack_id", spatial_mapper.rack_id)),
+                "mqtt_client_id": mqtt_id,
+                "camera_name": db_row.get("camera_name") or f"ESP32 Node ({mqtt_id})",
+                "container_id": db_row.get("container_id"),
+                "ip_address": live_row.get("ip_address") or db_row.get("ip_address") or "",
+                "x_min": db_row.get("roi_x_min", 100),
+                "y_min": db_row.get("roi_y_min", 150),
+                "x_max": db_row.get("roi_x_max", 300),
+                "y_max": db_row.get("roi_y_max", 350),
+                "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
+                "status": "ONLINE",
+                "current_quantity": db_row.get("current_quantity", 4),
+                "max_capacity": db_row.get("max_capacity", 4),
+                "baseline_image_url": baseline_url,
+                "baseline_updated_at": baseline_updated,
+                "rssi_dbm": live_row.get("rssi_dbm"),
+                "free_heap_bytes": live_row.get("free_heap_bytes"),
+                "mac_address": live_row.get("mac_address"),
+                "firmware_version": live_row.get("firmware_version"),
+                "bus_vcc": live_row.get("bus_vcc"),
+                "last_seen_at": live_row.get("last_seen_at"),
+            })
+
+    return merged
 
 
 def capture_single_frame(source_str):
     """
     Connects to an RTSP or webcam source, captures a single frame, and measures latency.
-    Forces TCP transport for RTSP feeds to prevent UDP frame corruption on Hikvision cameras.
-    :return: dict with status, latency_ms, dimensions, and base64 image data URL
     """
     if not _OPENCV_AVAILABLE:
         return {
@@ -58,7 +182,6 @@ def capture_single_frame(source_str):
             "latency_ms": 0,
         }
 
-    # Determine numeric or string source
     try:
         source = int(source_str)
         is_webcam = True
@@ -74,9 +197,8 @@ def capture_single_frame(source_str):
 
     try:
         if is_webcam:
-            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(source)
         else:
-            # Enforce TCP transport for Hikvision IP cameras to eliminate packet drop
             os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
             cap = cv2.VideoCapture(source)
 
@@ -89,10 +211,7 @@ def capture_single_frame(source_str):
                 "source": masked,
             }
 
-        # Set low buffer size
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        # Read single frame
         ret, frame = cap.read()
         latency = round((time.time() - t_start) * 1000, 1)
 
@@ -107,7 +226,6 @@ def capture_single_frame(source_str):
         h, w = frame.shape[:2]
         channels = frame.shape[2] if len(frame.shape) > 2 else 1
 
-        # Encode to JPEG in memory
         success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         if not success:
             return {
@@ -147,12 +265,29 @@ def capture_single_frame(source_str):
 
 
 class CameraServiceRequestHandler(BaseHTTPRequestHandler):
-    """HTTP Request Handler for camera control endpoints."""
+    """HTTP Request Handler for camera control, MQTT triggers, and ESP32 reference validation."""
 
     def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+    def _send_json(self, status_code: int, payload: dict):
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json")
+        self._send_cors_headers()
+        self.end_headers()
+        self.wfile.write(json.dumps(payload).encode("utf-8"))
+
+    def _read_json_body(self) -> dict:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0:
+            return {}
+        body_bytes = self.rfile.read(content_length)
+        try:
+            return json.loads(body_bytes.decode("utf-8"))
+        except Exception:
+            return {}
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -165,71 +300,78 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         if path in ["/", "/status", "/health"]:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self._send_cors_headers()
-            self.end_headers()
-            payload = {
+            self._send_json(200, {
                 "status": "ok",
-                "service": "Hikvision Camera Control Service",
+                "service": "Smart Storage Local Camera Control & MQTT Telemetry Service",
                 "opencv_available": _OPENCV_AVAILABLE,
+                "mqtt_connected": mqtt_bridge.is_connected,
+                "mqtt_broker": f"{mqtt_bridge.broker_address}:{mqtt_bridge.port}",
+                "active_esp32_nodes": len(mqtt_bridge.edge_nodes),
                 "port": 8008,
-            }
-            self.wfile.write(json.dumps(payload).encode("utf-8"))
+            })
             return
 
         if path == "/test_feed":
             source_param = query.get("source", [None])[0]
             if not source_param:
-                # Fallback to active camera from Supabase
                 source_param = get_active_rtsp_url(default_source=0)
-
             result = capture_single_frame(source_param)
-            self.send_response(200 if result.get("status") == "success" else 502)
-            self.send_header("Content-Type", "application/json")
-            self._send_cors_headers()
-            self.end_headers()
-            self.wfile.write(json.dumps(result).encode("utf-8"))
+            self._send_json(200 if result.get("status") == "success" else 502, result)
             return
 
-        self.send_response(404)
-        self._send_cors_headers()
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": "Endpoint not found"}).encode("utf-8"))
+        if path == "/esp32_nodes":
+            nodes = get_merged_compartments_and_nodes()
+            logs = list_comparison_logs(15)
+            self._send_json(200, {
+                "status": "success",
+                "rack_id": spatial_mapper.rack_id,
+                "mqtt_connected": mqtt_bridge.is_connected,
+                "mqtt_broker": f"{mqtt_bridge.broker_address}:{mqtt_bridge.port}",
+                "compartments": nodes,
+                "recent_responses": list(reversed(mqtt_bridge.recent_responses[-15:])),
+                "comparison_logs": logs,
+            })
+            return
+
+        if path == "/esp32_preview":
+            esp32_ip = query.get("ip", [None])[0]
+            shelf_id = query.get("shelf_id", ["SHELF_R1_C1"])[0]
+
+            frame_bgr, data_url = esp32_ref_manager.fetch_esp32_http_frame(esp32_ip=esp32_ip, mode="live")
+            self._send_json(200, {
+                "status": "success",
+                "shelf_id": shelf_id,
+                "ip": esp32_ip,
+                "image": data_url,
+            })
+            return
+
+        if path == "/esp32_reference_samples":
+            shelf_id = query.get("shelf_id", [None])[0]
+            samples = list_esp32_reference_samples(shelf_id=shelf_id)
+            self._send_json(200, {
+                "status": "success",
+                "shelf_id": shelf_id,
+                "samples": samples,
+            })
+            return
+
+        self._send_json(404, {"error": "Endpoint not found"})
 
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        body = self._read_json_body()
 
         if path == "/run_calibration":
-            content_length = int(self.headers.get("Content-Length", 0))
-            body_bytes = self.rfile.read(content_length)
-            body = {}
-            if body_bytes:
-                try:
-                    body = json.loads(body_bytes.decode("utf-8"))
-                except Exception:
-                    pass
-
-            source = body.get("source")
-            if not source:
-                source = get_active_rtsp_url(default_source=0)
-
-            # Path to calibrate_roi.py
+            source = body.get("source") or get_active_rtsp_url(default_source=0)
             script_path = os.path.join(BACKEND_DIR, "calibrate_roi.py")
             if not os.path.isfile(script_path):
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self._send_cors_headers()
-                self.end_headers()
-                self.wfile.write(
-                    json.dumps({"status": "failed", "error": f"Script not found at {script_path}"}).encode("utf-8")
-                )
+                self._send_json(500, {"status": "failed", "error": f"Script not found at {script_path}"})
                 return
 
             masked = mask_rtsp_url(source)
             print(f"[CameraService] Spawning ROI Calibration GUI for: {masked}")
-
             try:
                 cmd = [sys.executable, script_path, "--source", str(source)]
                 proc = subprocess.Popen(
@@ -238,50 +380,190 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self._send_cors_headers()
-                self.end_headers()
-                payload = {
+                self._send_json(200, {
                     "status": "launched",
                     "pid": proc.pid,
                     "source": masked,
                     "message": "Shelf ROI Calibration window opened on local desktop.",
-                }
-                self.wfile.write(json.dumps(payload).encode("utf-8"))
+                })
             except Exception as exc:
-                self.send_response(500)
-                self.send_header("Content-Type", "application/json")
-                self._send_cors_headers()
-                self.end_headers()
-                self.wfile.write(
-                    json.dumps({"status": "failed", "error": f"Failed to spawn calibration process: {str(exc)}"}).encode(
-                        "utf-8"
-                    )
-                )
+                self._send_json(500, {"status": "failed", "error": f"Failed to spawn calibration process: {str(exc)}"})
             return
 
-        self.send_response(404)
-        self._send_cors_headers()
-        self.end_headers()
-        self.wfile.write(json.dumps({"error": "Endpoint not found"}).encode("utf-8"))
+        # MANUAL TRIGGER: Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
+        if path == "/esp32_trigger":
+            shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
+            command = str(body.get("command", "CAPTURE_STATE")).upper()
+            expected_action = str(body.get("expected_action", "BORROW")).upper()
+            rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
+
+            if command == "CAPTURE_REFERENCE":
+                box_count = int(body.get("box_count", 4))
+                sample_label = body.get("sample_label")
+                dispatched = mqtt_bridge.publish_reference_capture(
+                    shelf_id=shelf_id,
+                    box_count=box_count,
+                    sample_label=sample_label,
+                    rack_id=rack_id,
+                )
+            else:
+                dispatched = mqtt_bridge.publish_trigger(
+                    shelf_id=shelf_id,
+                    expected_action=expected_action,
+                    confidence=1.0,
+                    rack_id=rack_id,
+                )
+
+            self._send_json(200, {
+                "status": "success",
+                "mqtt_connected": mqtt_bridge.is_connected,
+                "dispatched": dispatched,
+            })
+            return
+
+        # STORE REFERENCE SAMPLE: Capture & store an ESP32 reference photo (4, 3, 2, 1, 0 boxes)
+        if path == "/esp32_reference_samples":
+            shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
+            esp32_ip = body.get("ip_address") or body.get("ip")
+            box_count = int(body.get("box_count", 4))
+            sample_label = str(body.get("sample_label") or f"{shelf_id} - {box_count} Boxes Ref").strip()
+            provided_image = body.get("image") or body.get("image_url")
+
+            t0 = time.time()
+            frame_bgr = None
+            data_url = ""
+            if provided_image:
+                frame_bgr = decode_data_url_to_bgr(provided_image)
+                data_url = provided_image
+            else:
+                frame_bgr, data_url = esp32_ref_manager.fetch_esp32_http_frame(
+                    esp32_ip=esp32_ip,
+                    mode="live",
+                )
+
+            latency_ms = int((time.time() - t0) * 1000)
+            feature_sig = extract_2x2_feature_signature(frame_bgr) if frame_bgr is not None else {}
+
+            sample_record = {
+                "shelf_id": shelf_id,
+                "mqtt_client_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
+                "rack_id": spatial_mapper.rack_id,
+                "sample_label": sample_label,
+                "box_count": box_count,
+                "image_url": data_url,
+                "flash_enabled": bool(body.get("flash_enabled", True)),
+                "feature_signature": feature_sig,
+                "capture_latency_ms": latency_ms,
+            }
+
+            inserted = insert_esp32_reference_sample(sample_record)
+
+            # Also save copy to local disk reference_esp32/{shelf_id}/ref_{box_count}_boxes.jpg if cv2 available
+            if _OPENCV_AVAILABLE and frame_bgr is not None:
+                try:
+                    ref_dir = os.path.join(BACKEND_DIR, "reference_esp32", shelf_id)
+                    os.makedirs(ref_dir, exist_ok=True)
+                    f_name = f"ref_{box_count}_boxes.jpg" if box_count != 1 else "ref_1_box.jpg"
+                    cv2.imwrite(os.path.join(ref_dir, f_name), frame_bgr)
+                except Exception as e:
+                    print(f"[CameraService] Local disk write skipped: {e}")
+
+            self._send_json(200, {
+                "status": "success",
+                "sample": inserted or sample_record,
+            })
+            return
+
+        # VALIDATE: Run hybrid 30s baseline + reference validation and apply Supabase delta
+        if path == "/esp32_validate":
+            shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
+            mqtt_client_id = str(body.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}").strip()
+            expected_action = str(body.get("expected_action", "BORROW")).upper()
+            esp32_ip = body.get("ip_address") or body.get("ip")
+            after_image = body.get("image") or body.get("image_url")
+
+            # Determine current quantity
+            curr_qty = 4
+            try:
+                for comp in list_esp32_cameras():
+                    if comp.get("shelf_id") == shelf_id:
+                        curr_qty = int(comp.get("current_quantity", 4))
+                        break
+            except Exception:
+                pass
+
+            comp_res = esp32_ref_manager.compare_with_30s_baseline_and_references(
+                mqtt_client_id=mqtt_client_id,
+                shelf_id=shelf_id,
+                expected_action=expected_action,
+                current_quantity=curr_qty,
+                esp32_ip=esp32_ip,
+                after_data_url=after_image,
+            )
+
+            # Apply delta into public.compartments & comparison_logs
+            log_entry = apply_inventory_delta_in_supabase(
+                shelf_id=shelf_id,
+                mqtt_client_id=mqtt_client_id,
+                trigger_action=expected_action,
+                comparison_result=comp_res,
+            )
+
+            self._send_json(200, {
+                "status": "success",
+                "comparison": comp_res,
+                "log": log_entry,
+            })
+            return
+
+        self._send_json(404, {"error": "Endpoint not found"})
+
+    def do_DELETE(self):
+        parsed = urllib.parse.urlparse(self.path)
+        path = parsed.path
+        query = urllib.parse.parse_qs(parsed.query)
+
+        if path == "/esp32_reference_samples":
+            sample_id = query.get("sample_id", [None])[0]
+            if not sample_id:
+                body = self._read_json_body()
+                sample_id = body.get("sample_id")
+
+            if not sample_id:
+                self._send_json(400, {"status": "failed", "error": "Missing sample_id"})
+                return
+
+            deleted = delete_esp32_reference_sample(str(sample_id))
+            self._send_json(200 if deleted else 500, {
+                "status": "success" if deleted else "failed",
+                "sample_id": sample_id,
+            })
+            return
+
+        self._send_json(404, {"error": "Endpoint not found"})
 
     def log_message(self, format, *args):
-        # Override to suppress default noisy access logs, keep custom logs clean
         sys.stderr.write(f"[CameraService HTTP] {args[0]} - {args[1]}\n")
 
 
 def run_service(host="0.0.0.0", port=8008):
+    mqtt_bridge.connect_broker(timeout=1.5)
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, CameraServiceRequestHandler)
     print("=================================================================")
-    print(f"  HIKVISION CCTV LOCAL CONTROL SERVICE RUNNING ON PORT {port}")
+    print(f"  SMART STORAGE CAMERA CONTROL & TELEMETRY SERVICE (:{port})")
     print(f"  Available at: http://localhost:{port}/")
     print("  Endpoints:")
-    print("    - GET  /status           : Health check")
-    print("    - GET  /test_feed?source : Capture single frame snapshot & latency")
-    print("    - POST /run_calibration  : Open desktop OpenCV ROI calibrator")
+    print("    - GET    /status                  : Service & MQTT health status")
+    print("    - GET    /test_feed               : Capture single CCTV test snapshot")
+    print("    - GET    /esp32_nodes             : Shelf ROI, 30s baselines, & comparison logs")
+    print("    - GET    /esp32_preview           : Live test snapshot from ESP32 camera")
+    print("    - POST   /run_calibration         : Launch desktop OpenCV ROI calibrator")
+    print("    - POST   /esp32_trigger           : Dispatch CAPTURE_STATE or CAPTURE_REFERENCE")
+    print("    - GET    /esp32_reference_samples : List stored reference samples")
+    print("    - POST   /esp32_reference_samples : Save reference sample for tested angles")
+    print("    - DELETE /esp32_reference_samples : Remove reference sample")
+    print("    - POST   /esp32_validate          : Run hybrid comparison against baseline")
     print("=================================================================")
 
     try:
@@ -289,6 +571,7 @@ def run_service(host="0.0.0.0", port=8008):
     except KeyboardInterrupt:
         print("\n[CameraService] Shutting down server...")
     finally:
+        mqtt_bridge.disconnect()
         httpd.server_close()
         print("[CameraService] Server stopped.")
 
@@ -301,4 +584,3 @@ if __name__ == "__main__":
         except ValueError:
             pass
     run_service(port=port)
-

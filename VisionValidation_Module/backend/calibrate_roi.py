@@ -345,7 +345,7 @@ def main():
 
         sel_name = spatial_mapper.compartments[selected_idx]['shelf_id'] if 0 <= selected_idx < len(spatial_mapper.compartments) else "None"
         cv2.putText(canvas, f"Selected: [{sel_name}] | {status_disp}", (12, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, curr_color, 1, cv2.LINE_AA)
-        cv2.putText(canvas, "[Click]:Select  [Handles]:Resize  [Drag]:Move  [TAB]:Next  [X]:Delete  [S]:SAVE  [Q]:Exit", (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)
+        cv2.putText(canvas, "[Click]:Select [Handles]:Resize [S]:SAVE [Q]:Exit", (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)
 
         cv2.imshow(window_name, canvas)
         key = cv2.waitKey(20) & 0xFF
@@ -371,7 +371,7 @@ def main():
             spawn_center_compartment(frame_w=w, frame_h=h)
         elif key in [ord('s'), ord('S'), 13]:  # 'S' or ENTER: Save
             spatial_mapper.save_roi_config()
-            set_status("SAVED SUCCESSFULLY TO config/roi_config.json!", (0, 255, 0), duration=6.0)
+            set_status("SAVED TO config/roi_config.json!", (0, 255, 0), duration=6.0)
         elif key in [ord('r'), ord('R')]:  # Reload
             spatial_mapper.load_roi_config()
             selected_idx = 0 if len(spatial_mapper.compartments) > 0 else -1
