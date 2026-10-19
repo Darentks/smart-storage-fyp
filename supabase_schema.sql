@@ -40,12 +40,13 @@ CREATE TABLE IF NOT EXISTS public.esp32_reference_samples (
     shelf_id VARCHAR(50) NOT NULL REFERENCES public.compartments(shelf_id) ON DELETE CASCADE,
     sample_label VARCHAR(120) NOT NULL,
     box_count INTEGER NOT NULL DEFAULT 4 CHECK (box_count >= 0 AND box_count <= 4),
-    slot_states JSONB NOT NULL DEFAULT '{"slot_1_tl": 1, "slot_2_tr": 1, "slot_3_bl": 1, "slot_4_br": 1}'::jsonb,
+    slot_states JSONB NOT NULL DEFAULT '{"front_top": 1, "back_top": 1, "front_bottom": 1, "back_bottom": 1}'::jsonb,
     flash_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     feature_signature JSONB NULL,
     image_url TEXT NOT NULL,
     capture_latency_ms INTEGER NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_esp32_ref_shelf_label UNIQUE (shelf_id, sample_label)
 );
 
 CREATE INDEX IF NOT EXISTS idx_esp32_ref_samples_shelf_id ON public.esp32_reference_samples(shelf_id);

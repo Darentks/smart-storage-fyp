@@ -420,16 +420,16 @@ def insert_esp32_reference_sample(sample_record: Dict[str, Any]) -> Optional[Dic
         "box_count": max(0, min(4, box_count)),
         "image_url": image_url,
         "flash_enabled": bool(sample_record.get("flash_enabled", True)),
-        "slot_states": sample_record.get("slot_states", {"slot_1_tl": 1, "slot_2_tr": 1, "slot_3_bl": 1, "slot_4_br": 1}),
+        "slot_states": sample_record.get("slot_states", {"front_top": 1, "back_top": 1, "front_bottom": 1, "back_bottom": 1}),
         "feature_signature": sample_record.get("feature_signature"),
         "capture_latency_ms": sample_record.get("capture_latency_ms"),
     }
 
     try:
-        resp = client.table("esp32_reference_samples").insert(payload).execute()
+        resp = client.table("esp32_reference_samples").upsert(payload, on_conflict="shelf_id,sample_label").execute()
         return resp.data[0] if resp.data else payload
     except Exception as exc:
-        print(f"[ConfigLoader] Failed to insert esp32_reference_sample: {exc}")
+        print(f"[ConfigLoader] Failed to upsert esp32_reference_sample: {exc}")
         return None
 
 

@@ -805,30 +805,34 @@
           </div>
 
           <div class="form-group">
-            <label for="refBoxCountSelect">Scenario Box Count (Inventory State)</label>
-            <select id="refBoxCountSelect" class="form-control" onchange="autoConfigureSlotCheckboxes()">
-              <option value="4">4 / 4 Boxes (Full Baseline)</option>
-              <option value="3">3 / 4 Boxes (1 Removed)</option>
-              <option value="2">2 / 4 Boxes (2 Removed)</option>
-              <option value="1">1 / 4 Box (3 Removed)</option>
-              <option value="0">0 / 4 Boxes (Empty Baseline)</option>
+            <label for="refScenarioSelect">Placement Scenario (9 Tested Valid Configurations)</label>
+            <select id="refScenarioSelect" class="form-control" onchange="autoConfigureSlotCheckboxes()">
+              <option value="4_4_S1|4|1,1,1,1|4/4 Scenario 1 (Full - All 4 Boxes)">4/4 Scenario 1 — Full (FT, BT, FB, BB)</option>
+              <option value="3_4_S1|3|0,1,1,1|3/4 Scenario 1 (Front-Top Removed)">3/4 Scenario 1 — Front-Top Removed (BT, FB, BB)</option>
+              <option value="3_4_S2|3|1,0,1,1|3/4 Scenario 2 (Back-Top Removed)">3/4 Scenario 2 — Back-Top Removed (FT, FB, BB)</option>
+              <option value="2_4_S1|2|0,0,1,1|2/4 Scenario 1 (Bottom Row Only)">2/4 Scenario 1 — Bottom Row Only (FB, BB)</option>
+              <option value="2_4_S2|2|1,0,1,0|2/4 Scenario 2 (Front Stack Only)">2/4 Scenario 2 — Front Stack Only (FT, FB)</option>
+              <option value="2_4_S3|2|0,1,0,1|2/4 Scenario 3 (Back Stack Only)">2/4 Scenario 3 — Back Stack Only (BT, BB)</option>
+              <option value="1_4_S1|1|0,0,1,0|1/4 Scenario 1 (Front-Bottom Only)">1/4 Scenario 1 — Front-Bottom Only (FB)</option>
+              <option value="1_4_S2|1|0,0,0,1|1/4 Scenario 2 (Back-Bottom Only)">1/4 Scenario 2 — Back-Bottom Only (BB)</option>
+              <option value="0_4_S1|0|0,0,0,0|0/4 Scenario 1 (Empty Compartment)">0/4 Scenario 1 — Empty Compartment (None)</option>
             </select>
           </div>
 
           <div class="form-group">
-            <label>2x2 Quadrant Slot Configuration</label>
+            <label>2x2 Quadrant Slot Configuration (Side View)</label>
             <div class="slots-checkbox-grid">
               <label class="slot-check-item">
-                <input type="checkbox" id="slot1Check" checked /> Slot 1 (TL)
+                <input type="checkbox" id="slotFTCheck" checked /> Front-Top (FT)
               </label>
               <label class="slot-check-item">
-                <input type="checkbox" id="slot2Check" checked /> Slot 2 (TR)
+                <input type="checkbox" id="slotBTCheck" checked /> Back-Top (BT)
               </label>
               <label class="slot-check-item">
-                <input type="checkbox" id="slot3Check" checked /> Slot 3 (BL)
+                <input type="checkbox" id="slotFBCheck" checked /> Front-Bottom (FB)
               </label>
               <label class="slot-check-item">
-                <input type="checkbox" id="slot4Check" checked /> Slot 4 (BR)
+                <input type="checkbox" id="slotBBCheck" checked /> Back-Bottom (BB)
               </label>
             </div>
           </div>
@@ -900,7 +904,7 @@
     const referencesGallery = document.getElementById('referencesGallery');
     const refShelfSelect = document.getElementById('refShelfSelect');
     const refEspIpInput = document.getElementById('refEspIpInput');
-    const refBoxCountSelect = document.getElementById('refBoxCountSelect');
+    const refScenarioSelect = document.getElementById('refScenarioSelect');
     const livePreviewImg = document.getElementById('livePreviewImg');
     const previewPlaceholder = document.getElementById('previewPlaceholder');
     const previewOverlayText = document.getElementById('previewOverlayText');
@@ -1002,11 +1006,15 @@
     }
 
     function autoConfigureSlotCheckboxes() {
-      const count = parseInt(refBoxCountSelect.value, 10);
-      document.getElementById('slot1Check').checked = count >= 1;
-      document.getElementById('slot2Check').checked = count >= 2;
-      document.getElementById('slot3Check').checked = count >= 3;
-      document.getElementById('slot4Check').checked = count >= 4;
+      const parts = (refScenarioSelect.value || '').split('|');
+      // Format: [scenarioCode, boxCount, slotsCsv, sampleLabel]
+      if (parts.length >= 3) {
+        const slotVals = parts[2].split(',').map(v => parseInt(v.trim(), 10));
+        document.getElementById('slotFTCheck').checked = slotVals[0] === 1;
+        document.getElementById('slotBTCheck').checked = slotVals[1] === 1;
+        document.getElementById('slotFBCheck').checked = slotVals[2] === 1;
+        document.getElementById('slotBBCheck').checked = slotVals[3] === 1;
+      }
     }
 
     async function fetchLiveAnglePreview() {
@@ -1041,26 +1049,30 @@
       event.preventDefault();
       const shelfId = refShelfSelect.value;
       const ip = refEspIpInput.value.trim();
-      const boxCount = parseInt(refBoxCountSelect.value, 10);
-      const label = `${shelfId} - ${boxCount} Boxes Scenario`;
+      
+      const parts = (refScenarioSelect.value || '').split('|');
+      const scenarioCode = parts[0] || '4_4_s1';
+      const boxCount = parseInt(parts[1] || '4', 10);
+      const label = parts[3] || `${shelfId} - ${boxCount} Boxes Scenario`;
 
       const slotStates = {
-        slot_1_tl: document.getElementById('slot1Check').checked ? 1 : 0,
-        slot_2_tr: document.getElementById('slot2Check').checked ? 1 : 0,
-        slot_3_bl: document.getElementById('slot3Check').checked ? 1 : 0,
-        slot_4_br: document.getElementById('slot4Check').checked ? 1 : 0,
+        front_top: document.getElementById('slotFTCheck').checked ? 1 : 0,
+        back_top: document.getElementById('slotBTCheck').checked ? 1 : 0,
+        front_bottom: document.getElementById('slotFBCheck').checked ? 1 : 0,
+        back_bottom: document.getElementById('slotBBCheck').checked ? 1 : 0,
       };
 
       const payload = {
         shelf_id: shelfId,
         ip_address: ip,
+        scenario_code: scenarioCode,
         box_count: boxCount,
         sample_label: label,
         slot_states: slotStates,
         image: currentPreviewDataUrl || null,
       };
 
-      showToast(`Saving ${boxCount}-box reference for ${shelfId}...`, 'info');
+      showToast(`Saving scenario '${label}' for ${shelfId}...`, 'info');
 
       // 1. Try local bridge POST /esp32_reference_samples
       try {
@@ -1075,13 +1087,13 @@
           return;
         }
       } catch (e) {
-        console.warn('Bridge POST failed, falling back to direct Supabase insert:', e);
+        console.warn('Bridge POST failed, falling back to direct Supabase upsert:', e);
       }
 
-      // 2. Direct Supabase insert fallback if bridge is offline
+      // 2. Direct Supabase upsert fallback if bridge is offline
       if (supabaseClient) {
         try {
-          const insertRecord = {
+          const upsertRecord = {
             shelf_id: shelfId,
             mqtt_client_id: `ESP32_${shelfId.replace('SHELF_', '')}`,
             rack_id: 'RACK_01',
@@ -1089,14 +1101,16 @@
             box_count: boxCount,
             slot_states: slotStates,
             flash_enabled: true,
-            image_url: currentPreviewDataUrl || `https://dummyimage.com/640x480/1f2937/38bdf8.jpg&text=${shelfId}+${boxCount}+Boxes`,
+            image_url: currentPreviewDataUrl || `https://dummyimage.com/640x480/1f2937/38bdf8.jpg&text=${shelfId}+${encodeURIComponent(label)}`,
           };
-          const { error } = await supabaseClient.from('esp32_reference_samples').insert([insertRecord]);
+          const { error } = await supabaseClient
+            .from('esp32_reference_samples')
+            .upsert([upsertRecord], { onConflict: 'shelf_id,sample_label' });
           if (error) throw error;
-          showToast(`Saved reference sample directly to Supabase!`, 'success');
+          showToast(`Saved reference scenario directly to Supabase!`, 'success');
           loadReferenceSamples();
         } catch (dbErr) {
-          console.error('Supabase reference insert error:', dbErr);
+          console.error('Supabase reference upsert error:', dbErr);
           showToast('Failed to insert reference into Supabase.', 'error');
         }
       }
@@ -1443,6 +1457,7 @@
 
     // Initialization
     refreshAllData();
+    autoConfigureSlotCheckboxes();
     setupRealtimeSubscriptions();
     checkLocalBridgeHealth();
 

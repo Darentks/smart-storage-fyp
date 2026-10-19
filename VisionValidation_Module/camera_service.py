@@ -444,12 +444,21 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             latency_ms = int((time.time() - t0) * 1000)
             feature_sig = extract_2x2_feature_signature(frame_bgr) if frame_bgr is not None else {}
 
+            slot_states = body.get("slot_states") or {
+                "front_top": 1,
+                "back_top": 1,
+                "front_bottom": 1,
+                "back_bottom": 1,
+            }
+            scenario_code = str(body.get("scenario_code") or "").strip().lower()
+
             sample_record = {
                 "shelf_id": shelf_id,
                 "mqtt_client_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
                 "rack_id": spatial_mapper.rack_id,
                 "sample_label": sample_label,
                 "box_count": box_count,
+                "slot_states": slot_states,
                 "image_url": data_url,
                 "flash_enabled": bool(body.get("flash_enabled", True)),
                 "feature_signature": feature_sig,
@@ -458,12 +467,16 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
             inserted = insert_esp32_reference_sample(sample_record)
 
-            # Also save copy to local disk reference_esp32/{shelf_id}/ref_{box_count}_boxes.jpg if cv2 available
+            # Also save copy to local disk reference_esp32/{shelf_id}/ref_<scenario_or_label>.jpg if cv2 available
             if _OPENCV_AVAILABLE and frame_bgr is not None:
                 try:
                     ref_dir = os.path.join(BACKEND_DIR, "reference_esp32", shelf_id)
                     os.makedirs(ref_dir, exist_ok=True)
-                    f_name = f"ref_{box_count}_boxes.jpg" if box_count != 1 else "ref_1_box.jpg"
+                    clean_name = scenario_code or sample_label.lower()
+                    safe_slug = re.sub(r"[^a-z0-9]+", "_", clean_name).strip("_")
+                    if not safe_slug.startswith("ref_"):
+                        safe_slug = f"ref_{safe_slug}"
+                    f_name = f"{safe_slug}.jpg"
                     cv2.imwrite(os.path.join(ref_dir, f_name), frame_bgr)
                 except Exception as e:
                     print(f"[CameraService] Local disk write skipped: {e}")
