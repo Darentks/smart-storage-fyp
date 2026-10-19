@@ -30,6 +30,53 @@ except ImportError:
 _client_cache: Optional[Client] = None
 
 
+def _supabase_rest_request(
+    method: str = "GET",
+    endpoint: str = "",
+    params: str = "",
+    body: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+    prefer: Optional[str] = None,
+    timeout: float = 8.0,
+) -> Any:
+    """
+    Native Python urllib.request PostgREST helper that calls:
+    {SUPABASE_URL}/rest/v1/{endpoint}{params}
+    with 'apikey' and 'Authorization: Bearer' headers.
+    Returns parsed JSON data (or True/False for DELETE, or [] on error).
+    """
+    base_url = get_resolved_supabase_url()
+    api_key = get_resolved_supabase_key()
+
+    if params and not params.startswith("?"):
+        params = "?" + params
+
+    clean_endpoint = endpoint.lstrip("/")
+    url = f"{base_url}/rest/v1/{clean_endpoint}{params}"
+
+    headers = {
+        "apikey": api_key,
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    if prefer:
+        headers["Prefer"] = prefer
+
+    data_bytes = None
+    if body is not None:
+        data_bytes = json.dumps(body).encode("utf-8")
+
+    req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status == 204:
+                return True
+            raw_text = resp.read().decode("utf-8")
+            return json.loads(raw_text) if raw_text else []
+    except Exception as exc:
+        print(f"[_supabase_rest_request] {method.upper()} on '{endpoint}' failed: {exc}")
+        return False if method.upper() == "DELETE" else []
+
+
 class SupabaseRestFallback:
     """
     Lightweight REST fallback using urllib.request and json to directly communicate
@@ -43,43 +90,24 @@ class SupabaseRestFallback:
         self.api_key = api_key or get_resolved_supabase_key()
         self.timeout = timeout
 
-    def _headers(self, prefer: Optional[str] = None) -> Dict[str, str]:
-        headers = {
-            "apikey": self.api_key,
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
-        if prefer:
-            headers["Prefer"] = prefer
-        return headers
-
     def select(self, table: str, query_params: str = "?select=*") -> List[Dict[str, Any]]:
-        url = f"{self.base_url}/rest/v1/{table}{query_params}"
-        req = urllib.request.Request(url, headers=self._headers(), method="GET")
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = resp.read().decode("utf-8")
-                return json.loads(data) if data else []
-        except Exception as exc:
-            print(f"[SupabaseRestFallback] SELECT on '{table}' failed: {exc}")
-            return []
+        res = _supabase_rest_request(
+            method="GET",
+            endpoint=table,
+            params=query_params,
+            timeout=self.timeout,
+        )
+        return res if isinstance(res, list) else []
 
     def insert(self, table: str, payload: Union[Dict[str, Any], List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        url = f"{self.base_url}/rest/v1/{table}"
-        data_bytes = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers=self._headers(prefer="return=representation"),
+        res = _supabase_rest_request(
             method="POST",
+            endpoint=table,
+            body=payload,
+            prefer="return=representation",
+            timeout=self.timeout,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = resp.read().decode("utf-8")
-                return json.loads(data) if data else []
-        except Exception as exc:
-            print(f"[SupabaseRestFallback] INSERT on '{table}' failed: {exc}")
-            return []
+        return res if isinstance(res, list) else []
 
     def upsert(
         self,
@@ -87,49 +115,36 @@ class SupabaseRestFallback:
         payload: Union[Dict[str, Any], List[Dict[str, Any]]],
         on_conflict: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        query_str = f"?on_conflict={urllib.parse.quote(on_conflict)}" if on_conflict else ""
-        url = f"{self.base_url}/rest/v1/{table}{query_str}"
-        data_bytes = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers=self._headers(prefer="resolution=merge-duplicates,return=representation"),
+        params = f"?on_conflict={urllib.parse.quote(on_conflict)}" if on_conflict else ""
+        res = _supabase_rest_request(
             method="POST",
+            endpoint=table,
+            params=params,
+            body=payload,
+            prefer="resolution=merge-duplicates,return=representation",
+            timeout=self.timeout,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = resp.read().decode("utf-8")
-                return json.loads(data) if data else []
-        except Exception as exc:
-            print(f"[SupabaseRestFallback] UPSERT on '{table}' failed: {exc}")
-            return []
+        return res if isinstance(res, list) else []
 
     def update(self, table: str, query_params: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        url = f"{self.base_url}/rest/v1/{table}{query_params}"
-        data_bytes = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url,
-            data=data_bytes,
-            headers=self._headers(prefer="return=representation"),
+        res = _supabase_rest_request(
             method="PATCH",
+            endpoint=table,
+            params=query_params,
+            body=payload,
+            prefer="return=representation",
+            timeout=self.timeout,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                data = resp.read().decode("utf-8")
-                return json.loads(data) if data else []
-        except Exception as exc:
-            print(f"[SupabaseRestFallback] UPDATE on '{table}' failed: {exc}")
-            return []
+        return res if isinstance(res, list) else []
 
     def delete(self, table: str, query_params: str) -> bool:
-        url = f"{self.base_url}/rest/v1/{table}{query_params}"
-        req = urllib.request.Request(url, headers=self._headers(), method="DELETE")
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-                return resp.status in (200, 204)
-        except Exception as exc:
-            print(f"[SupabaseRestFallback] DELETE on '{table}' failed: {exc}")
-            return False
+        res = _supabase_rest_request(
+            method="DELETE",
+            endpoint=table,
+            params=query_params,
+            timeout=self.timeout,
+        )
+        return bool(res)
 
 
 def find_and_load_env() -> Optional[str]:

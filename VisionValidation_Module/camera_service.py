@@ -280,6 +280,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Private-Network", "true")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 
     def _send_json(self, status_code: int, payload: dict):
         self.send_response(status_code)
@@ -371,6 +372,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/esp32_preview":
+            t0 = time.time()
             esp32_ip = query.get("ip", [None])[0]
             shelf_id = query.get("shelf_id", ["SHELF_R1_C1"])[0]
 
@@ -390,6 +392,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 update_esp32_health_in_supabase(node_health)
 
             frame_bgr, data_url = esp32_ref_manager.fetch_esp32_http_frame(esp32_ip=esp32_ip, mode="live")
+            latency_ms = int((time.time() - t0) * 1000)
 
             # If no baseline image exists yet for this shelf, populate it with this live frame
             cached = esp32_ref_manager.baseline_cache.get(shelf_id)
@@ -405,6 +408,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "shelf_id": shelf_id,
                 "ip": esp32_ip,
                 "image": data_url,
+                "latency_ms": latency_ms,
             })
             return
 

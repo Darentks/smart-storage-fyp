@@ -895,17 +895,40 @@
     }
 
     // Direct Supabase REST API helper using native browser fetch
-    async function sbRest(table, method = 'GET', queryParams = '', body = null, prefer = null) {
-      const url = `${SUPABASE_URL}/rest/v1/${table}${queryParams}`;
+    async function sbRest(table, optionsOrMethod = 'GET', queryParams = '', body = null, prefer = null) {
+      let method = 'GET';
+      let qParams = '';
+      let reqBody = null;
+      let reqPrefer = null;
+
+      if (typeof optionsOrMethod === 'object' && optionsOrMethod !== null) {
+        method = optionsOrMethod.method || 'GET';
+        qParams = optionsOrMethod.queryParams || optionsOrMethod.params || '';
+        reqBody = optionsOrMethod.body !== undefined ? optionsOrMethod.body : null;
+        reqPrefer = optionsOrMethod.prefer || null;
+      } else {
+        method = optionsOrMethod || 'GET';
+        qParams = queryParams || '';
+        reqBody = body;
+        reqPrefer = prefer;
+      }
+
+      if (qParams && !qParams.startsWith('?')) {
+        qParams = '?' + qParams;
+      }
+
+      const url = `${SUPABASE_URL}/rest/v1/${table}${qParams}`;
       const headers = {
         'apikey': SUPABASE_ANON_KEY,
         'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         'Content-Type': 'application/json',
       };
-      if (prefer) headers['Prefer'] = prefer;
+      if (reqPrefer) headers['Prefer'] = reqPrefer;
 
       const opts = { method, headers };
-      if (body) opts.body = JSON.stringify(body);
+      if (reqBody !== null && reqBody !== undefined) {
+        opts.body = typeof reqBody === 'string' ? reqBody : JSON.stringify(reqBody);
+      }
 
       const resp = await fetch(url, opts);
       if (!resp.ok) {
@@ -1045,14 +1068,16 @@
     async function fetchLiveAnglePreview() {
       const shelfId = refShelfSelect.value;
       const ip = refEspIpInput.value.trim();
-      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&shelf_id=${encodeURIComponent(shelfId)}`;
+      const t0 = performance.now();
+      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
 
       previewOverlayText.textContent = `Fetching live snapshot from ${ip || 'Node'}...`;
       showToast(`Fetching live preview from ${ip}...`, 'info');
 
       // 1. Try local bridge (port 8008) first
       try {
-        const resp = await fetch(bridgeUrl);
+        const resp = await fetch(bridgeUrl, { cache: 'no-store' });
+        const latencyMs = Math.round(performance.now() - t0);
         if (resp.ok) {
           const data = await resp.json();
           if (data.status === 'success' && data.image) {
@@ -1060,7 +1085,7 @@
             livePreviewImg.src = data.image;
             livePreviewImg.style.display = 'block';
             previewPlaceholder.style.display = 'none';
-            previewOverlayText.textContent = `Preview Live • ${shelfId} (${ip || 'Local Bridge'})`;
+            previewOverlayText.textContent = "Preview Live \u2022 " + shelfId + " (" + ip + ") \u2022 " + new Date().toLocaleTimeString() + " (" + latencyMs + "ms)";
             showToast('Live angle preview updated via bridge!', 'success');
             return;
           }
@@ -1072,12 +1097,13 @@
       // 2. Direct browser fallback: load from http://<ip>/capture directly
       if (ip) {
         const directCaptureUrl = `http://${ip}/capture?t=${Date.now()}`;
-        previewOverlayText.textContent = `Direct Capture • http://${ip}/capture`;
+        previewOverlayText.textContent = `Direct Capture \u2022 http://${ip}/capture`;
         
         livePreviewImg.onload = () => {
+          const latencyMs = Math.round(performance.now() - t0);
           livePreviewImg.style.display = 'block';
           previewPlaceholder.style.display = 'none';
-          previewOverlayText.textContent = `Live Camera • ${shelfId} (${ip})`;
+          previewOverlayText.textContent = "Preview Live \u2022 " + shelfId + " (" + ip + ") \u2022 " + new Date().toLocaleTimeString() + " (" + latencyMs + "ms)";
           showToast(`Direct ESP32 preview loaded from ${ip}!`, 'success');
 
           // Convert image element to base64 data URL so captureScenarioReference can upload it
@@ -1122,6 +1148,7 @@
         back_bottom: document.getElementById('slotBBCheck').checked ? 1 : 0,
       };
 
+      const hasPreview = !!currentPreviewDataUrl;
       const payload = {
         shelf_id: shelfId,
         ip_address: ip,
@@ -1130,6 +1157,7 @@
         sample_label: label,
         slot_states: slotStates,
         image: currentPreviewDataUrl || null,
+        capture_fresh: !hasPreview,
       };
 
       showToast(`Saving scenario '${label}' for ${shelfId}...`, 'info');
@@ -1163,12 +1191,19 @@
           image_url: currentPreviewDataUrl || `https://dummyimage.com/640x480/1f2937/38bdf8.jpg&text=${shelfId}+${encodeURIComponent(label)}`,
         };
 
+        let directSuccess = false;
         if (supabaseClient) {
-          const { error } = await supabaseClient
-            .from('esp32_reference_samples')
-            .upsert([upsertRecord], { onConflict: 'shelf_id,sample_label' });
-          if (error) throw error;
-        } else {
+          try {
+            const { error } = await supabaseClient
+              .from('esp32_reference_samples')
+              .upsert([upsertRecord], { onConflict: 'shelf_id,sample_label' });
+            if (!error) directSuccess = true;
+          } catch (sdkErr) {
+            console.warn('SDK upsert failed, trying sbRest:', sdkErr);
+          }
+        }
+
+        if (!directSuccess) {
           await sbRest(
             'esp32_reference_samples',
             'POST',
@@ -1177,6 +1212,7 @@
             'resolution=merge-duplicates,return=representation'
           );
         }
+
         showToast(`Saved reference scenario directly to Supabase!`, 'success');
         loadReferenceSamples();
       } catch (dbErr) {
@@ -1223,13 +1259,20 @@
 
       try {
         if (supabaseClient) {
-          const res = await supabaseClient
-            .from('compartments')
-            .select('*')
-            .order('shelf_id', { ascending: true });
-          if (res.error) throw res.error;
-          data = res.data;
-        } else {
+          try {
+            const res = await supabaseClient
+              .from('compartments')
+              .select('*')
+              .order('shelf_id', { ascending: true });
+            if (!res.error && res.data) {
+              data = res.data;
+            }
+          } catch (e) {
+            console.warn('SDK compartments read failed, trying sbRest:', e);
+          }
+        }
+
+        if (!data) {
           data = await sbRest('compartments', 'GET', '?select=*&order=shelf_id.asc');
         }
 
@@ -1281,14 +1324,21 @@
       try {
         let data = null;
         if (supabaseClient) {
-          const res = await supabaseClient
-            .from('comparison_logs')
-            .select('*')
-            .order('created_at', { ascending: false })
-            .limit(20);
-          if (res.error) throw res.error;
-          data = res.data;
-        } else {
+          try {
+            const res = await supabaseClient
+              .from('comparison_logs')
+              .select('*')
+              .order('created_at', { ascending: false })
+              .limit(20);
+            if (!res.error && res.data) {
+              data = res.data;
+            }
+          } catch (e) {
+            console.warn('SDK comparison_logs read failed, trying sbRest:', e);
+          }
+        }
+
+        if (!data) {
           data = await sbRest('comparison_logs', 'GET', '?select=*&order=created_at.desc&limit=20');
         }
 
@@ -1303,14 +1353,21 @@
       try {
         let data = null;
         if (supabaseClient) {
-          const res = await supabaseClient
-            .from('esp32_reference_samples')
-            .select('*')
-            .order('created_at', { ascending: false })
-            .limit(24);
-          if (res.error) throw res.error;
-          data = res.data;
-        } else {
+          try {
+            const res = await supabaseClient
+              .from('esp32_reference_samples')
+              .select('*')
+              .order('created_at', { ascending: false })
+              .limit(24);
+            if (!res.error && res.data) {
+              data = res.data;
+            }
+          } catch (e) {
+            console.warn('SDK reference samples read failed, trying sbRest:', e);
+          }
+        }
+
+        if (!data) {
           data = await sbRest('esp32_reference_samples', 'GET', '?select=*&order=created_at.desc&limit=24');
         }
 

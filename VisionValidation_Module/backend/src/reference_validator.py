@@ -271,9 +271,15 @@ class ESP32ReferenceManager:
         """
         if esp32_ip and _OPENCV_AVAILABLE:
             clean_ip = esp32_ip.replace("http://", "").replace("/", "").strip()
-            url = f"http://{clean_ip}/capture?mode={mode}"
+            url = f"http://{clean_ip}/capture?mode={mode}&t={int(time.time() * 1000)}"
             try:
-                req = urllib.request.Request(url, headers={"User-Agent": "SmartStorageVision/1.0"})
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "SmartStorageVision/1.0",
+                        "Cache-Control": "no-cache, no-store",
+                    },
+                )
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw_bytes = resp.read()
                     arr = np.asarray(bytearray(raw_bytes), dtype=np.uint8)
