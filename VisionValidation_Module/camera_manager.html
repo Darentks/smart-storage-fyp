@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Storage &bull; 30s Baseline &amp; ESP32-CAM Inventory Monitor</title>
   <!-- Supabase JS Client via CDN -->
+  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     :root {
@@ -795,7 +796,7 @@
 
           <div class="form-group">
             <label for="refEspIpInput">ESP32-CAM LAN IP</label>
-            <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.1.120" value="192.168.1.120" />
+            <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" />
           </div>
 
           <div style="display: flex; gap: 8px;">
@@ -886,9 +887,33 @@
 
     let supabaseClient = null;
     try {
-      supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      if (window.supabase && typeof window.supabase.createClient === 'function') {
+        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+      }
     } catch (e) {
       console.error('Failed to initialize Supabase client:', e);
+    }
+
+    // Direct Supabase REST API helper using native browser fetch
+    async function sbRest(table, method = 'GET', queryParams = '', body = null, prefer = null) {
+      const url = `${SUPABASE_URL}/rest/v1/${table}${queryParams}`;
+      const headers = {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Content-Type': 'application/json',
+      };
+      if (prefer) headers['Prefer'] = prefer;
+
+      const opts = { method, headers };
+      if (body) opts.body = JSON.stringify(body);
+
+      const resp = await fetch(url, opts);
+      if (!resp.ok) {
+        const errText = await resp.text();
+        throw new Error(`Supabase REST ${method} ${table} error (${resp.status}): ${errText}`);
+      }
+      if (resp.status === 204) return null;
+      return await resp.json();
     }
 
     // DOM Elements
@@ -1020,28 +1045,63 @@
     async function fetchLiveAnglePreview() {
       const shelfId = refShelfSelect.value;
       const ip = refEspIpInput.value.trim();
-      const url = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&shelf_id=${encodeURIComponent(shelfId)}`;
+      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&shelf_id=${encodeURIComponent(shelfId)}`;
 
       previewOverlayText.textContent = `Fetching live snapshot from ${ip || 'Node'}...`;
       showToast(`Fetching live preview from ${ip}...`, 'info');
 
+      // 1. Try local bridge (port 8008) first
       try {
-        const resp = await fetch(url);
-        const data = await resp.json();
-        if (data.status === 'success' && data.image) {
-          currentPreviewDataUrl = data.image;
-          livePreviewImg.src = data.image;
-          livePreviewImg.style.display = 'block';
-          previewPlaceholder.style.display = 'none';
-          previewOverlayText.textContent = `Preview Live &bull; ${shelfId} (${ip || 'Local/Synth'})`;
-          showToast('Live angle preview updated!', 'success');
-        } else {
-          throw new Error('Image not returned');
+        const resp = await fetch(bridgeUrl);
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.status === 'success' && data.image) {
+            currentPreviewDataUrl = data.image;
+            livePreviewImg.src = data.image;
+            livePreviewImg.style.display = 'block';
+            previewPlaceholder.style.display = 'none';
+            previewOverlayText.textContent = `Preview Live • ${shelfId} (${ip || 'Local Bridge'})`;
+            showToast('Live angle preview updated via bridge!', 'success');
+            return;
+          }
         }
       } catch (err) {
-        console.warn('Live preview fetch failed:', err);
-        previewOverlayText.textContent = 'Preview Failed (Check Local Bridge)';
-        showToast('Could not fetch live preview. Is camera_service.py active?', 'error');
+        console.warn('Bridge live preview fetch failed, attempting direct ESP32-CAM HTTP capture:', err);
+      }
+
+      // 2. Direct browser fallback: load from http://<ip>/capture directly
+      if (ip) {
+        const directCaptureUrl = `http://${ip}/capture?t=${Date.now()}`;
+        previewOverlayText.textContent = `Direct Capture • http://${ip}/capture`;
+        
+        livePreviewImg.onload = () => {
+          livePreviewImg.style.display = 'block';
+          previewPlaceholder.style.display = 'none';
+          previewOverlayText.textContent = `Live Camera • ${shelfId} (${ip})`;
+          showToast(`Direct ESP32 preview loaded from ${ip}!`, 'success');
+
+          // Convert image element to base64 data URL so captureScenarioReference can upload it
+          try {
+            const canvas = document.createElement('canvas');
+            canvas.width = livePreviewImg.naturalWidth || 640;
+            canvas.height = livePreviewImg.naturalHeight || 480;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(livePreviewImg, 0, 0);
+            currentPreviewDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+          } catch (canvasErr) {
+            console.warn('Canvas export skipped (CORS on direct img):', canvasErr);
+          }
+        };
+
+        livePreviewImg.onerror = () => {
+          previewOverlayText.textContent = `Preview Offline (${ip})`;
+          showToast(`Cannot reach ESP32 at ${ip}. Check Wi-Fi or Local Bridge.`, 'error');
+        };
+
+        livePreviewImg.src = directCaptureUrl;
+      } else {
+        previewOverlayText.textContent = 'Preview Failed (No IP provided)';
+        showToast('Please specify an ESP32-CAM LAN IP address.', 'error');
       }
     }
 
@@ -1091,28 +1151,37 @@
       }
 
       // 2. Direct Supabase upsert fallback if bridge is offline
-      if (supabaseClient) {
-        try {
-          const upsertRecord = {
-            shelf_id: shelfId,
-            mqtt_client_id: `ESP32_${shelfId.replace('SHELF_', '')}`,
-            rack_id: 'RACK_01',
-            sample_label: label,
-            box_count: boxCount,
-            slot_states: slotStates,
-            flash_enabled: true,
-            image_url: currentPreviewDataUrl || `https://dummyimage.com/640x480/1f2937/38bdf8.jpg&text=${shelfId}+${encodeURIComponent(label)}`,
-          };
+      try {
+        const upsertRecord = {
+          shelf_id: shelfId,
+          mqtt_client_id: `ESP32_${shelfId.replace('SHELF_', '')}`,
+          rack_id: 'RACK_01',
+          sample_label: label,
+          box_count: boxCount,
+          slot_states: slotStates,
+          flash_enabled: true,
+          image_url: currentPreviewDataUrl || `https://dummyimage.com/640x480/1f2937/38bdf8.jpg&text=${shelfId}+${encodeURIComponent(label)}`,
+        };
+
+        if (supabaseClient) {
           const { error } = await supabaseClient
             .from('esp32_reference_samples')
             .upsert([upsertRecord], { onConflict: 'shelf_id,sample_label' });
           if (error) throw error;
-          showToast(`Saved reference scenario directly to Supabase!`, 'success');
-          loadReferenceSamples();
-        } catch (dbErr) {
-          console.error('Supabase reference upsert error:', dbErr);
-          showToast('Failed to insert reference into Supabase.', 'error');
+        } else {
+          await sbRest(
+            'esp32_reference_samples',
+            'POST',
+            '?on_conflict=shelf_id,sample_label',
+            upsertRecord,
+            'resolution=merge-duplicates,return=representation'
+          );
         }
+        showToast(`Saved reference scenario directly to Supabase!`, 'success');
+        loadReferenceSamples();
+      } catch (dbErr) {
+        console.error('Supabase reference upsert error:', dbErr);
+        showToast('Failed to insert reference into Supabase.', 'error');
       }
     }
 
@@ -1132,15 +1201,17 @@
       } catch (e) {}
 
       // Supabase direct fallback
-      if (supabaseClient) {
-        try {
+      try {
+        if (supabaseClient) {
           const { error } = await supabaseClient.from('esp32_reference_samples').delete().eq('sample_id', sampleId);
           if (error) throw error;
-          showToast('Sample deleted from Supabase.', 'success');
-          loadReferenceSamples();
-        } catch (dbErr) {
-          showToast('Failed to delete sample from Supabase.', 'error');
+        } else {
+          await sbRest('esp32_reference_samples', 'DELETE', `?sample_id=eq.${encodeURIComponent(sampleId)}`);
         }
+        showToast('Sample deleted from Supabase.', 'success');
+        loadReferenceSamples();
+      } catch (dbErr) {
+        showToast('Failed to delete sample from Supabase.', 'error');
       }
     }
 
@@ -1148,23 +1219,55 @@
     // FETCH COMPARTMENTS, COMPARISON LOGS, & REFERENCES
     // =========================================================================
     async function loadCompartments() {
-      if (!supabaseClient) {
-        dbStatusDot.className = 'status-dot error';
-        dbStatusText.textContent = 'Cloud DB: SDK Missing';
-        return;
-      }
+      let data = null;
 
       try {
-        const { data, error } = await supabaseClient
-          .from('compartments')
-          .select('*')
-          .order('shelf_id', { ascending: true });
-
-        if (error) throw error;
+        if (supabaseClient) {
+          const res = await supabaseClient
+            .from('compartments')
+            .select('*')
+            .order('shelf_id', { ascending: true });
+          if (res.error) throw res.error;
+          data = res.data;
+        } else {
+          data = await sbRest('compartments', 'GET', '?select=*&order=shelf_id.asc');
+        }
 
         dbStatusDot.className = 'status-dot connected';
         dbStatusText.textContent = 'Cloud DB: Connected';
         compartmentsData = data || [];
+
+        // Check and merge live local bridge status if available
+        try {
+          const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
+          if (bridgeResp.ok) {
+            const bridgeJson = await bridgeResp.json();
+            const bridgeComps = bridgeJson.compartments || [];
+            const bridgeMap = {};
+            bridgeComps.forEach((c) => {
+              if (c.shelf_id) bridgeMap[c.shelf_id] = c;
+            });
+
+            compartmentsData = compartmentsData.map((c) => {
+              const live = bridgeMap[c.shelf_id];
+              if (!live) return c;
+              return {
+                ...c,
+                status: live.status || c.status,
+                ip_address: live.ip_address || c.ip_address,
+                rssi_dbm: live.rssi_dbm != null ? live.rssi_dbm : c.rssi_dbm,
+                free_heap_bytes: live.free_heap_bytes != null ? live.free_heap_bytes : c.free_heap_bytes,
+                last_seen_at: live.last_seen_at || c.last_seen_at,
+                baseline_image_url: live.baseline_image_url || c.baseline_image_url,
+                baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
+                current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
+              };
+            });
+          }
+        } catch (bridgeErr) {
+          // Local bridge offline; continue displaying Supabase data
+        }
+
         renderCompartments(compartmentsData);
         syncSelectedShelfTelemetry();
       } catch (err) {
@@ -1175,16 +1278,19 @@
     }
 
     async function loadComparisonLogs() {
-      if (!supabaseClient) return;
-
       try {
-        const { data, error } = await supabaseClient
-          .from('comparison_logs')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(20);
-
-        if (error) throw error;
+        let data = null;
+        if (supabaseClient) {
+          const res = await supabaseClient
+            .from('comparison_logs')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(20);
+          if (res.error) throw res.error;
+          data = res.data;
+        } else {
+          data = await sbRest('comparison_logs', 'GET', '?select=*&order=created_at.desc&limit=20');
+        }
 
         comparisonLogsData = data || [];
         renderComparisonLogs(comparisonLogsData);
@@ -1194,16 +1300,19 @@
     }
 
     async function loadReferenceSamples() {
-      if (!supabaseClient) return;
-
       try {
-        const { data, error } = await supabaseClient
-          .from('esp32_reference_samples')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(24);
-
-        if (error) throw error;
+        let data = null;
+        if (supabaseClient) {
+          const res = await supabaseClient
+            .from('esp32_reference_samples')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(24);
+          if (res.error) throw res.error;
+          data = res.data;
+        } else {
+          data = await sbRest('esp32_reference_samples', 'GET', '?select=*&order=created_at.desc&limit=24');
+        }
 
         referenceSamplesData = data || [];
         renderReferenceSamples(referenceSamplesData);

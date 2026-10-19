@@ -7,11 +7,18 @@ Handles:
 3. Tested ESP32-CAM reference sample datasets ('esp32_reference_samples' table).
 """
 
+import json
 import os
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Union
 from dotenv import load_dotenv
+
+DEFAULT_SUPABASE_URL = "https://hrufeowqpnyjfwxydocm.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt"
 
 try:
     from supabase import Client, create_client
@@ -21,6 +28,108 @@ except ImportError:
     Client = Any  # type: ignore
 
 _client_cache: Optional[Client] = None
+
+
+class SupabaseRestFallback:
+    """
+    Lightweight REST fallback using urllib.request and json to directly communicate
+    with Supabase PostgREST API ({SUPABASE_URL}/rest/v1/{table}).
+    Ensures database reads and writes succeed even if supabase-py is not installed or
+    throws auth format exceptions (e.g. sb_publishable_ keys).
+    """
+
+    def __init__(self, base_url: Optional[str] = None, api_key: Optional[str] = None, timeout: float = 8.0):
+        self.base_url = (base_url or get_resolved_supabase_url()).rstrip("/")
+        self.api_key = api_key or get_resolved_supabase_key()
+        self.timeout = timeout
+
+    def _headers(self, prefer: Optional[str] = None) -> Dict[str, str]:
+        headers = {
+            "apikey": self.api_key,
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        if prefer:
+            headers["Prefer"] = prefer
+        return headers
+
+    def select(self, table: str, query_params: str = "?select=*") -> List[Dict[str, Any]]:
+        url = f"{self.base_url}/rest/v1/{table}{query_params}"
+        req = urllib.request.Request(url, headers=self._headers(), method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = resp.read().decode("utf-8")
+                return json.loads(data) if data else []
+        except Exception as exc:
+            print(f"[SupabaseRestFallback] SELECT on '{table}' failed: {exc}")
+            return []
+
+    def insert(self, table: str, payload: Union[Dict[str, Any], List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+        url = f"{self.base_url}/rest/v1/{table}"
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data_bytes,
+            headers=self._headers(prefer="return=representation"),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = resp.read().decode("utf-8")
+                return json.loads(data) if data else []
+        except Exception as exc:
+            print(f"[SupabaseRestFallback] INSERT on '{table}' failed: {exc}")
+            return []
+
+    def upsert(
+        self,
+        table: str,
+        payload: Union[Dict[str, Any], List[Dict[str, Any]]],
+        on_conflict: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        query_str = f"?on_conflict={urllib.parse.quote(on_conflict)}" if on_conflict else ""
+        url = f"{self.base_url}/rest/v1/{table}{query_str}"
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data_bytes,
+            headers=self._headers(prefer="resolution=merge-duplicates,return=representation"),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = resp.read().decode("utf-8")
+                return json.loads(data) if data else []
+        except Exception as exc:
+            print(f"[SupabaseRestFallback] UPSERT on '{table}' failed: {exc}")
+            return []
+
+    def update(self, table: str, query_params: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+        url = f"{self.base_url}/rest/v1/{table}{query_params}"
+        data_bytes = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=data_bytes,
+            headers=self._headers(prefer="return=representation"),
+            method="PATCH",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                data = resp.read().decode("utf-8")
+                return json.loads(data) if data else []
+        except Exception as exc:
+            print(f"[SupabaseRestFallback] UPDATE on '{table}' failed: {exc}")
+            return []
+
+    def delete(self, table: str, query_params: str) -> bool:
+        url = f"{self.base_url}/rest/v1/{table}{query_params}"
+        req = urllib.request.Request(url, headers=self._headers(), method="DELETE")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.status in (200, 204)
+        except Exception as exc:
+            print(f"[SupabaseRestFallback] DELETE on '{table}' failed: {exc}")
+            return False
 
 
 def find_and_load_env() -> Optional[str]:
@@ -63,37 +172,44 @@ def find_and_load_env() -> Optional[str]:
     return loaded_path
 
 
+def get_resolved_supabase_url() -> str:
+    find_and_load_env()
+    url = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
+    return (url.strip() if url else DEFAULT_SUPABASE_URL).rstrip("/")
+
+
+def get_resolved_supabase_key() -> str:
+    find_and_load_env()
+    key = (
+        os.getenv("SUPABASE_KEY")
+        or os.getenv("VITE_SUPABASE_ANON_KEY")
+        or os.getenv("SUPABASE_ANON_KEY")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    )
+    return key.strip() if key else DEFAULT_SUPABASE_KEY
+
+
 def get_supabase_client() -> Optional[Client]:
     """
-    Initializes and returns a cached Supabase Client using environment variables.
+    Initializes and returns a cached Supabase Client using environment variables
+    or default fallback credentials.
     """
     global _client_cache
     if _client_cache is not None:
         return _client_cache
 
     if not _SUPABASE_AVAILABLE:
-        print("[ConfigLoader] Warning: 'supabase' library is not installed. Run 'pip install supabase'.")
+        print("[ConfigLoader] Warning: 'supabase' library is not installed. Operations will use SupabaseRestFallback.")
         return None
 
-    find_and_load_env()
-
-    supabase_url = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
-    supabase_key = (
-        os.getenv("SUPABASE_KEY")
-        or os.getenv("VITE_SUPABASE_ANON_KEY")
-        or os.getenv("SUPABASE_ANON_KEY")
-        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    )
-
-    if not supabase_url or not supabase_key:
-        print("[ConfigLoader] Warning: Missing Supabase credentials in environment (.env).")
-        return None
+    supabase_url = get_resolved_supabase_url()
+    supabase_key = get_resolved_supabase_key()
 
     try:
-        _client_cache = create_client(supabase_url.strip(), supabase_key.strip())
+        _client_cache = create_client(supabase_url, supabase_key)
         return _client_cache
     except Exception as exc:
-        print(f"[ConfigLoader] Error initializing Supabase client: {exc}")
+        print(f"[ConfigLoader] Error initializing Supabase client ({exc}). Will fall back to SupabaseRestFallback.")
         return None
 
 
@@ -125,24 +241,27 @@ def build_hikvision_rtsp_url(
 def get_active_camera_record() -> Optional[Dict[str, Any]]:
     """Queries the first active CCTV camera from Supabase table 'cameras'."""
     client = get_supabase_client()
-    if client is None:
-        return None
+    if client is not None:
+        try:
+            response = (
+                client.table("cameras")
+                .select("*")
+                .eq("is_active", True)
+                .order("created_at", desc=False)
+                .limit(1)
+                .execute()
+            )
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+        except Exception as exc:
+            print(f"[ConfigLoader] SDK query on 'cameras' failed ({exc}), falling back to SupabaseRestFallback.")
 
-    try:
-        response = (
-            client.table("cameras")
-            .select("*")
-            .eq("is_active", True)
-            .order("created_at", desc=False)
-            .limit(1)
-            .execute()
-        )
-        if response.data and len(response.data) > 0:
-            return response.data[0]
-        return None
-    except Exception as exc:
-        print(f"[ConfigLoader] Failed to query 'cameras' table from Supabase: {exc}")
-        return None
+    # REST Fallback
+    fallback = SupabaseRestFallback()
+    records = fallback.select("cameras", "?select=*&is_active=eq.true&order=created_at.asc&limit=1")
+    if records:
+        return records[0]
+    return None
 
 
 def get_active_rtsp_url(default_source: Union[int, str] = 0) -> Union[int, str]:
@@ -174,14 +293,15 @@ def list_esp32_cameras() -> List[Dict[str, Any]]:
     from the Supabase 'compartments' table ordered by shelf_id.
     """
     client = get_supabase_client()
-    if client is None:
-        return []
-    try:
-        resp = client.table("compartments").select("*").order("shelf_id", desc=False).execute()
-        return resp.data or []
-    except Exception as exc:
-        print(f"[ConfigLoader] Warning: Could not read 'compartments' table ({exc}).")
-        return []
+    if client is not None:
+        try:
+            resp = client.table("compartments").select("*").order("shelf_id", desc=False).execute()
+            return resp.data or []
+        except Exception as exc:
+            print(f"[ConfigLoader] Warning: SDK read 'compartments' failed ({exc}), trying SupabaseRestFallback.")
+
+    fallback = SupabaseRestFallback()
+    return fallback.select("compartments", "?select=*&order=shelf_id.asc")
 
 
 def update_esp32_health_in_supabase(telemetry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -190,10 +310,6 @@ def update_esp32_health_in_supabase(telemetry: Dict[str, Any]) -> Optional[Dict[
     in 'public.compartments' whenever a 30-second MQTT heartbeat arrives on 'iotlab/storage/health'.
     Identifies the compartment by mqtt_client_id (or shelf_id).
     """
-    client = get_supabase_client()
-    if client is None:
-        return None
-
     mqtt_client_id = telemetry.get("device_id") or telemetry.get("mqtt_client_id")
     shelf_id = telemetry.get("shelf_id")
     if not mqtt_client_id and not shelf_id:
@@ -221,32 +337,54 @@ def update_esp32_health_in_supabase(telemetry: Dict[str, Any]) -> Optional[Dict[
         except (ValueError, TypeError):
             pass
 
-    try:
-        query = client.table("compartments").update(update_fields)
-        if mqtt_client_id:
-            query = query.eq("mqtt_client_id", mqtt_client_id)
-        elif shelf_id:
-            query = query.eq("shelf_id", shelf_id)
+    client = get_supabase_client()
+    if client is not None:
+        try:
+            query = client.table("compartments").update(update_fields)
+            if mqtt_client_id:
+                query = query.eq("mqtt_client_id", mqtt_client_id)
+            elif shelf_id:
+                query = query.eq("shelf_id", shelf_id)
 
-        resp = query.execute()
-        if resp.data and len(resp.data) > 0:
-            return resp.data[0]
+            resp = query.execute()
+            if resp.data and len(resp.data) > 0:
+                return resp.data[0]
 
-        # Auto-insert if node row doesn't exist yet
-        if shelf_id and mqtt_client_id:
-            update_fields["shelf_id"] = shelf_id
-            update_fields["mqtt_client_id"] = mqtt_client_id
-            update_fields.setdefault("rack_id", telemetry.get("rack_id", "RACK_01"))
-            update_fields.setdefault("camera_name", telemetry.get("camera_name", f"ESP32 Node ({shelf_id})"))
-            update_fields.setdefault("current_quantity", 4)
-            update_fields.setdefault("max_capacity", 4)
-            insert_resp = client.table("compartments").insert(update_fields).execute()
-            return insert_resp.data[0] if insert_resp.data else None
+            # Auto-insert if node row doesn't exist yet
+            if shelf_id and mqtt_client_id:
+                insert_fields = dict(update_fields)
+                insert_fields["shelf_id"] = shelf_id
+                insert_fields["mqtt_client_id"] = mqtt_client_id
+                insert_fields.setdefault("rack_id", telemetry.get("rack_id", "RACK_01"))
+                insert_fields.setdefault("camera_name", telemetry.get("camera_name", f"ESP32 Node ({shelf_id})"))
+                insert_fields.setdefault("current_quantity", 4)
+                insert_fields.setdefault("max_capacity", 4)
+                insert_resp = client.table("compartments").insert(insert_fields).execute()
+                return insert_resp.data[0] if insert_resp.data else None
 
-        return None
-    except Exception as exc:
-        print(f"[ConfigLoader] Health telemetry Supabase sync skipped: {exc}")
-        return None
+            return None
+        except Exception as exc:
+            print(f"[ConfigLoader] Health telemetry SDK sync skipped ({exc}), trying SupabaseRestFallback.")
+
+    # REST Fallback
+    fallback = SupabaseRestFallback()
+    query_param = f"?mqtt_client_id=eq.{urllib.parse.quote(str(mqtt_client_id))}" if mqtt_client_id else f"?shelf_id=eq.{urllib.parse.quote(str(shelf_id))}"
+    updated = fallback.update("compartments", query_param, update_fields)
+    if updated:
+        return updated[0]
+
+    if shelf_id and mqtt_client_id:
+        insert_fields = dict(update_fields)
+        insert_fields["shelf_id"] = shelf_id
+        insert_fields["mqtt_client_id"] = mqtt_client_id
+        insert_fields.setdefault("rack_id", telemetry.get("rack_id", "RACK_01"))
+        insert_fields.setdefault("camera_name", telemetry.get("camera_name", f"ESP32 Node ({shelf_id})"))
+        insert_fields.setdefault("current_quantity", 4)
+        insert_fields.setdefault("max_capacity", 4)
+        inserted = fallback.insert("compartments", insert_fields)
+        return inserted[0] if inserted else None
+
+    return None
 
 
 # =============================================================================
@@ -262,10 +400,6 @@ def update_compartment_baseline_in_supabase(
     Updates baseline_image_url, baseline_updated_at = now(), status = 'ONLINE',
     and optionally ip_address in public.compartments where shelf_id = shelf_id.
     """
-    client = get_supabase_client()
-    if client is None:
-        return None
-
     shelf_id = shelf_id.strip()
     now_iso = datetime.now(timezone.utc).isoformat()
     update_data: Dict[str, Any] = {
@@ -277,14 +411,18 @@ def update_compartment_baseline_in_supabase(
     if ip_address:
         update_data["ip_address"] = str(ip_address).strip()
 
-    try:
-        resp = client.table("compartments").update(update_data).eq("shelf_id", shelf_id).execute()
-        if resp.data and len(resp.data) > 0:
-            return resp.data[0]
-        return None
-    except Exception as exc:
-        print(f"[ConfigLoader] Failed to update compartment baseline in Supabase: {exc}")
-        return None
+    client = get_supabase_client()
+    if client is not None:
+        try:
+            resp = client.table("compartments").update(update_data).eq("shelf_id", shelf_id).execute()
+            if resp.data and len(resp.data) > 0:
+                return resp.data[0]
+        except Exception as exc:
+            print(f"[ConfigLoader] Failed to update compartment baseline via SDK ({exc}), trying SupabaseRestFallback.")
+
+    fallback = SupabaseRestFallback()
+    updated = fallback.update("compartments", f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}", update_data)
+    return updated[0] if updated else None
 
 
 def apply_inventory_delta_in_supabase(
@@ -303,10 +441,6 @@ def apply_inventory_delta_in_supabase(
        baseline_image_url = comparison_result.get("after_image") in public.compartments.
     d) Inserts a row into public.comparison_logs and returns the log record.
     """
-    client = get_supabase_client()
-    if client is None:
-        return None
-
     shelf_id = shelf_id.strip()
     mqtt_client_id = mqtt_client_id.strip()
     delta = int(comparison_result.get("delta", 0))
@@ -320,12 +454,22 @@ def apply_inventory_delta_in_supabase(
 
     # a) Read current_quantity from public.compartments for shelf_id (default 4)
     quantity_before = 4
-    try:
-        resp = client.table("compartments").select("current_quantity").eq("shelf_id", shelf_id).limit(1).execute()
-        if resp.data and len(resp.data) > 0:
-            quantity_before = int(resp.data[0].get("current_quantity", 4))
-    except Exception as exc:
-        print(f"[ConfigLoader] Warning querying compartments quantity: {exc}")
+    client = get_supabase_client()
+    read_success = False
+    if client is not None:
+        try:
+            resp = client.table("compartments").select("current_quantity").eq("shelf_id", shelf_id).limit(1).execute()
+            if resp.data and len(resp.data) > 0:
+                quantity_before = int(resp.data[0].get("current_quantity", 4))
+                read_success = True
+        except Exception as exc:
+            print(f"[ConfigLoader] Warning querying compartments quantity via SDK: {exc}")
+
+    fallback = SupabaseRestFallback()
+    if not read_success:
+        records = fallback.select("compartments", f"?select=current_quantity&shelf_id=eq.{urllib.parse.quote(shelf_id)}&limit=1")
+        if records:
+            quantity_before = int(records[0].get("current_quantity", 4))
 
     # b) Compute quantity_after = max(0, min(4, quantity_before + delta))
     quantity_after = max(0, min(4, quantity_before + delta))
@@ -333,20 +477,27 @@ def apply_inventory_delta_in_supabase(
     # c) If delta != 0, update current_quantity & baseline_image_url in public.compartments
     now_iso = datetime.now(timezone.utc).isoformat()
     if delta != 0:
-        try:
-            update_data: Dict[str, Any] = {
-                "current_quantity": quantity_after,
-                "last_seen_at": now_iso,
-                "status": "ONLINE",
-            }
-            if after_image_url:
-                update_data["baseline_image_url"] = after_image_url
-                update_data["baseline_updated_at"] = now_iso
+        update_data: Dict[str, Any] = {
+            "current_quantity": quantity_after,
+            "last_seen_at": now_iso,
+            "status": "ONLINE",
+        }
+        if after_image_url:
+            update_data["baseline_image_url"] = after_image_url
+            update_data["baseline_updated_at"] = now_iso
 
-            client.table("compartments").update(update_data).eq("shelf_id", shelf_id).execute()
-            print(f"[ConfigLoader] Updated {shelf_id} inventory: {quantity_before} -> {quantity_after} ({state_delta}).")
-        except Exception as exc:
-            print(f"[ConfigLoader] Failed to update compartment inventory in Supabase: {exc}")
+        update_done = False
+        if client is not None:
+            try:
+                client.table("compartments").update(update_data).eq("shelf_id", shelf_id).execute()
+                print(f"[ConfigLoader] Updated {shelf_id} inventory: {quantity_before} -> {quantity_after} ({state_delta}).")
+                update_done = True
+            except Exception as exc:
+                print(f"[ConfigLoader] Failed to update compartment inventory via SDK ({exc}), trying SupabaseRestFallback.")
+
+        if not update_done:
+            fallback.update("compartments", f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}", update_data)
+            print(f"[ConfigLoader] Updated {shelf_id} inventory via REST: {quantity_before} -> {quantity_after} ({state_delta}).")
 
     # d) Insert row into public.comparison_logs
     log_record: Dict[str, Any] = {
@@ -364,12 +515,15 @@ def apply_inventory_delta_in_supabase(
         "created_at": now_iso,
     }
 
-    try:
-        ins = client.table("comparison_logs").insert(log_record).execute()
-        return ins.data[0] if ins.data else log_record
-    except Exception as exc:
-        print(f"[ConfigLoader] Failed to insert comparison_log in Supabase: {exc}")
-        return log_record
+    if client is not None:
+        try:
+            ins = client.table("comparison_logs").insert(log_record).execute()
+            return ins.data[0] if ins.data else log_record
+        except Exception as exc:
+            print(f"[ConfigLoader] Failed to insert comparison_log via SDK ({exc}), trying SupabaseRestFallback.")
+
+    inserted_logs = fallback.insert("comparison_logs", log_record)
+    return inserted_logs[0] if inserted_logs else log_record
 
 
 def list_comparison_logs(limit: int = 15) -> List[Dict[str, Any]]:
@@ -377,20 +531,21 @@ def list_comparison_logs(limit: int = 15) -> List[Dict[str, Any]]:
     Fetches recent rows from public.comparison_logs ordered by created_at desc.
     """
     client = get_supabase_client()
-    if client is None:
-        return []
-    try:
-        resp = (
-            client.table("comparison_logs")
-            .select("*")
-            .order("created_at", desc=True)
-            .limit(limit)
-            .execute()
-        )
-        return resp.data or []
-    except Exception as exc:
-        print(f"[ConfigLoader] Warning: Could not list comparison_logs ({exc}).")
-        return []
+    if client is not None:
+        try:
+            resp = (
+                client.table("comparison_logs")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(limit)
+                .execute()
+            )
+            return resp.data or []
+        except Exception as exc:
+            print(f"[ConfigLoader] Warning: SDK read 'comparison_logs' failed ({exc}), trying SupabaseRestFallback.")
+
+    fallback = SupabaseRestFallback()
+    return fallback.select("comparison_logs", f"?select=*&order=created_at.desc&limit={int(limit)}")
 
 
 # =============================================================================
@@ -399,12 +554,8 @@ def list_comparison_logs(limit: int = 15) -> List[Dict[str, Any]]:
 
 def insert_esp32_reference_sample(sample_record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Inserts an ESP32 reference capture sample into public.esp32_reference_samples.
+    Inserts or upserts an ESP32 reference capture sample into public.esp32_reference_samples.
     """
-    client = get_supabase_client()
-    if client is None:
-        return None
-
     shelf_id = sample_record.get("shelf_id", "SHELF_R1_C1")
     mqtt_client_id = sample_record.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}"
     rack_id = sample_record.get("rack_id", "RACK_01")
@@ -425,12 +576,17 @@ def insert_esp32_reference_sample(sample_record: Dict[str, Any]) -> Optional[Dic
         "capture_latency_ms": sample_record.get("capture_latency_ms"),
     }
 
-    try:
-        resp = client.table("esp32_reference_samples").upsert(payload, on_conflict="shelf_id,sample_label").execute()
-        return resp.data[0] if resp.data else payload
-    except Exception as exc:
-        print(f"[ConfigLoader] Failed to upsert esp32_reference_sample: {exc}")
-        return None
+    client = get_supabase_client()
+    if client is not None:
+        try:
+            resp = client.table("esp32_reference_samples").upsert(payload, on_conflict="shelf_id,sample_label").execute()
+            return resp.data[0] if resp.data else payload
+        except Exception as exc:
+            print(f"[ConfigLoader] Failed to upsert esp32_reference_sample via SDK ({exc}), trying SupabaseRestFallback.")
+
+    fallback = SupabaseRestFallback()
+    upserted = fallback.upsert("esp32_reference_samples", payload, on_conflict="shelf_id,sample_label")
+    return upserted[0] if upserted else payload
 
 
 def list_esp32_reference_samples(shelf_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -438,17 +594,19 @@ def list_esp32_reference_samples(shelf_id: Optional[str] = None) -> List[Dict[st
     Lists reference samples from public.esp32_reference_samples, optionally filtered by shelf_id.
     """
     client = get_supabase_client()
-    if client is None:
-        return []
-    try:
-        query = client.table("esp32_reference_samples").select("*").order("created_at", desc=True)
-        if shelf_id:
-            query = query.eq("shelf_id", shelf_id.strip())
-        resp = query.execute()
-        return resp.data or []
-    except Exception as exc:
-        print(f"[ConfigLoader] Warning: Could not list esp32_reference_samples ({exc}).")
-        return []
+    if client is not None:
+        try:
+            query = client.table("esp32_reference_samples").select("*").order("created_at", desc=True)
+            if shelf_id:
+                query = query.eq("shelf_id", shelf_id.strip())
+            resp = query.execute()
+            return resp.data or []
+        except Exception as exc:
+            print(f"[ConfigLoader] Warning: SDK read 'esp32_reference_samples' failed ({exc}), trying SupabaseRestFallback.")
+
+    fallback = SupabaseRestFallback()
+    q = f"?select=*&shelf_id=eq.{urllib.parse.quote(shelf_id.strip())}&order=created_at.desc" if shelf_id else "?select=*&order=created_at.desc"
+    return fallback.select("esp32_reference_samples", q)
 
 
 def delete_esp32_reference_sample(sample_id: str) -> bool:
@@ -456,11 +614,12 @@ def delete_esp32_reference_sample(sample_id: str) -> bool:
     Deletes an ESP32 reference sample from public.esp32_reference_samples by sample_id.
     """
     client = get_supabase_client()
-    if client is None:
-        return False
-    try:
-        client.table("esp32_reference_samples").delete().eq("sample_id", sample_id).execute()
-        return True
-    except Exception as exc:
-        print(f"[ConfigLoader] Failed to delete esp32_reference_sample ({exc}):")
-        return False
+    if client is not None:
+        try:
+            client.table("esp32_reference_samples").delete().eq("sample_id", sample_id).execute()
+            return True
+        except Exception as exc:
+            print(f"[ConfigLoader] Failed to delete esp32_reference_sample via SDK ({exc}), trying SupabaseRestFallback.")
+
+    fallback = SupabaseRestFallback()
+    return fallback.delete("esp32_reference_samples", f"?sample_id=eq.{urllib.parse.quote(str(sample_id))}")

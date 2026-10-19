@@ -25,8 +25,10 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # Add backend directory to sys.path
@@ -47,6 +49,8 @@ from src.config_loader import (
     get_active_rtsp_url,
     mask_rtsp_url,
     list_esp32_cameras,
+    update_esp32_health_in_supabase,
+    update_compartment_baseline_in_supabase,
     apply_inventory_delta_in_supabase,
     list_comparison_logs,
     insert_esp32_reference_sample,
@@ -62,11 +66,15 @@ from src.reference_validator import (
     decode_data_url_to_bgr,
 )
 
-# Global Managers
+# Global Managers & State
 ROI_CONFIG_PATH = os.path.join(BACKEND_DIR, "config", "roi_config.json")
 spatial_mapper = SpatialMapper(ROI_CONFIG_PATH)
 
 esp32_ref_manager = ESP32ReferenceManager()
+
+ACTIVE_ESP32_IPS = {
+    "SHELF_R1_C1": os.getenv("ESP32_CAM_IP", "192.168.0.101"),
+}
 
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -271,6 +279,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def _send_json(self, status_code: int, payload: dict):
         self.send_response(status_code)
@@ -298,6 +307,34 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
+
+        if path in ["/dashboard", "/ui"]:
+            html_candidates = [
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "index.html")),
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "camera_manager.html")),
+            ]
+            html_content = None
+            for p in html_candidates:
+                if os.path.isfile(p):
+                    try:
+                        with open(p, "r", encoding="utf-8") as f:
+                            html_content = f.read()
+                            break
+                    except Exception:
+                        pass
+
+            if html_content is not None:
+                content_bytes = html_content.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(content_bytes)))
+                self._send_cors_headers()
+                self.end_headers()
+                self.wfile.write(content_bytes)
+                return
+            else:
+                self._send_json(404, {"error": "Dashboard HTML file not found"})
+                return
 
         if path in ["/", "/status", "/health"]:
             self._send_json(200, {
@@ -337,7 +374,32 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             esp32_ip = query.get("ip", [None])[0]
             shelf_id = query.get("shelf_id", ["SHELF_R1_C1"])[0]
 
+            if esp32_ip and str(esp32_ip).strip():
+                clean_ip = str(esp32_ip).replace("http://", "").replace("/", "").strip()
+                ACTIVE_ESP32_IPS[shelf_id] = clean_ip
+
+                # Immediate update in Supabase public.compartments
+                now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                node_health = {
+                    "device_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
+                    "shelf_id": shelf_id,
+                    "ip_address": clean_ip,
+                    "status": "ONLINE",
+                    "last_seen_at": now_iso,
+                }
+                update_esp32_health_in_supabase(node_health)
+
             frame_bgr, data_url = esp32_ref_manager.fetch_esp32_http_frame(esp32_ip=esp32_ip, mode="live")
+
+            # If no baseline image exists yet for this shelf, populate it with this live frame
+            cached = esp32_ref_manager.baseline_cache.get(shelf_id)
+            if not cached or not cached.get("data_url"):
+                esp32_ref_manager.update_30s_baseline(
+                    shelf_id=shelf_id,
+                    esp32_ip=esp32_ip,
+                    image_data_url=data_url,
+                )
+
             self._send_json(200, {
                 "status": "success",
                 "shelf_id": shelf_id,
@@ -559,8 +621,81 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         sys.stderr.write(f"[CameraService HTTP] {args[0]} - {args[1]}\n")
 
 
+def esp32_http_baseline_poller():
+    """
+    Background daemon thread running every 30 seconds:
+    - Polls ACTIVE_ESP32_IPS (defaulting SHELF_R1_C1 to ESP32_CAM_IP or 192.168.0.101).
+    - Queries http://<ip>/status (2s timeout) to verify node connectivity & extract rssi.
+    - Calls esp32_ref_manager.update_30s_baseline(shelf_id, esp32_ip=ip) to fetch
+      the ESP32-CAM's latest 30s resting baseline JPEG and sync it into public.compartments,
+      ensuring fresh baseline snapshots even if Mosquitto MQTT is offline.
+    """
+    time.sleep(2.0)  # Brief warm-up before first cycle
+    while True:
+        try:
+            # Ensure default for SHELF_R1_C1
+            default_ip = os.getenv("ESP32_CAM_IP", "192.168.0.101")
+            ACTIVE_ESP32_IPS.setdefault("SHELF_R1_C1", default_ip)
+
+            for shelf_id, ip in list(ACTIVE_ESP32_IPS.items()):
+                if not ip or not str(ip).strip():
+                    continue
+
+                clean_ip = str(ip).replace("http://", "").replace("/", "").strip()
+                status_url = f"http://{clean_ip}/status"
+                rssi_dbm = None
+                online = False
+
+                # 1. Quick probe to http://<ip>/status (2s timeout)
+                try:
+                    req = urllib.request.Request(status_url, headers={"User-Agent": "SmartStoragePoller/1.0"})
+                    with urllib.request.urlopen(req, timeout=2.0) as resp:
+                        if resp.status == 200:
+                            online = True
+                            raw = resp.read().decode("utf-8")
+                            try:
+                                status_data = json.loads(raw)
+                                rssi_dbm = status_data.get("rssi_dbm") or status_data.get("rssi")
+                            except Exception:
+                                pass
+                except Exception:
+                    online = False
+
+                # 2. If reachable (or for baseline refresh), fetch baseline & sync Supabase
+                now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                if online:
+                    node_health = {
+                        "device_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
+                        "shelf_id": shelf_id,
+                        "ip_address": clean_ip,
+                        "rssi_dbm": rssi_dbm,
+                        "status": "ONLINE",
+                        "last_seen_at": now_iso,
+                    }
+                    update_esp32_health_in_supabase(node_health)
+
+                    # Update 30s baseline cache and Supabase compartments row
+                    esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip)
+                else:
+                    # Check if node has a cached baseline; if not, do a synthetic or retry fetch
+                    cached = esp32_ref_manager.baseline_cache.get(shelf_id)
+                    if not cached or not cached.get("data_url"):
+                        esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip)
+
+        except Exception as exc:
+            print(f"[CameraService Poller] Exception in baseline poller cycle: {exc}")
+
+        time.sleep(30.0)
+
+
 def run_service(host="0.0.0.0", port=8008):
     mqtt_bridge.connect_broker(timeout=1.5)
+
+    # Start background 30s HTTP baseline poller daemon thread
+    poller_thread = threading.Thread(target=esp32_http_baseline_poller, daemon=True, name="ESP32BaselinePoller")
+    poller_thread.start()
+    print("[CameraService] Started background 30s ESP32 HTTP baseline poller daemon.")
+
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, CameraServiceRequestHandler)
     print("=================================================================")
