@@ -43,6 +43,8 @@ class CompartmentTracker:
         self.trigger_fired = False
         self.last_confirmed_event = None
 
+        self.last_confirmed_conf = 0.0
+
     def update(self, wrist_present, wrist_coord=None, wrist_conf=0.0):
         """
         Updates tracking state for this compartment in the current frame.
@@ -67,34 +69,57 @@ class CompartmentTracker:
             elif self.state == self.STATE_DWELLING:
                 self.current_dwell_duration = now - self.dwell_start_time
 
-                # Check if sustained dwell duration passes 1.2s requirement (NFR-04)
-                if self.current_dwell_duration >= self.dwell_threshold and not self.trigger_fired:
+                # Check if sustained dwell duration passes dwell threshold (1.2s NFR-04)
+                if self.current_dwell_duration >= self.dwell_threshold:
                     self.state = self.STATE_INTENT_CONFIRMED
+                    self.last_confirmed_conf = float(wrist_conf)
+
+            elif self.state == self.STATE_INTENT_CONFIRMED:
+                self.current_dwell_duration = now - self.dwell_start_time
+                self.last_confirmed_conf = float(wrist_conf)
+
+                # Fallback: if hand stays inside for more than 3.5s, fire trigger so action isn't lost
+                if self.current_dwell_duration >= 3.5 and not self.trigger_fired:
                     self.trigger_fired = True
-
-                    # Classify action from trajectory vectors
                     classified_action = self._classify_trajectory_action()
-
                     event_to_dispatch = {
                         "command": "CAPTURE_STATE",
                         "shelf_id": self.shelf_id,
                         "expected_action": classified_action,
-                        "oks_confidence": float(wrist_conf),
+                        "oks_confidence": self.last_confirmed_conf,
                         "dwell_duration_seconds": round(self.current_dwell_duration, 2),
                         "timestamp": datetime.now(timezone.utc).isoformat(),
                     }
                     self.last_confirmed_event = event_to_dispatch
 
-            elif self.state == self.STATE_INTENT_CONFIRMED:
-                self.current_dwell_duration = now - self.dwell_start_time
-
         else:
             # Wrist is NOT detected inside ROI in this frame
-            if self.state in [self.STATE_DWELLING, self.STATE_INTENT_CONFIRMED]:
-                # Check if within brief drop grace period
-                time_since_seen = now - (self.last_seen_time if self.last_seen_time else 0)
+            time_since_seen = now - (self.last_seen_time if self.last_seen_time else 0)
+
+            # Check if intent was confirmed and user has now withdrawn hand from the compartment
+            if self.state == self.STATE_INTENT_CONFIRMED and time_since_seen > self.drop_grace_period:
+                if not self.trigger_fired:
+                    self.trigger_fired = True
+                    classified_action = self._classify_trajectory_action()
+                    event_to_dispatch = {
+                        "command": "CAPTURE_STATE",
+                        "shelf_id": self.shelf_id,
+                        "expected_action": classified_action,
+                        "oks_confidence": self.last_confirmed_conf,
+                        "dwell_duration_seconds": round(self.current_dwell_duration, 2),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    self.last_confirmed_event = event_to_dispatch
+
+                # Reset state machine after withdrawal
+                self.state = self.STATE_IDLE
+                self.dwell_start_time = None
+                self.current_dwell_duration = 0.0
+                self.trigger_fired = False
+
+            elif self.state == self.STATE_DWELLING:
                 if time_since_seen > self.drop_grace_period:
-                    # Hand has left the compartment
+                    # Incomplete dwell, hand left early
                     self.state = self.STATE_IDLE
                     self.dwell_start_time = None
                     self.current_dwell_duration = 0.0

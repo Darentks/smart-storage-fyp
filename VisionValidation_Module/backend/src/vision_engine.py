@@ -5,7 +5,11 @@ and bidirectional MQTT hardware triggering & verification.
 Complies with Figure 4.11 (Class Diagram), Figure 4.7 (Sequence Diagram), and Figure 4.8 (Activity Diagram).
 """
 
+import json
+import threading
 import time
+import urllib.error
+import urllib.request
 import cv2
 from .pose_estimator import PoseEstimator
 from .spatial_mapper import SpatialMapper
@@ -71,7 +75,7 @@ class VisionValidationEngine:
             on_verification_response=self._on_esp32_verification_response,
             on_health_ping=self._on_esp32_health_ping,
             on_roi_reload=self._on_mqtt_roi_reload,
-            sync_supabase=True,
+            sync_supabase=False,
         )
         self.mqtt_client.connect_broker()
 
@@ -100,6 +104,50 @@ class VisionValidationEngine:
         self.active_alert = f"TRIGGER SENT: [{action}] at {shelf_id} (Dwell: {event['dwell_duration_seconds']}s)"
         self.alert_color = (0, 165, 255)
         self.alert_expiry_time = time.time() + 3.0
+
+        # Spawn background thread to request hybrid validation from camera_service local bridge
+        def _call_esp32_validate():
+            url = "http://localhost:8008/esp32_validate"
+            payload = {
+                "shelf_id": shelf_id,
+                "expected_action": action,
+            }
+            try:
+                data_bytes = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    url,
+                    data=data_bytes,
+                    headers={"Content-Type": "application/json", "User-Agent": "VisionEngine/1.0"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10.0) as resp:
+                    raw = resp.read().decode("utf-8")
+                    res = json.loads(raw) if raw else {}
+                    comp = res.get("comparison") or {}
+                    log = res.get("log") or {}
+
+                    state_delta = comp.get("state_delta", "NO_CHANGE")
+                    delta_int = int(comp.get("delta", 0))
+                    diff_val = comp.get("diff_score")
+                    diff_str = f"{diff_val:.1f}" if isinstance(diff_val, (int, float)) else "N/A"
+                    qty_before = log.get("quantity_before", "N/A")
+                    qty_after = log.get("quantity_after", "N/A")
+
+                    self.active_alert = f"VERIFIED: {state_delta} ({delta_int:+d}) @ {shelf_id} | Stock: {qty_before}->{qty_after} | Diff: {diff_str}%"
+
+                    if state_delta == "ITEM_RETURNED":
+                        self.alert_color = (0, 190, 0)
+                    elif state_delta == "ITEM_REMOVED":
+                        self.alert_color = (0, 110, 255)
+                    else:
+                        self.alert_color = (120, 120, 120)
+
+                    self.alert_expiry_time = time.time() + 5.0
+            except Exception as exc:
+                print(f"[VisionEngine] Validation call to {url} skipped/failed: {exc}")
+
+        val_thread = threading.Thread(target=_call_esp32_validate, daemon=True, name=f"Validate_{shelf_id}")
+        val_thread.start()
 
     def _on_esp32_verification_response(self, payload):
         """Callback invoked when ESP32-CAM publishes snapshot verification to iotlab/storage/{shelf_id}/response."""

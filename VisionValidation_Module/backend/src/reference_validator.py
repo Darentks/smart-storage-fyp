@@ -463,28 +463,39 @@ class ESP32ReferenceManager:
         state_delta = "NO_CHANGE"
         delta = 0
 
-        # Scenario 1: Low visual change -> NO_CHANGE
-        if diff_score < 6.0 and (matched_box_count is None or matched_box_count == current_quantity):
-            state_delta = "NO_CHANGE"
-            delta = 0
-
-        # Scenario 2: Stored reference samples match a distinct box count
-        elif stored_samples and matched_box_count is not None and matched_box_count != current_quantity:
+        # High-confidence reference matching takes priority (>= 75.0% similarity)
+        if stored_samples and matched_box_count is not None and highest_similarity >= 75.0:
             if matched_box_count < current_quantity:
                 state_delta = "ITEM_REMOVED"
                 delta = matched_box_count - current_quantity
-            else:
+            elif matched_box_count > current_quantity:
                 state_delta = "ITEM_RETURNED"
                 delta = matched_box_count - current_quantity
-
-        # Scenario 3: Significant visual diff, evaluate action heuristic
-        else:
-            if exp_action == "RETURN":
-                state_delta = "ITEM_RETURNED"
-                delta = +1
             else:
-                state_delta = "ITEM_REMOVED"
-                delta = -1
+                # matched_box_count == current_quantity
+                if diff_score < 15.0:
+                    state_delta = "NO_CHANGE"
+                    delta = 0
+                else:
+                    # Visual diff despite same matched count
+                    if exp_action == "RETURN":
+                        state_delta = "ITEM_RETURNED"
+                        delta = +1
+                    else:
+                        state_delta = "ITEM_REMOVED"
+                        delta = -1
+        else:
+            # Fallback heuristic using baseline diff_score
+            if diff_score < 6.0:
+                state_delta = "NO_CHANGE"
+                delta = 0
+            else:
+                if exp_action == "RETURN":
+                    state_delta = "ITEM_RETURNED"
+                    delta = +1
+                else:
+                    state_delta = "ITEM_REMOVED"
+                    delta = -1
 
         # If confirmed change, update rolling 30s baseline cache with after_bgr
         if delta != 0:
@@ -503,6 +514,7 @@ class ESP32ReferenceManager:
             "diff_score": diff_score,
             "similarity_score": highest_similarity if highest_similarity > 0 else None,
             "matched_box_count": matched_box_count,
+            "matched_scenario_label": best_match.get("sample_label") if best_match else None,
             "state_delta": state_delta,
             "delta": delta,
         }
