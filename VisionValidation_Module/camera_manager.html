@@ -846,9 +846,14 @@
 
       <!-- Stored References Gallery -->
       <div style="margin-top: 26px; border-top: 1px solid var(--border); padding-top: 18px;">
-        <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-muted);">
-          Stored Angle Reference Samples (Supabase <code>public.esp32_reference_samples</code>)
-        </h3>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+          <h3 style="font-size: 14px; font-weight: 700; margin: 0; color: var(--text-muted);">
+            Stored Angle Reference Samples (Supabase <code>public.esp32_reference_samples</code>)
+          </h3>
+          <button type="button" class="btn-danger" style="padding: 5px 12px; font-size: 11px;" onclick="clearShelfReferenceSamples()">
+            &#128465; Clear Shelf Samples
+          </button>
+        </div>
         <div id="referencesGallery" class="refs-gallery">
           <div style="grid-column: 1 / -1; text-align: center; padding: 25px; color: var(--text-muted);">
             Loading reference samples...
@@ -895,40 +900,21 @@
     }
 
     // Direct Supabase REST API helper using native browser fetch
-    async function sbRest(table, optionsOrMethod = 'GET', queryParams = '', body = null, prefer = null) {
-      let method = 'GET';
-      let qParams = '';
-      let reqBody = null;
-      let reqPrefer = null;
-
-      if (typeof optionsOrMethod === 'object' && optionsOrMethod !== null) {
-        method = optionsOrMethod.method || 'GET';
-        qParams = optionsOrMethod.queryParams || optionsOrMethod.params || '';
-        reqBody = optionsOrMethod.body !== undefined ? optionsOrMethod.body : null;
-        reqPrefer = optionsOrMethod.prefer || null;
-      } else {
-        method = optionsOrMethod || 'GET';
-        qParams = queryParams || '';
-        reqBody = body;
-        reqPrefer = prefer;
-      }
-
-      if (qParams && !qParams.startsWith('?')) {
-        qParams = '?' + qParams;
-      }
-
-      const url = `${SUPABASE_URL}/rest/v1/${table}${qParams}`;
+    async function sbRest(table, method = 'GET', query = '', body = null, prefer = 'return=representation') {
+      const cleanQuery = query && !query.startsWith('?') ? '?' + query : (query || '');
+      const url = `${SUPABASE_URL}/rest/v1/${table}${cleanQuery}`;
       const headers = {
         'apikey': SUPABASE_ANON_KEY,
         'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         'Content-Type': 'application/json',
       };
-      if (reqPrefer) headers['Prefer'] = reqPrefer;
+      if (prefer) headers['Prefer'] = prefer;
 
-      const opts = { method, headers };
-      if (reqBody !== null && reqBody !== undefined) {
-        opts.body = typeof reqBody === 'string' ? reqBody : JSON.stringify(reqBody);
-      }
+      const opts = {
+        method: method || 'GET',
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      };
 
       const resp = await fetch(url, opts);
       if (!resp.ok) {
@@ -1224,31 +1210,71 @@
     async function deleteReferenceSample(sampleId) {
       if (!confirm('Are you sure you want to delete this angle test photo?')) return;
 
-      // Try bridge first
+      // 1. Try bridge first
       try {
-        const resp = await fetch(`${getBridgeUrl()}/esp32_reference_samples?sample_id=${encodeURIComponent(sampleId)}`, {
+        await fetch(`${getBridgeUrl()}/esp32_reference_samples?sample_id=${encodeURIComponent(sampleId)}`, {
           method: 'DELETE',
         });
-        if (resp.ok) {
-          showToast('Sample deleted via bridge.', 'success');
-          loadReferenceSamples();
-          return;
-        }
       } catch (e) {}
 
-      // Supabase direct fallback
+      // 2. Direct Supabase delete
       try {
         if (supabaseClient) {
-          const { error } = await supabaseClient.from('esp32_reference_samples').delete().eq('sample_id', sampleId);
-          if (error) throw error;
-        } else {
-          await sbRest('esp32_reference_samples', 'DELETE', `?sample_id=eq.${encodeURIComponent(sampleId)}`);
+          try {
+            await supabaseClient.from('esp32_reference_samples').delete().eq('sample_id', sampleId);
+          } catch (e) {}
         }
-        showToast('Sample deleted from Supabase.', 'success');
+        await sbRest('esp32_reference_samples', 'DELETE', '?sample_id=eq.' + encodeURIComponent(sampleId));
+        showToast('Sample deleted.', 'success');
         loadReferenceSamples();
       } catch (dbErr) {
         showToast('Failed to delete sample from Supabase.', 'error');
       }
+    }
+
+    async function clearShelfReferenceSamples() {
+      const shelfId = refShelfSelect.value;
+      if (!confirm(`Are you sure you want to delete ALL reference samples for ${shelfId}?`)) return;
+
+      showToast(`Clearing samples for ${shelfId}...`, 'info');
+      try {
+        if (supabaseClient) {
+          try {
+            await supabaseClient.from('esp32_reference_samples').delete().eq('shelf_id', shelfId);
+          } catch (e) {}
+        }
+        await sbRest('esp32_reference_samples', 'DELETE', '?shelf_id=eq.' + encodeURIComponent(shelfId));
+        showToast(`All samples cleared for ${shelfId}!`, 'success');
+        loadReferenceSamples();
+      } catch (err) {
+        console.error('Error clearing shelf reference samples:', err);
+        showToast(`Failed to clear samples for ${shelfId}.`, 'error');
+      }
+    }
+
+    function retakeScenarioReference(shelfId, scenarioLabel, boxCount) {
+      if (shelfId) {
+        refShelfSelect.value = shelfId;
+        syncSelectedShelfTelemetry();
+      }
+      if (refScenarioSelect) {
+        // Find best match in scenario options
+        let matchedIndex = -1;
+        for (let i = 0; i < refScenarioSelect.options.length; i++) {
+          const optVal = refScenarioSelect.options[i].value;
+          if (optVal.includes(scenarioLabel) || (optVal.split('|')[1] === String(boxCount))) {
+            matchedIndex = i;
+            if (optVal.includes(scenarioLabel)) break;
+          }
+        }
+        if (matchedIndex !== -1) {
+          refScenarioSelect.selectedIndex = matchedIndex;
+          autoConfigureSlotCheckboxes();
+        }
+      }
+      showToast(`Selected ${shelfId} (${scenarioLabel || boxCount + ' Boxes'}). Loading preview...`, 'info');
+      fetchLiveAnglePreview();
+      refCaptureForm.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
 
     // =========================================================================
@@ -1258,61 +1284,64 @@
       let data = null;
 
       try {
-        if (supabaseClient) {
-          try {
+        // Direct Supabase REST / SDK first
+        try {
+          data = await sbRest('compartments', 'GET', '?select=*&order=shelf_id.asc');
+        } catch (restErr) {
+          if (supabaseClient) {
             const res = await supabaseClient
               .from('compartments')
               .select('*')
               .order('shelf_id', { ascending: true });
-            if (!res.error && res.data) {
-              data = res.data;
-            }
-          } catch (e) {
-            console.warn('SDK compartments read failed, trying sbRest:', e);
+            if (!res.error && res.data) data = res.data;
           }
         }
 
-        if (!data) {
-          data = await sbRest('compartments', 'GET', '?select=*&order=shelf_id.asc');
+        if (data && Array.isArray(data)) {
+          dbStatusDot.className = 'status-dot connected';
+          dbStatusText.textContent = 'Cloud DB: Connected';
+          compartmentsData = data;
         }
 
-        dbStatusDot.className = 'status-dot connected';
-        dbStatusText.textContent = 'Cloud DB: Connected';
-        compartmentsData = data || [];
-
-        // Check and merge live local bridge status if available
+        // Merge or fallback from Local Bridge if online
         try {
           const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
           if (bridgeResp.ok) {
             const bridgeJson = await bridgeResp.json();
             const bridgeComps = bridgeJson.compartments || [];
-            const bridgeMap = {};
-            bridgeComps.forEach((c) => {
-              if (c.shelf_id) bridgeMap[c.shelf_id] = c;
-            });
+            if (!compartmentsData || compartmentsData.length === 0) {
+              compartmentsData = bridgeComps;
+            } else {
+              const bridgeMap = {};
+              bridgeComps.forEach((c) => {
+                if (c.shelf_id) bridgeMap[c.shelf_id] = c;
+              });
 
-            compartmentsData = compartmentsData.map((c) => {
-              const live = bridgeMap[c.shelf_id];
-              if (!live) return c;
-              return {
-                ...c,
-                status: live.status || c.status,
-                ip_address: live.ip_address || c.ip_address,
-                rssi_dbm: live.rssi_dbm != null ? live.rssi_dbm : c.rssi_dbm,
-                free_heap_bytes: live.free_heap_bytes != null ? live.free_heap_bytes : c.free_heap_bytes,
-                last_seen_at: live.last_seen_at || c.last_seen_at,
-                baseline_image_url: live.baseline_image_url || c.baseline_image_url,
-                baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
-                current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
-              };
-            });
+              compartmentsData = compartmentsData.map((c) => {
+                const live = bridgeMap[c.shelf_id];
+                if (!live) return c;
+                return {
+                  ...c,
+                  status: live.status || c.status,
+                  ip_address: live.ip_address || c.ip_address,
+                  rssi_dbm: live.rssi_dbm != null ? live.rssi_dbm : c.rssi_dbm,
+                  free_heap_bytes: live.free_heap_bytes != null ? live.free_heap_bytes : c.free_heap_bytes,
+                  last_seen_at: live.last_seen_at || c.last_seen_at,
+                  baseline_image_url: live.baseline_image_url || c.baseline_image_url,
+                  baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
+                  current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
+                };
+              });
+            }
           }
         } catch (bridgeErr) {
-          // Local bridge offline; continue displaying Supabase data
+          // Local bridge offline; keep using Supabase data
         }
 
-        renderCompartments(compartmentsData);
-        syncSelectedShelfTelemetry();
+        if (compartmentsData && compartmentsData.length > 0) {
+          renderCompartments(compartmentsData);
+          syncSelectedShelfTelemetry();
+        }
       } catch (err) {
         console.error('Error loading compartments:', err);
         dbStatusDot.className = 'status-dot error';
@@ -1321,25 +1350,32 @@
     }
 
     async function loadComparisonLogs() {
+      let data = null;
       try {
-        let data = null;
-        if (supabaseClient) {
-          try {
+        try {
+          data = await sbRest('comparison_logs', 'GET', '?select=*&order=created_at.desc&limit=20');
+        } catch (restErr) {
+          if (supabaseClient) {
             const res = await supabaseClient
               .from('comparison_logs')
               .select('*')
               .order('created_at', { ascending: false })
               .limit(20);
-            if (!res.error && res.data) {
-              data = res.data;
-            }
-          } catch (e) {
-            console.warn('SDK comparison_logs read failed, trying sbRest:', e);
+            if (!res.error && res.data) data = res.data;
           }
         }
 
-        if (!data) {
-          data = await sbRest('comparison_logs', 'GET', '?select=*&order=created_at.desc&limit=20');
+        // Bridge fallback if DB empty/offline
+        if (!data || data.length === 0) {
+          try {
+            const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
+            if (bridgeResp.ok) {
+              const bridgeJson = await bridgeResp.json();
+              if (bridgeJson.comparison_logs && bridgeJson.comparison_logs.length > 0) {
+                data = bridgeJson.comparison_logs;
+              }
+            }
+          } catch (e) {}
         }
 
         comparisonLogsData = data || [];
@@ -1350,25 +1386,32 @@
     }
 
     async function loadReferenceSamples() {
+      let data = null;
       try {
-        let data = null;
-        if (supabaseClient) {
-          try {
+        try {
+          data = await sbRest('esp32_reference_samples', 'GET', '?select=*&order=box_count.desc,created_at.desc');
+        } catch (restErr) {
+          if (supabaseClient) {
             const res = await supabaseClient
               .from('esp32_reference_samples')
               .select('*')
-              .order('created_at', { ascending: false })
-              .limit(24);
-            if (!res.error && res.data) {
-              data = res.data;
-            }
-          } catch (e) {
-            console.warn('SDK reference samples read failed, trying sbRest:', e);
+              .order('box_count', { ascending: false })
+              .order('created_at', { ascending: false });
+            if (!res.error && res.data) data = res.data;
           }
         }
 
-        if (!data) {
-          data = await sbRest('esp32_reference_samples', 'GET', '?select=*&order=created_at.desc&limit=24');
+        // Bridge fallback if DB empty/offline
+        if (!data || data.length === 0) {
+          try {
+            const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_reference_samples`, { cache: 'no-store' });
+            if (bridgeResp.ok) {
+              const bridgeJson = await bridgeResp.json();
+              if (bridgeJson.samples && bridgeJson.samples.length > 0) {
+                data = bridgeJson.samples;
+              }
+            }
+          } catch (e) {}
         }
 
         referenceSamplesData = data || [];
@@ -1483,13 +1526,19 @@
 
       referencesGallery.innerHTML = samples.map((sample) => {
         const timeStr = sample.created_at ? new Date(sample.created_at).toLocaleDateString() : '';
+        const safeShelf = (sample.shelf_id || 'SHELF_R1_C1').replace(/'/g, "\\'");
+        const safeLabel = (sample.sample_label || '').replace(/'/g, "\\'");
+        const boxCount = sample.box_count != null ? sample.box_count : 4;
         return `
           <div class="ref-card">
             <img src="${sample.image_url}" class="ref-card-img" alt="${sample.sample_label}" />
             <div class="ref-card-body">
               <div class="ref-card-title">
                 <span>${sample.shelf_id} &bull; ${sample.box_count} Boxes</span>
-                <button type="button" class="btn-danger" onclick="deleteReferenceSample('${sample.sample_id}')">Delete</button>
+                <div style="display: flex; gap: 4px;">
+                  <button type="button" class="btn-action" style="padding: 3px 8px; font-size: 10px;" onclick="retakeScenarioReference('${safeShelf}', '${safeLabel}', ${boxCount})">Retake</button>
+                  <button type="button" class="btn-danger" style="padding: 3px 8px; font-size: 10px;" onclick="deleteReferenceSample('${sample.sample_id}')">Delete</button>
+                </div>
               </div>
               <div style="font-size: 11px; color: var(--text-muted);">${sample.sample_label}</div>
               <div style="font-size: 10px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 2px;">

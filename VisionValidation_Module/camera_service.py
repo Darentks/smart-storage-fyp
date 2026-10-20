@@ -491,6 +491,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         if path == "/esp32_reference_samples":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
             esp32_ip = body.get("ip_address") or body.get("ip")
+            if esp32_ip and str(esp32_ip).strip():
+                clean_ip = str(esp32_ip).replace("http://", "").replace("/", "").strip()
+                ACTIVE_ESP32_IPS[shelf_id] = clean_ip
+
             box_count = int(body.get("box_count", 4))
             sample_label = str(body.get("sample_label") or f"{shelf_id} - {box_count} Boxes Ref").strip()
             provided_image = body.get("image") or body.get("image_url")
@@ -604,15 +608,44 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/esp32_reference_samples":
             sample_id = query.get("sample_id", [None])[0]
-            if not sample_id:
+            shelf_id = query.get("shelf_id", [None])[0]
+            all_param = query.get("all", ["0"])[0]
+
+            if not sample_id and not shelf_id:
                 body = self._read_json_body()
                 sample_id = body.get("sample_id")
+                shelf_id = body.get("shelf_id")
+                if "all" in body:
+                    all_param = str(body.get("all"))
 
-            if not sample_id:
-                self._send_json(400, {"status": "failed", "error": "Missing sample_id"})
+            # Bulk delete all samples for a shelf
+            if shelf_id and (str(all_param) in ["1", "true", "True"] or not sample_id):
+                deleted = delete_esp32_reference_sample(shelf_id=str(shelf_id).strip())
+                # Also optionally remove local disk sample pictures
+                try:
+                    ref_dir = os.path.join(BACKEND_DIR, "reference_esp32", str(shelf_id).strip())
+                    if os.path.isdir(ref_dir):
+                        for f in os.listdir(ref_dir):
+                            if f.endswith(".jpg"):
+                                try:
+                                    os.remove(os.path.join(ref_dir, f))
+                                except Exception:
+                                    pass
+                except Exception:
+                    pass
+
+                self._send_json(200 if deleted else 500, {
+                    "status": "success" if deleted else "failed",
+                    "shelf_id": shelf_id,
+                    "deleted_all": True,
+                })
                 return
 
-            deleted = delete_esp32_reference_sample(str(sample_id))
+            if not sample_id:
+                self._send_json(400, {"status": "failed", "error": "Missing sample_id or shelf_id with all=1"})
+                return
+
+            deleted = delete_esp32_reference_sample(sample_id=str(sample_id))
             self._send_json(200 if deleted else 500, {
                 "status": "success" if deleted else "failed",
                 "sample_id": sample_id,

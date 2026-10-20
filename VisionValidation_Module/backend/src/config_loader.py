@@ -30,28 +30,28 @@ except ImportError:
 _client_cache: Optional[Client] = None
 
 
-def _supabase_rest_request(
+def _supabase_rest(
     method: str = "GET",
-    endpoint: str = "",
-    params: str = "",
-    body: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
-    prefer: Optional[str] = None,
+    table: str = "",
+    query: str = "",
+    payload: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
+    prefer: Optional[str] = "return=representation",
     timeout: float = 8.0,
 ) -> Any:
     """
     Native Python urllib.request PostgREST helper that calls:
-    {SUPABASE_URL}/rest/v1/{endpoint}{params}
-    with 'apikey' and 'Authorization: Bearer' headers.
+    {supabase_url}/rest/v1/{table}{query}
+    with headers 'apikey', 'Authorization: Bearer', 'Content-Type: application/json', and 'Prefer'.
     Returns parsed JSON data (or True/False for DELETE, or [] on error).
     """
     base_url = get_resolved_supabase_url()
     api_key = get_resolved_supabase_key()
 
-    if params and not params.startswith("?"):
-        params = "?" + params
+    if query and not query.startswith("?"):
+        query = "?" + query
 
-    clean_endpoint = endpoint.lstrip("/")
-    url = f"{base_url}/rest/v1/{clean_endpoint}{params}"
+    clean_table = table.lstrip("/")
+    url = f"{base_url}/rest/v1/{clean_table}{query}"
 
     headers = {
         "apikey": api_key,
@@ -62,8 +62,8 @@ def _supabase_rest_request(
         headers["Prefer"] = prefer
 
     data_bytes = None
-    if body is not None:
-        data_bytes = json.dumps(body).encode("utf-8")
+    if payload is not None:
+        data_bytes = json.dumps(payload).encode("utf-8")
 
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method.upper())
     try:
@@ -73,8 +73,12 @@ def _supabase_rest_request(
             raw_text = resp.read().decode("utf-8")
             return json.loads(raw_text) if raw_text else []
     except Exception as exc:
-        print(f"[_supabase_rest_request] {method.upper()} on '{endpoint}' failed: {exc}")
+        print(f"[_supabase_rest] {method.upper()} on '{table}' failed: {exc}")
         return False if method.upper() == "DELETE" else []
+
+
+# Alias for backward compatibility
+_supabase_rest_request = _supabase_rest
 
 
 class SupabaseRestFallback:
@@ -91,19 +95,19 @@ class SupabaseRestFallback:
         self.timeout = timeout
 
     def select(self, table: str, query_params: str = "?select=*") -> List[Dict[str, Any]]:
-        res = _supabase_rest_request(
+        res = _supabase_rest(
             method="GET",
-            endpoint=table,
-            params=query_params,
+            table=table,
+            query=query_params,
             timeout=self.timeout,
         )
         return res if isinstance(res, list) else []
 
     def insert(self, table: str, payload: Union[Dict[str, Any], List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        res = _supabase_rest_request(
+        res = _supabase_rest(
             method="POST",
-            endpoint=table,
-            body=payload,
+            table=table,
+            payload=payload,
             prefer="return=representation",
             timeout=self.timeout,
         )
@@ -115,33 +119,33 @@ class SupabaseRestFallback:
         payload: Union[Dict[str, Any], List[Dict[str, Any]]],
         on_conflict: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        params = f"?on_conflict={urllib.parse.quote(on_conflict)}" if on_conflict else ""
-        res = _supabase_rest_request(
+        query = f"?on_conflict={urllib.parse.quote(on_conflict)}" if on_conflict else ""
+        res = _supabase_rest(
             method="POST",
-            endpoint=table,
-            params=params,
-            body=payload,
+            table=table,
+            query=query,
+            payload=payload,
             prefer="resolution=merge-duplicates,return=representation",
             timeout=self.timeout,
         )
         return res if isinstance(res, list) else []
 
     def update(self, table: str, query_params: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
-        res = _supabase_rest_request(
+        res = _supabase_rest(
             method="PATCH",
-            endpoint=table,
-            params=query_params,
-            body=payload,
+            table=table,
+            query=query_params,
+            payload=payload,
             prefer="return=representation",
             timeout=self.timeout,
         )
         return res if isinstance(res, list) else []
 
     def delete(self, table: str, query_params: str) -> bool:
-        res = _supabase_rest_request(
+        res = _supabase_rest(
             method="DELETE",
-            endpoint=table,
-            params=query_params,
+            table=table,
+            query=query_params,
             timeout=self.timeout,
         )
         return bool(res)
@@ -570,13 +574,14 @@ def list_comparison_logs(limit: int = 15) -> List[Dict[str, Any]]:
 def insert_esp32_reference_sample(sample_record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
     Inserts or upserts an ESP32 reference capture sample into public.esp32_reference_samples.
+    If a record with the same (shelf_id, sample_label) exists, cleanly replaces it.
     """
-    shelf_id = sample_record.get("shelf_id", "SHELF_R1_C1")
+    shelf_id = str(sample_record.get("shelf_id", "SHELF_R1_C1")).strip()
     mqtt_client_id = sample_record.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}"
     rack_id = sample_record.get("rack_id", "RACK_01")
     box_count = int(sample_record.get("box_count", 4))
     image_url = sample_record.get("image_url", "")
-    sample_label = sample_record.get("sample_label") or f"{shelf_id} - {box_count} Boxes Ref"
+    sample_label = str(sample_record.get("sample_label") or f"{shelf_id} - {box_count} Boxes Ref").strip()
 
     payload: Dict[str, Any] = {
         "shelf_id": shelf_id,
@@ -594,14 +599,37 @@ def insert_esp32_reference_sample(sample_record: Dict[str, Any]) -> Optional[Dic
     client = get_supabase_client()
     if client is not None:
         try:
+            # 1. Try SDK upsert with on_conflict
             resp = client.table("esp32_reference_samples").upsert(payload, on_conflict="shelf_id,sample_label").execute()
-            return resp.data[0] if resp.data else payload
+            if resp.data and len(resp.data) > 0:
+                return resp.data[0]
         except Exception as exc:
-            print(f"[ConfigLoader] Failed to upsert esp32_reference_sample via SDK ({exc}), trying SupabaseRestFallback.")
+            # If unique constraint on (shelf_id, sample_label) is missing or SDK throws,
+            # explicitly delete any existing record with same (shelf_id, sample_label) and re-insert
+            print(f"[ConfigLoader] SDK upsert esp32_reference_sample: {exc}. Trying delete + insert...")
+            try:
+                client.table("esp32_reference_samples").delete().eq("shelf_id", shelf_id).eq("sample_label", sample_label).execute()
+                ins_resp = client.table("esp32_reference_samples").insert(payload).execute()
+                if ins_resp.data and len(ins_resp.data) > 0:
+                    return ins_resp.data[0]
+            except Exception as inner_exc:
+                print(f"[ConfigLoader] SDK delete+insert fallback failed ({inner_exc}), trying REST...")
 
+    # REST Fallback
     fallback = SupabaseRestFallback()
+    # First attempt REST upsert with on_conflict
     upserted = fallback.upsert("esp32_reference_samples", payload, on_conflict="shelf_id,sample_label")
-    return upserted[0] if upserted else payload
+    if upserted:
+        return upserted[0]
+
+    # If upsert didn't return representation (e.g. unique constraint not defined on table),
+    # cleanly delete existing record for this shelf_id and sample_label, then insert
+    fallback.delete(
+        "esp32_reference_samples",
+        f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}&sample_label=eq.{urllib.parse.quote(sample_label)}",
+    )
+    inserted = fallback.insert("esp32_reference_samples", payload)
+    return inserted[0] if inserted else payload
 
 
 def list_esp32_reference_samples(shelf_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -624,17 +652,29 @@ def list_esp32_reference_samples(shelf_id: Optional[str] = None) -> List[Dict[st
     return fallback.select("esp32_reference_samples", q)
 
 
-def delete_esp32_reference_sample(sample_id: str) -> bool:
+def delete_esp32_reference_sample(sample_id: Optional[str] = None, shelf_id: Optional[str] = None) -> bool:
     """
-    Deletes an ESP32 reference sample from public.esp32_reference_samples by sample_id.
+    Deletes an ESP32 reference sample by sample_id, or bulk deletes all samples for a shelf_id.
     """
+    if not sample_id and not shelf_id:
+        return False
+
     client = get_supabase_client()
     if client is not None:
         try:
-            client.table("esp32_reference_samples").delete().eq("sample_id", sample_id).execute()
+            query = client.table("esp32_reference_samples").delete()
+            if sample_id:
+                query = query.eq("sample_id", sample_id)
+            elif shelf_id:
+                query = query.eq("shelf_id", shelf_id.strip())
+            query.execute()
             return True
         except Exception as exc:
             print(f"[ConfigLoader] Failed to delete esp32_reference_sample via SDK ({exc}), trying SupabaseRestFallback.")
 
     fallback = SupabaseRestFallback()
-    return fallback.delete("esp32_reference_samples", f"?sample_id=eq.{urllib.parse.quote(str(sample_id))}")
+    if sample_id:
+        return fallback.delete("esp32_reference_samples", f"?sample_id=eq.{urllib.parse.quote(str(sample_id))}")
+    elif shelf_id:
+        return fallback.delete("esp32_reference_samples", f"?shelf_id=eq.{urllib.parse.quote(str(shelf_id).strip())}")
+    return False
