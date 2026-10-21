@@ -14,20 +14,22 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from dotenv import load_dotenv
+
+if TYPE_CHECKING:
+    from supabase import Client
 
 DEFAULT_SUPABASE_URL = "https://hrufeowqpnyjfwxydocm.supabase.co"
 DEFAULT_SUPABASE_KEY = "sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt"
 
 try:
-    from supabase import Client, create_client
+    from supabase import create_client
     _SUPABASE_AVAILABLE = True
 except ImportError:
     _SUPABASE_AVAILABLE = False
-    Client = Any  # type: ignore
 
-_client_cache: Optional[Client] = None
+_client_cache: Optional[Any] = None
 
 
 def _supabase_rest(
@@ -208,7 +210,7 @@ def get_resolved_supabase_key() -> str:
     return key.strip() if key else DEFAULT_SUPABASE_KEY
 
 
-def get_supabase_client() -> Optional[Client]:
+def get_supabase_client() -> Optional[Any]:
     """
     Initializes and returns a cached Supabase Client using environment variables
     or default fallback credentials.
