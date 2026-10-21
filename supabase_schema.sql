@@ -119,3 +119,27 @@ ON CONFLICT (shelf_id) DO UPDATE SET
     current_quantity = EXCLUDED.current_quantity,
     max_capacity = EXCLUDED.max_capacity,
     status = EXCLUDED.status;
+
+
+-- ============================================================================
+-- EXPLICIT DATA API GRANTS (Required for Supabase tables created after Oct 30, 2026)
+-- Grants full CRUD to anon (used by sb_publishable_ key), authenticated, and service_role
+-- ============================================================================
+
+-- 1. Schema usage
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+
+-- 2. Table-level CRUD permissions for all 3 core FYP tables
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.compartments TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.esp32_reference_samples TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.comparison_logs TO anon, authenticated, service_role;
+
+-- 3. Sequence permissions (in case any serial/identity columns are used)
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+
+-- 4. Future-proofing: Automatically grant permissions on any new tables/sequences created later
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO anon, authenticated, service_role;
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+GRANT USAGE, SELECT ON SEQUENCES TO anon, authenticated, service_role;
