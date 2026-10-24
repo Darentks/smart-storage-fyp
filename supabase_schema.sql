@@ -12,13 +12,17 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE TABLE IF NOT EXISTS public.compartments (
     shelf_id VARCHAR(50) PRIMARY KEY,                                      -- e.g. 'SHELF_R1_C1'
     rack_id VARCHAR(50) NOT NULL DEFAULT 'RACK_01',                         -- Rack namespace identifier
-    mqtt_client_id VARCHAR(100) UNIQUE NOT NULL,                            -- e.g. 'ESP32_R1_C1'
+    mqtt_client_id VARCHAR(100) UNIQUE NOT NULL,                            -- Primary ESP32 node (e.g. 'ESP32_R1_C1')
     camera_name VARCHAR(100) NOT NULL DEFAULT 'ESP32 Node R1-C1',           -- Human-readable camera node name
-    ip_address VARCHAR(50) NULL,                                            -- Local IP address of ESP32 node
+    ip_address VARCHAR(50) NULL,                                            -- Local IP address of primary ESP32 node
+    secondary_ip_address TEXT DEFAULT '192.168.0.102',                      -- IP of 2nd ESP32-CAM Front Angle for this compartment
+    secondary_mqtt_client_id TEXT DEFAULT 'ESP32_R1_C1_CAM2',               -- MQTT ID of 2nd ESP32-CAM
     current_quantity INTEGER NOT NULL DEFAULT 4 CHECK (current_quantity >= 0 AND current_quantity <= 4),
     max_capacity INTEGER NOT NULL DEFAULT 4,                                -- Max items in compartment (4)
-    baseline_image_url TEXT NULL,                                           -- Latest 30-second baseline snapshot
+    baseline_image_url TEXT NULL,                                           -- Latest 30-second baseline snapshot (Primary Angle)
+    baseline_image_2_url TEXT NULL,                                         -- 30s baseline snapshot from ESP32-CAM Front Angle
     baseline_updated_at TIMESTAMPTZ NULL,                                   -- Timestamp of last baseline update
+    tm_model_url TEXT DEFAULT 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/', -- Teachable Machine model URL
     status VARCHAR(20) NOT NULL DEFAULT 'OFFLINE',                          -- 'ONLINE', 'OFFLINE', 'ERROR'
     rssi_dbm INTEGER NULL,                                                  -- Wi-Fi signal strength (dBm)
     free_heap_bytes INTEGER NULL,                                           -- ESP32 free SRAM heap (bytes)
@@ -26,20 +30,32 @@ CREATE TABLE IF NOT EXISTS public.compartments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Migration Statements for Existing Tables
+ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS secondary_ip_address TEXT DEFAULT '192.168.0.102';
+ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS secondary_mqtt_client_id TEXT DEFAULT 'ESP32_R1_C1_CAM2';
+ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS baseline_image_2_url TEXT;
+ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS tm_model_url TEXT DEFAULT 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/';
+
 CREATE INDEX IF NOT EXISTS idx_compartments_rack_id ON public.compartments(rack_id);
 CREATE INDEX IF NOT EXISTS idx_compartments_mqtt_client_id ON public.compartments(mqtt_client_id);
 
 -- -----------------------------------------------------------------------------
 -- Table 2: public.esp32_reference_samples
 -- Tested ESP32-CAM angle & scenario reference photos for 4, 3, 2, 1, 0 boxes
+-- Supports the 5 core scenarios:
+--   Scenario 1: 4/4 Boxes Present (box_count = 4)
+--   Scenario 2: 3/4 Boxes Present (box_count = 3)
+--   Scenario 3: 2/4 Boxes Present (box_count = 2)
+--   Scenario 4: 1/4 Box Present   (box_count = 1)
+--   Scenario 5: 0/4 No Box Present(box_count = 0)
 -- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS public.esp32_reference_samples (
     sample_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     mqtt_client_id VARCHAR(100) NOT NULL,
     rack_id VARCHAR(50) NOT NULL DEFAULT 'RACK_01',
     shelf_id VARCHAR(50) NOT NULL REFERENCES public.compartments(shelf_id) ON DELETE CASCADE,
-    sample_label VARCHAR(120) NOT NULL,
-    box_count INTEGER NOT NULL DEFAULT 4 CHECK (box_count >= 0 AND box_count <= 4),
+    sample_label VARCHAR(120) NOT NULL,                                     -- e.g. 'Scenario 1: 4/4 Boxes Present'
+    box_count INTEGER NOT NULL DEFAULT 4 CHECK (box_count >= 0 AND box_count <= 4), -- 0..4 box count
     slot_states JSONB NOT NULL DEFAULT '{"front_top": 1, "back_top": 1, "front_bottom": 1, "back_bottom": 1}'::jsonb,
     flash_enabled BOOLEAN NOT NULL DEFAULT TRUE,
     feature_signature JSONB NULL,
