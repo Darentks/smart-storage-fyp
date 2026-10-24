@@ -374,6 +374,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         if path == "/esp32_preview":
             t0 = time.time()
             esp32_ip = query.get("ip", [None])[0]
+            esp32_ip2 = query.get("ip2", [None])[0]
             shelf_id = query.get("shelf_id", ["SHELF_R1_C1"])[0]
 
             if esp32_ip and str(esp32_ip).strip():
@@ -390,6 +391,35 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     "last_seen_at": now_iso,
                 }
                 update_esp32_health_in_supabase(node_health)
+
+            if esp32_ip and esp32_ip2:
+                # Dual-camera capture: Back Cam (ip) + Front Cam (ip2)
+                frame_bgr, combined_url, url1, url2 = esp32_ref_manager.fetch_dual_esp32_frame(
+                    esp32_ip1=esp32_ip,
+                    esp32_ip2=esp32_ip2,
+                    mode="live",
+                )
+                latency_ms = int((time.time() - t0) * 1000)
+
+                cached = esp32_ref_manager.baseline_cache.get(shelf_id)
+                if not cached or not cached.get("data_url"):
+                    esp32_ref_manager.update_30s_baseline(
+                        shelf_id=shelf_id,
+                        esp32_ip=esp32_ip,
+                        image_data_url=combined_url,
+                    )
+
+                self._send_json(200, {
+                    "status": "success",
+                    "shelf_id": shelf_id,
+                    "ip": esp32_ip,
+                    "ip2": esp32_ip2,
+                    "image": combined_url,
+                    "image_back": url1,
+                    "image_front": url2,
+                    "latency_ms": latency_ms,
+                })
+                return
 
             frame_bgr, data_url = esp32_ref_manager.fetch_esp32_http_frame(esp32_ip=esp32_ip, mode="live")
             latency_ms = int((time.time() - t0) * 1000)
@@ -408,6 +438,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "shelf_id": shelf_id,
                 "ip": esp32_ip,
                 "image": data_url,
+                "image_back": data_url,
+                "image_front": None,
                 "latency_ms": latency_ms,
             })
             return
@@ -563,7 +595,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             mqtt_client_id = str(body.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}").strip()
             expected_action = str(body.get("expected_action", "BORROW")).upper()
             esp32_ip = body.get("ip_address") or body.get("ip")
+            esp32_ip2 = body.get("ip2") or body.get("secondary_ip_address") or body.get("secondary_ip")
             after_image = body.get("image") or body.get("image_url")
+            predicted_box_count = body.get("predicted_box_count")
+            if predicted_box_count is None and "box_count" in body:
+                predicted_box_count = body.get("box_count")
+            tm_confidence = body.get("tm_confidence") or body.get("confidence")
 
             # Determine current quantity
             curr_qty = 4
@@ -571,6 +608,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 for comp in list_esp32_cameras():
                     if comp.get("shelf_id") == shelf_id:
                         curr_qty = int(comp.get("current_quantity", 4))
+                        # If esp32_ip2 wasn't sent in body, check if compartment has secondary_ip_address
+                        if not esp32_ip2 and comp.get("secondary_ip_address"):
+                            esp32_ip2 = comp.get("secondary_ip_address")
                         break
             except Exception:
                 pass
@@ -581,7 +621,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 expected_action=expected_action,
                 current_quantity=curr_qty,
                 esp32_ip=esp32_ip,
+                esp32_ip2=esp32_ip2,
                 after_data_url=after_image,
+                tm_predicted_box_count=int(predicted_box_count) if predicted_box_count is not None else None,
+                tm_confidence=float(tm_confidence) if tm_confidence is not None else None,
             )
 
             # Apply delta into public.compartments & comparison_logs

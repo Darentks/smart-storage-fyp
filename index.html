@@ -7,6 +7,9 @@
   <!-- Supabase JS Client via CDN -->
   <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <!-- TensorFlow.js & Google Teachable Machine Image Library -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
   <style>
     :root {
       --bg: #090d16;
@@ -734,13 +737,18 @@
     </header>
 
     <!-- Bridge Config & Quick Action Bar -->
-    <div class="config-bar">
-      <div class="config-bar-left">
+    <div class="config-bar" style="flex-wrap: wrap; gap: 12px;">
+      <div class="config-bar-left" style="flex-wrap: wrap; gap: 8px;">
         <label for="bridgeUrlInput">Local Bridge URL:</label>
         <input type="text" id="bridgeUrlInput" value="http://localhost:8008" placeholder="http://localhost:8008" />
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
       </div>
-      <div style="display: flex; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">TM Model URL:</label>
+        <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control" placeholder="https://teachablemachine.withgoogle.com/models/.../" />
+        <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302; Load TM Model</button>
+      </div>
+      <div style="display: flex; gap: 8px; margin-left: auto;">
         <button type="button" class="btn-action" onclick="launchLocalCalibrator()">&#9881; Launch Desktop Calibrator</button>
         <button type="button" class="btn-action" onclick="refreshAllData()">&circlearrowright; Refresh All</button>
       </div>
@@ -931,6 +939,8 @@
     const bridgeStatusDot = document.getElementById('bridgeStatusDot');
     const bridgeStatusText = document.getElementById('bridgeStatusText');
     const bridgeUrlInput = document.getElementById('bridgeUrlInput');
+    const tmModelUrlInput = document.getElementById('tmModelUrlInput');
+    const loadTmModelBtn = document.getElementById('loadTmModelBtn');
     const compartmentsGrid = document.getElementById('compartmentsGrid');
     const comparisonLogsList = document.getElementById('comparisonLogsList');
     const logCountBadge = document.getElementById('logCountBadge');
@@ -947,6 +957,91 @@
     let comparisonLogsData = [];
     let referenceSamplesData = [];
     let currentPreviewDataUrl = null;
+
+    // =========================================================================
+    // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 5 CORE SCENARIOS
+    // =========================================================================
+    const DEFAULT_TM_MODEL_URL = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
+    const SCENARIO_LABELS = {
+      4: "Scenario 1: 4/4 Boxes Present",
+      3: "Scenario 2: 3/4 Boxes Present",
+      2: "Scenario 3: 2/4 Boxes Present",
+      1: "Scenario 4: 1/4 Box Present",
+      0: "Scenario 5: 0/4 No Box Present"
+    };
+
+    window.tmModel = null;
+
+    async function loadTeachableMachineModel() {
+      if (!window.tmImage) {
+        console.warn('Teachable Machine Image library (@teachablemachine/image) not available yet.');
+        return;
+      }
+      let rawUrl = (tmModelUrlInput ? tmModelUrlInput.value : '').trim() || localStorage.getItem('smart_storage_tm_model_url') || DEFAULT_TM_MODEL_URL;
+      if (!rawUrl.endsWith('/')) rawUrl += '/';
+      if (tmModelUrlInput) tmModelUrlInput.value = rawUrl;
+      localStorage.setItem('smart_storage_tm_model_url', rawUrl);
+
+      const modelURL = rawUrl + 'model.json';
+      const metadataURL = rawUrl + 'metadata.json';
+
+      if (loadTmModelBtn) {
+        loadTmModelBtn.disabled = true;
+        loadTmModelBtn.textContent = 'Loading TM...';
+      }
+
+      try {
+        console.log(`[TM Loader] Loading Teachable Machine model from: ${rawUrl}`);
+        window.tmModel = await tmImage.load(modelURL, metadataURL);
+        console.log('[TM Loader] Teachable Machine Model loaded successfully. Classes:', window.tmModel.getClassLabels());
+        showToast('Teachable Machine model loaded successfully!', 'success');
+        if (loadTmModelBtn) {
+          loadTmModelBtn.disabled = false;
+          loadTmModelBtn.textContent = 'TM Model: Active';
+          loadTmModelBtn.style.borderColor = 'var(--success)';
+          loadTmModelBtn.style.color = 'var(--success)';
+        }
+      } catch (err) {
+        console.error('[TM Loader] Failed to load Teachable Machine model:', err);
+        showToast(`TM Model load failed: ${err.message}`, 'error');
+        if (loadTmModelBtn) {
+          loadTmModelBtn.disabled = false;
+          loadTmModelBtn.textContent = 'Load TM Model';
+        }
+      }
+    }
+
+    async function predictDualCamerasWithTM(backImgEl, frontImgEl) {
+      if (!window.tmModel) return null;
+      // 1. Predict Back Camera (filter classes starting with "Back_")
+      const backPreds = await window.tmModel.predict(backImgEl);
+      const backOnly = backPreds.filter(p => p.className.toLowerCase().startsWith("back_"));
+      const bestBack = (backOnly.length ? backOnly : backPreds).reduce((a, b) => a.probability > b.probability ? a : b);
+      const backMatch = bestBack.className.match(/(\d+)/);
+      const backCount = backMatch ? parseInt(backMatch[1], 10) : 0;
+
+      // 2. Predict Front Camera (filter classes starting with "Front_")
+      const frontPreds = await window.tmModel.predict(frontImgEl);
+      const frontOnly = frontPreds.filter(p => p.className.toLowerCase().startsWith("front_"));
+      const bestFront = (frontOnly.length ? frontOnly : frontPreds).reduce((a, b) => a.probability > b.probability ? a : b);
+      const frontMatch = bestFront.className.match(/(\d+)/);
+      const frontCount = frontMatch ? parseInt(frontMatch[1], 10) : 0;
+
+      // 3. Combine Back + Front into the 5 Scenarios (4/4, 3/4, 2/4, 1/4, 0/4)
+      const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
+      const avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
+      return {
+        backClass: bestBack.className,
+        backCount,
+        backConfidence: Number((bestBack.probability * 100).toFixed(1)),
+        frontClass: bestFront.className,
+        frontCount,
+        frontConfidence: Number((bestFront.probability * 100).toFixed(1)),
+        totalBoxes,
+        scenarioLabel: SCENARIO_LABELS[totalBoxes],
+        confidence: avgConfidence
+      };
+    }
 
     // Toast helper
     function showToast(message, type = 'info') {
@@ -1671,6 +1766,11 @@
     }
 
     // Initialization
+    if (tmModelUrlInput) {
+      const savedTmUrl = localStorage.getItem('smart_storage_tm_model_url') || DEFAULT_TM_MODEL_URL;
+      tmModelUrlInput.value = savedTmUrl;
+    }
+    loadTeachableMachineModel();
     refreshAllData();
     autoConfigureSlotCheckboxes();
     setupRealtimeSubscriptions();
