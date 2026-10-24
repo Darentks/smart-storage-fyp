@@ -1427,48 +1427,6 @@
       }
     }
 
-    async function loadReferenceSamples() {
-      let data = null;
-      try {
-        try {
-          data = await sbRest('esp32_reference_samples', 'GET', '?select=*&order=box_count.desc,created_at.desc');
-        } catch (restErr) {
-          if (supabaseClient) {
-            const res = await supabaseClient
-              .from('esp32_reference_samples')
-              .select('*')
-              .order('box_count', { ascending: false })
-              .order('created_at', { ascending: false });
-            if (!res.error && res.data) data = res.data;
-          }
-        }
-
-        // Bridge fallback if DB empty/offline
-        if (!data || data.length === 0) {
-          try {
-            const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_reference_samples`, { cache: 'no-store' });
-            if (bridgeResp.ok) {
-              const bridgeJson = await bridgeResp.json();
-              if (bridgeJson.samples && bridgeJson.samples.length > 0) {
-                data = bridgeJson.samples;
-              }
-            }
-          } catch (e) {}
-        }
-
-        referenceSamplesData = data || [];
-        renderReferenceSamples(referenceSamplesData);
-      } catch (err) {
-        console.error('Error loading reference samples:', err);
-      }
-    }
-
-    function refreshAllData() {
-      loadCompartments();
-      loadComparisonLogs();
-      loadReferenceSamples();
-    }
-
     // =========================================================================
     // RENDER FUNCTIONS
     // =========================================================================
