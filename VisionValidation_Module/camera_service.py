@@ -76,6 +76,9 @@ ACTIVE_ESP32_IPS = {
     "SHELF_R1_C1": os.getenv("ESP32_CAM_IP", "192.168.0.101"),
 }
 
+# Buffer of pending CCTV intent confirmation triggers to be consumed by the UI Teachable Machine engine
+PENDING_CCTV_TRIGGERS: list = []
+
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 mqtt_bridge = MQTTClientNode(
@@ -360,6 +363,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         if path == "/esp32_nodes":
             nodes = get_merged_compartments_and_nodes()
             logs = list_comparison_logs(15)
+
+            # Return pending triggers and clear so dashboard consumes them once
+            pending = list(PENDING_CCTV_TRIGGERS)
+            PENDING_CCTV_TRIGGERS.clear()
+
             self._send_json(200, {
                 "status": "success",
                 "rack_id": spatial_mapper.rack_id,
@@ -368,6 +376,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "compartments": nodes,
                 "recent_responses": list(reversed(mqtt_bridge.recent_responses[-15:])),
                 "comparison_logs": logs,
+                "pending_cctv_triggers": pending,
             })
             return
 
@@ -494,6 +503,19 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             command = str(body.get("command", "CAPTURE_STATE")).upper()
             expected_action = str(body.get("expected_action", "BORROW")).upper()
             rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
+            source = str(body.get("source", "MANUAL")).upper()
+
+            # Record CCTV trigger for UI browser Teachable Machine processing (keep up to 20)
+            trigger_id = f"trig_{shelf_id}_{int(time.time() * 1000)}"
+            PENDING_CCTV_TRIGGERS.append({
+                "trigger_id": trigger_id,
+                "shelf_id": shelf_id,
+                "expected_action": expected_action,
+                "source": source,
+                "timestamp": time.time(),
+            })
+            if len(PENDING_CCTV_TRIGGERS) > 20:
+                del PENDING_CCTV_TRIGGERS[:-20]
 
             if command == "CAPTURE_REFERENCE":
                 box_count = int(body.get("box_count", 4))
@@ -743,6 +765,15 @@ def esp32_http_baseline_poller():
 
                 # 2. If reachable (or for baseline refresh), fetch baseline & sync Supabase
                 now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                sec_ip = None
+                try:
+                    for comp_row in list_esp32_cameras():
+                        if comp_row.get("shelf_id") == shelf_id:
+                            sec_ip = comp_row.get("secondary_ip_address") or "192.168.0.102"
+                            break
+                except Exception:
+                    sec_ip = "192.168.0.102"
+
                 if online:
                     node_health = {
                         "device_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
@@ -754,13 +785,13 @@ def esp32_http_baseline_poller():
                     }
                     update_esp32_health_in_supabase(node_health)
 
-                    # Update 30s baseline cache and Supabase compartments row
-                    esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip)
+                    # Update 30s baseline cache and Supabase compartments row (dual-angle stitched)
+                    esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip, esp32_ip2=sec_ip)
                 else:
                     # Check if node has a cached baseline; if not, do a synthetic or retry fetch
                     cached = esp32_ref_manager.baseline_cache.get(shelf_id)
                     if not cached or not cached.get("data_url"):
-                        esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip)
+                        esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip, esp32_ip2=sec_ip)
 
         except Exception as exc:
             print(f"[CameraService Poller] Exception in baseline poller cycle: {exc}")

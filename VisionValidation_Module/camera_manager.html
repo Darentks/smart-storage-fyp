@@ -789,6 +789,9 @@
             <span>&#128249; No snapshot yet. Click "Preview Live Angle".</span>
           </div>
           <img id="livePreviewImg" src="" alt="Live ESP32 Angle Preview" style="display:none;" />
+          <!-- Hidden helper image elements for Teachable Machine multi-camera inference -->
+          <img id="backPreviewImg" src="" crossOrigin="anonymous" alt="Back Camera Preview" style="display:none;" />
+          <img id="frontPreviewImg" src="" crossOrigin="anonymous" alt="Front Camera Preview" style="display:none;" />
         </div>
 
         <!-- Scenario Form -->
@@ -803,14 +806,24 @@
           </div>
 
           <div class="form-group">
-            <label for="refEspIpInput">ESP32-CAM LAN IP</label>
+            <label for="refEspIpInput">ESP32-CAM #1 (Back Angle IP)</label>
             <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" />
+          </div>
+
+          <div class="form-group">
+            <label for="refEspIp2Input">ESP32-CAM #2 (Front Angle IP)</label>
+            <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102" value="192.168.0.102" />
           </div>
 
           <div style="display: flex; gap: 8px;">
             <button type="button" class="btn-action" style="flex: 1;" onclick="fetchLiveAnglePreview()">
               &#128065; Preview Live Angle (GET /esp32_preview)
             </button>
+          </div>
+
+          <!-- Teachable Machine Live Prediction Result Banner -->
+          <div id="tmLivePredictionBanner" style="display: none; background: #0b1528; border: 1px solid var(--primary); padding: 8px 12px; border-radius: 6px; font-size: 12px; font-family: var(--font-mono); color: var(--primary);">
+            TM AI: Ready
           </div>
 
           <div class="form-group">
@@ -948,8 +961,12 @@
     const referencesGallery = document.getElementById('referencesGallery');
     const refShelfSelect = document.getElementById('refShelfSelect');
     const refEspIpInput = document.getElementById('refEspIpInput');
+    const refEspIp2Input = document.getElementById('refEspIp2Input');
+    const tmLivePredictionBanner = document.getElementById('tmLivePredictionBanner');
     const refScenarioSelect = document.getElementById('refScenarioSelect');
     const livePreviewImg = document.getElementById('livePreviewImg');
+    const backPreviewImg = document.getElementById('backPreviewImg');
+    const frontPreviewImg = document.getElementById('frontPreviewImg');
     const previewPlaceholder = document.getElementById('previewPlaceholder');
     const previewOverlayText = document.getElementById('previewOverlayText');
 
@@ -1099,28 +1116,89 @@
       }
     }
 
-    // Trigger Test Capture via Local Bridge
-    async function triggerTestCapture(shelfId, action) {
-      const url = getBridgeUrl();
-      showToast(`Dispatching test ${action} trigger for ${shelfId}...`, 'info');
+    // =========================================================================
+    // DUAL-CAMERA TEACHABLE MACHINE VALIDATION PIPELINE
+    // =========================================================================
+    async function runFullDualCamValidation(shelfId, action) {
+      const comp = compartmentsData.find(c => c.shelf_id === shelfId);
+      const ip1 = (comp && comp.ip_address ? comp.ip_address : (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.101')) || '192.168.0.101';
+      const ip2 = (comp && comp.secondary_ip_address ? comp.secondary_ip_address : (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.102')) || '192.168.0.102';
+
+      showToast(`Running Dual-Camera TM Validation for ${shelfId} (${action})...`, 'info');
+
       try {
-        const resp = await fetch(`${url}/esp32_trigger`, {
+        // Step 1: Fetch fresh dual-camera snapshots from local bridge
+        const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
+        const prevResp = await fetch(previewUrl, { cache: 'no-store' });
+        if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
+        const previewData = await prevResp.json();
+
+        // Step 2: Teachable Machine Dual-Angle Inference
+        let tmRes = null;
+        if (window.tmModel && (previewData.image_back || previewData.image)) {
+          const imgBack = new Image();
+          const imgFront = new Image();
+          imgBack.crossOrigin = "anonymous";
+          imgFront.crossOrigin = "anonymous";
+
+          const loadImgPromise = (img, src) => new Promise(resolve => {
+            img.onload = () => resolve(true);
+            img.onerror = () => resolve(false);
+            img.src = src;
+          });
+
+          await Promise.all([
+            loadImgPromise(imgBack, previewData.image_back || previewData.image),
+            loadImgPromise(imgFront, previewData.image_front || previewData.image)
+          ]);
+
+          try {
+            tmRes = await predictDualCamerasWithTM(imgBack, imgFront);
+            console.log(`[DualCam TM] Prediction for ${shelfId}:`, tmRes);
+          } catch (predErr) {
+            console.warn('[DualCam TM] Prediction warning:', predErr);
+          }
+        }
+
+        // Step 3: Send POST /esp32_validate
+        const valPayload = {
+          shelf_id: shelfId,
+          expected_action: action,
+          ip: ip1,
+          ip2: ip2,
+          image: previewData.image,
+          predicted_box_count: tmRes ? tmRes.totalBoxes : null,
+          tm_confidence: tmRes ? tmRes.confidence : null,
+        };
+
+        const valResp = await fetch(`${getBridgeUrl()}/esp32_validate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shelf_id: shelfId,
-            expected_action: action,
-          })
+          body: JSON.stringify(valPayload)
         });
-        if (resp.ok) {
-          showToast(`Test ${action} trigger sent for ${shelfId}!`, 'success');
-          setTimeout(refreshAllData, 1200);
-        } else {
-          showToast('Trigger failed on bridge.', 'error');
-        }
-      } catch (e) {
-        showToast('Local bridge offline. Run python VisionValidation_Module/camera_service.py', 'error');
+
+        if (!valResp.ok) throw new Error(`Validation endpoint returned status ${valResp.status}`);
+        const valResult = await valResp.json();
+        const compRes = valResult.comparison || {};
+        const stateDelta = compRes.state_delta || 'NO_CHANGE';
+        const delta = compRes.delta !== undefined ? compRes.delta : 0;
+        const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
+
+        // Step 4: Show Toast & Refresh Data
+        const tmInfo = tmRes ? ` | TM: ${tmRes.totalBoxes}/4 (${tmRes.confidence}%)` : '';
+        showToast(`Verified ${shelfId}: ${stateDelta} (${deltaSign})${tmInfo}`, stateDelta === 'ITEM_REMOVED' ? 'error' : 'success');
+        refreshAllData();
+        return valResult;
+      } catch (err) {
+        console.error('[runFullDualCamValidation] Error:', err);
+        showToast(`Dual-camera validation failed: ${err.message}`, 'error');
+        return null;
       }
+    }
+
+    // Trigger Test Capture via Local Bridge (Redirects to Full Dual-Cam TM Validation)
+    async function triggerTestCapture(shelfId, action) {
+      await runFullDualCamValidation(shelfId, action);
     }
 
     // =========================================================================
@@ -1129,8 +1207,18 @@
     function syncSelectedShelfTelemetry() {
       const selShelf = refShelfSelect.value;
       const comp = compartmentsData.find(c => c.shelf_id === selShelf);
-      if (comp && comp.ip_address) {
-        refEspIpInput.value = comp.ip_address;
+      if (comp) {
+        if (comp.ip_address) {
+          refEspIpInput.value = comp.ip_address;
+        } else if (!refEspIpInput.value) {
+          refEspIpInput.value = '192.168.0.101';
+        }
+
+        if (comp.secondary_ip_address) {
+          refEspIp2Input.value = comp.secondary_ip_address;
+        } else if (!refEspIp2Input.value) {
+          refEspIp2Input.value = '192.168.0.102';
+        }
       }
     }
 
@@ -1149,11 +1237,12 @@
     async function fetchLiveAnglePreview() {
       const shelfId = refShelfSelect.value;
       const ip = refEspIpInput.value.trim();
+      const ip2 = refEspIp2Input ? refEspIp2Input.value.trim() : '';
       const t0 = performance.now();
-      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
+      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
 
-      previewOverlayText.textContent = `Fetching live snapshot from ${ip || 'Node'}...`;
-      showToast(`Fetching live preview from ${ip}...`, 'info');
+      previewOverlayText.textContent = `Fetching live dual-angle snapshot (${ip} + ${ip2})...`;
+      showToast(`Fetching live preview from ${ip} & ${ip2}...`, 'info');
 
       // 1. Try local bridge (port 8008) first
       try {
@@ -1166,8 +1255,43 @@
             livePreviewImg.src = data.image;
             livePreviewImg.style.display = 'block';
             previewPlaceholder.style.display = 'none';
-            previewOverlayText.textContent = "Preview Live \u2022 " + shelfId + " (" + ip + ") \u2022 " + new Date().toLocaleTimeString() + " (" + latencyMs + "ms)";
-            showToast('Live angle preview updated via bridge!', 'success');
+            previewOverlayText.textContent = "Preview Live \u2022 " + shelfId + " (" + ip + (ip2 ? " & " + ip2 : "") + ") \u2022 " + new Date().toLocaleTimeString() + " (" + latencyMs + "ms)";
+            showToast('Live dual-angle preview updated via bridge!', 'success');
+
+            // Load into backPreviewImg and frontPreviewImg for Teachable Machine prediction
+            if (backPreviewImg && frontPreviewImg) {
+              const backUrl = data.image_back || data.image;
+              const frontUrl = data.image_front || data.image;
+              backPreviewImg.src = backUrl;
+              frontPreviewImg.src = frontUrl;
+
+              // Run Teachable Machine Prediction if model loaded
+              if (window.tmModel && tmLivePredictionBanner) {
+                const checkAndPredict = async () => {
+                  try {
+                    const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
+                    if (tmRes) {
+                      tmLivePredictionBanner.style.display = 'block';
+                      tmLivePredictionBanner.innerHTML = `<strong>TM AI:</strong> Back=<code>${tmRes.backClass}</code> (${tmRes.backConfidence}%) + Front=<code>${tmRes.frontClass}</code> (${tmRes.frontConfidence}%) &rarr; <span style="color: var(--success); font-weight: bold;">${tmRes.scenarioLabel}</span> (${tmRes.confidence}%)`;
+                    }
+                  } catch (tmErr) {
+                    console.warn('[TM AI] Prediction warning:', tmErr);
+                  }
+                };
+
+                let loadedCount = 0;
+                const onHelperLoaded = () => {
+                  loadedCount++;
+                  if (loadedCount >= 2) checkAndPredict();
+                };
+                backPreviewImg.onload = onHelperLoaded;
+                frontPreviewImg.onload = onHelperLoaded;
+
+                if (backPreviewImg.complete && frontPreviewImg.complete) {
+                  checkAndPredict();
+                }
+              }
+            }
             return;
           }
         }
@@ -1375,6 +1499,8 @@
     // =========================================================================
     // FETCH COMPARTMENTS, COMPARISON LOGS, & REFERENCES
     // =========================================================================
+    let processedCctvTriggers = new Set();
+
     async function loadCompartments() {
       let data = null;
 
@@ -1419,14 +1545,29 @@
                   ...c,
                   status: live.status || c.status,
                   ip_address: live.ip_address || c.ip_address,
+                  secondary_ip_address: live.secondary_ip_address || c.secondary_ip_address,
                   rssi_dbm: live.rssi_dbm != null ? live.rssi_dbm : c.rssi_dbm,
                   free_heap_bytes: live.free_heap_bytes != null ? live.free_heap_bytes : c.free_heap_bytes,
                   last_seen_at: live.last_seen_at || c.last_seen_at,
                   baseline_image_url: live.baseline_image_url || c.baseline_image_url,
+                  baseline_image_2_url: live.baseline_image_2_url || c.baseline_image_2_url,
                   baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
                   current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
                 };
               });
+            }
+
+            // Check for pending CCTV intent triggers from run_pipeline.py
+            if (Array.isArray(bridgeJson.pending_cctv_triggers) && bridgeJson.pending_cctv_triggers.length > 0) {
+              for (const trig of bridgeJson.pending_cctv_triggers) {
+                if (trig.trigger_id && !processedCctvTriggers.has(trig.trigger_id)) {
+                  processedCctvTriggers.add(trig.trigger_id);
+                  console.log('[CCTV Integration] Detected new CCTV intent confirmation trigger:', trig);
+                  showToast(`CCTV Dwell Trigger: Running Dual-Cam TM AI for ${trig.shelf_id}...`, 'info');
+                  // Run full dual-camera Teachable Machine validation
+                  runFullDualCamValidation(trig.shelf_id, trig.expected_action || 'BORROW');
+                }
+              }
             }
           }
         } catch (bridgeErr) {
