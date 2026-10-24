@@ -122,48 +122,56 @@ class VisionValidationEngine:
         self.alert_color = (0, 165, 255)
         self.alert_expiry_time = time.time() + 3.0
 
-        # Spawn background thread to request hybrid validation from camera_service local bridge
-        def _call_esp32_validate():
-            url = "http://localhost:8008/esp32_validate"
-            payload = {
-                "shelf_id": shelf_id,
-                "expected_action": action,
-            }
-            try:
-                data_bytes = json.dumps(payload).encode("utf-8")
-                req = urllib.request.Request(
-                    url,
-                    data=data_bytes,
-                    headers={"Content-Type": "application/json", "User-Agent": "VisionEngine/1.0"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=10.0) as resp:
-                    raw = resp.read().decode("utf-8")
-                    res = json.loads(raw) if raw else {}
-                    comp = res.get("comparison") or {}
-                    log = res.get("log") or {}
+        # Spawn background thread to wait for Teachable Machine dual-cam validation from web dashboard
+        def _wait_for_tm_validation():
+            url = "http://localhost:8008/esp32_nodes"
+            prev_log_id = None
+            first_poll = True
 
-                    state_delta = comp.get("state_delta", "NO_CHANGE")
-                    delta_int = int(comp.get("delta", 0))
-                    diff_val = comp.get("diff_score")
-                    diff_str = f"{diff_val:.1f}" if isinstance(diff_val, (int, float)) else "N/A"
-                    qty_before = log.get("quantity_before", "N/A")
-                    qty_after = log.get("quantity_after", "N/A")
+            for _ in range(12):
+                try:
+                    req = urllib.request.Request(
+                        url,
+                        headers={"User-Agent": "VisionEngine/1.0"},
+                    )
+                    with urllib.request.urlopen(req, timeout=2.0) as resp:
+                        raw = resp.read().decode("utf-8")
+                        res = json.loads(raw) if raw else {}
+                        logs = res.get("comparison_logs") or []
 
-                    self.active_alert = f"VERIFIED: {state_delta} ({delta_int:+d}) @ {shelf_id} | Stock: {qty_before}->{qty_after} | Diff: {diff_str}%"
+                        if first_poll:
+                            first_poll = False
+                            if logs:
+                                prev_log_id = logs[0].get("log_id")
 
-                    if state_delta == "ITEM_RETURNED":
-                        self.alert_color = (0, 190, 0)
-                    elif state_delta == "ITEM_REMOVED":
-                        self.alert_color = (0, 110, 255)
-                    else:
-                        self.alert_color = (120, 120, 120)
+                        # Check if a new log arrived for this shelf
+                        if logs:
+                            latest_log = logs[0]
+                            curr_log_id = latest_log.get("log_id")
+                            if curr_log_id != prev_log_id and latest_log.get("shelf_id") == shelf_id:
+                                state_delta = latest_log.get("state_delta", "NO_CHANGE")
+                                qty_before = latest_log.get("quantity_before", 4)
+                                qty_after = latest_log.get("quantity_after", 4)
+                                delta_int = qty_after - qty_before
+                                scenario = latest_log.get("scenario_label") or f"Boxes: {qty_after}/4"
 
-                    self.alert_expiry_time = time.time() + 5.0
-            except Exception as exc:
-                print(f"[VisionEngine] Validation call to {url} skipped/failed: {exc}")
+                                self.active_alert = f"TM VERIFIED: {state_delta} ({delta_int:+d}) @ {shelf_id} | {scenario} | Stock: {qty_before}->{qty_after}"
 
-        val_thread = threading.Thread(target=_call_esp32_validate, daemon=True, name=f"Validate_{shelf_id}")
+                                if state_delta == "ITEM_RETURNED":
+                                    self.alert_color = (0, 190, 0)
+                                elif state_delta == "ITEM_REMOVED":
+                                    self.alert_color = (0, 110, 255)
+                                else:
+                                    self.alert_color = (120, 120, 120)
+
+                                self.alert_expiry_time = time.time() + 5.0
+                                return
+                except Exception as exc:
+                    print(f"[VisionEngine] Polling {url} for TM validation: {exc}")
+
+                time.sleep(1.0)
+
+        val_thread = threading.Thread(target=_wait_for_tm_validation, daemon=True, name=f"WaitTM_{shelf_id}")
         val_thread.start()
 
     def _on_esp32_verification_response(self, payload):

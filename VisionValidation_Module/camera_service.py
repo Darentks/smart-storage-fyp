@@ -117,7 +117,10 @@ def get_merged_compartments_and_nodes():
 
         status = "ONLINE" if live_row else db_row.get("status", "OFFLINE")
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
+        baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
         baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
+        ip_addr = live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.101"
+        sec_ip_addr = db_row.get("secondary_ip_address") or "192.168.0.102"
 
         merged.append({
             "camera_id": db_row.get("camera_id"),
@@ -126,7 +129,8 @@ def get_merged_compartments_and_nodes():
             "mqtt_client_id": mqtt_id,
             "camera_name": comp.get("camera_name") or db_row.get("camera_name") or f"ESP32 Node ({shelf_id})",
             "container_id": comp.get("container_id") or db_row.get("container_id"),
-            "ip_address": live_row.get("ip_address") or db_row.get("ip_address") or "",
+            "ip_address": ip_addr,
+            "secondary_ip_address": sec_ip_addr,
             "x_min": comp["x_min"],
             "y_min": comp["y_min"],
             "x_max": comp["x_max"],
@@ -136,6 +140,7 @@ def get_merged_compartments_and_nodes():
             "current_quantity": db_row.get("current_quantity", 4),
             "max_capacity": db_row.get("max_capacity", 4),
             "baseline_image_url": baseline_url,
+            "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
             "rssi_dbm": live_row.get("rssi_dbm", db_row.get("rssi_dbm")),
             "free_heap_bytes": live_row.get("free_heap_bytes", db_row.get("free_heap_bytes")),
@@ -151,7 +156,10 @@ def get_merged_compartments_and_nodes():
             shelf_id = live_row.get("shelf_id", db_row.get("shelf_id", "UNASSIGNED"))
             cached_baseline = esp32_ref_manager.baseline_cache.get(shelf_id, {})
             baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
+            baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
             baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
+            ip_addr = live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.101"
+            sec_ip_addr = db_row.get("secondary_ip_address") or "192.168.0.102"
 
             merged.append({
                 "camera_id": db_row.get("camera_id"),
@@ -160,7 +168,8 @@ def get_merged_compartments_and_nodes():
                 "mqtt_client_id": mqtt_id,
                 "camera_name": db_row.get("camera_name") or f"ESP32 Node ({mqtt_id})",
                 "container_id": db_row.get("container_id"),
-                "ip_address": live_row.get("ip_address") or db_row.get("ip_address") or "",
+                "ip_address": ip_addr,
+                "secondary_ip_address": sec_ip_addr,
                 "x_min": db_row.get("roi_x_min", 100),
                 "y_min": db_row.get("roi_y_min", 150),
                 "x_max": db_row.get("roi_x_max", 300),
@@ -170,6 +179,7 @@ def get_merged_compartments_and_nodes():
                 "current_quantity": db_row.get("current_quantity", 4),
                 "max_capacity": db_row.get("max_capacity", 4),
                 "baseline_image_url": baseline_url,
+                "baseline_image_2_url": baseline_2_url,
                 "baseline_updated_at": baseline_updated,
                 "rssi_dbm": live_row.get("rssi_dbm"),
                 "free_heap_bytes": live_row.get("free_heap_bytes"),
@@ -415,7 +425,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     esp32_ref_manager.update_30s_baseline(
                         shelf_id=shelf_id,
                         esp32_ip=esp32_ip,
+                        esp32_ip2=esp32_ip2,
                         image_data_url=combined_url,
+                        image_2_data_url=url2,
                     )
 
                 self._send_json(200, {

@@ -391,23 +391,25 @@ class ESP32ReferenceManager:
         esp32_ip: Optional[str] = None,
         esp32_ip2: Optional[str] = None,
         image_data_url: Optional[str] = None,
+        image_2_data_url: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Updates the 30-second resting baseline cache for shelf_id and syncs to Supabase.
-        Fetches both esp32_ip (CAM 1 Back) and esp32_ip2 (CAM 2 Front), stitches them into
-        combined_url [BACK CAM | FRONT CAM], caches in self.baseline_cache[shelf_id],
-        and updates baseline_image_url (stitched) and baseline_image_2_url (front) in public.compartments.
+        Fetches both esp32_ip (CAM 1 Back) and esp32_ip2 (CAM 2 Front) or uses provided data URLs,
+        stitches them into combined_url [BACK CAM | FRONT CAM], caches "data_url" and "data_url_2"
+        in self.baseline_cache[shelf_id], and updates baseline_image_url and baseline_image_2_url in public.compartments.
         """
         shelf_id = shelf_id.strip()
         now_iso = datetime.now(timezone.utc).isoformat()
         frame_bgr = None
         data_url = None
         url_back = None
-        url_front = None
+        url_front = image_2_data_url
 
         if image_data_url:
             frame_bgr = decode_data_url_to_bgr(image_data_url)
             data_url = image_data_url
+            url_back = image_data_url
         elif esp32_ip and esp32_ip2:
             frame_bgr, data_url, url_back, url_front = self.fetch_dual_esp32_frame(
                 esp32_ip1=esp32_ip,
@@ -426,6 +428,7 @@ class ESP32ReferenceManager:
         cached_entry = {
             "frame_bgr": frame_bgr,
             "data_url": data_url or "",
+            "data_url_2": url_front or "",
             "url_back": url_back or data_url or "",
             "url_front": url_front or "",
             "updated_at": now_iso,

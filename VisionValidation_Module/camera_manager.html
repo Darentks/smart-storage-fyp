@@ -1686,10 +1686,10 @@
     setupRealtimeSubscriptions();
     checkLocalBridgeHealth();
 
-    // 5-second resilient polling loop (guarantees updates across Vercel & cloud networks)
+    // 2-second resilient polling loop (guarantees rapid CCTV trigger consumption & updates across Vercel & cloud networks)
     setInterval(() => {
       refreshAllData();
-    }, 5000);
+    }, 2000);
   </script>
 </body>
 </html>
