@@ -51,6 +51,19 @@ except ImportError:
 
 
 # =============================================================================
+# SCENARIO CONSTANTS & MAPS
+# =============================================================================
+
+SCENARIO_MAP: Dict[int, str] = {
+    4: "Scenario 1: 4/4 Boxes Present",
+    3: "Scenario 2: 3/4 Boxes Present",
+    2: "Scenario 3: 2/4 Boxes Present",
+    1: "Scenario 4: 1/4 Box Present",
+    0: "Scenario 5: 0/4 No Box Present",
+}
+
+
+# =============================================================================
 # IMAGE ENCODING & DECODING HELPERS
 # =============================================================================
 
@@ -299,6 +312,79 @@ class ESP32ReferenceManager:
         """Alias for fetch_esp32_frame to fetch a frame from http://{esp32_ip}/capture."""
         return self.fetch_esp32_frame(esp32_ip=esp32_ip, mode=mode)
 
+    def fetch_dual_esp32_frame(
+        self,
+        esp32_ip1: Optional[str],
+        esp32_ip2: Optional[str] = None,
+        mode: str = "live",
+        timeout: float = 3.5,
+    ) -> Tuple[Any, str, Optional[str], Optional[str]]:
+        """
+        Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=0,
+        returns (combined_bgr, combined_data_url, url1, url2).
+        Stitches the two images side-by-side horizontally for logging & comparison.
+        """
+        frame1 = None
+        url1 = None
+        frame2 = None
+        url2 = None
+
+        if esp32_ip1:
+            clean1 = esp32_ip1.replace("http://", "").replace("/", "").strip()
+            # fetch with flash=0 and cache-buster
+            f_url1 = f"http://{clean1}/capture?mode={mode}&flash=0&t={int(time.time() * 1000)}"
+            try:
+                req1 = urllib.request.Request(f_url1, headers={"User-Agent": "SmartStorageVision/1.0", "Cache-Control": "no-cache"})
+                with urllib.request.urlopen(req1, timeout=timeout) as resp:
+                    raw1 = resp.read()
+                    arr1 = np.asarray(bytearray(raw1), dtype=np.uint8)
+                    frame1 = cv2.imdecode(arr1, cv2.IMREAD_COLOR)
+                    if frame1 is not None:
+                        url1 = encode_bgr_to_data_url(frame1)
+            except Exception:
+                frame1, url1 = self.fetch_esp32_frame(esp32_ip=esp32_ip1, mode=mode, timeout=timeout)
+
+        if esp32_ip2:
+            clean2 = esp32_ip2.replace("http://", "").replace("/", "").strip()
+            f_url2 = f"http://{clean2}/capture?mode={mode}&flash=0&t={int(time.time() * 1000)}"
+            try:
+                req2 = urllib.request.Request(f_url2, headers={"User-Agent": "SmartStorageVision/1.0", "Cache-Control": "no-cache"})
+                with urllib.request.urlopen(req2, timeout=timeout) as resp:
+                    raw2 = resp.read()
+                    arr2 = np.asarray(bytearray(raw2), dtype=np.uint8)
+                    frame2 = cv2.imdecode(arr2, cv2.IMREAD_COLOR)
+                    if frame2 is not None:
+                        url2 = encode_bgr_to_data_url(frame2)
+            except Exception:
+                frame2, url2 = self.fetch_esp32_frame(esp32_ip=esp32_ip2, mode=mode, timeout=timeout)
+
+        if frame1 is None and frame2 is None:
+            synth = synthesize_compartment_frame(f"DUAL-CAM ({mode.upper()})", box_count=4)
+            combined_url = encode_bgr_to_data_url(synth)
+            return synth, combined_url, combined_url, None
+
+        if frame1 is not None and frame2 is not None and _OPENCV_AVAILABLE:
+            h1, w1 = frame1.shape[:2]
+            h2, w2 = frame2.shape[:2]
+            target_h = max(h1, h2, 240)
+            target_w = int(w1 * (target_h / float(h1))) if h1 > 0 else 320
+            target_w2 = int(w2 * (target_h / float(h2))) if h2 > 0 else 320
+
+            r1 = cv2.resize(frame1, (target_w, target_h))
+            r2 = cv2.resize(frame2, (target_w2, target_h))
+
+            # Overlay angle labels
+            cv2.putText(r1, "BACK CAM", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.putText(r2, "FRONT CAM", (15, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+            combined_bgr = np.hstack([r1, r2])
+            combined_url = encode_bgr_to_data_url(combined_bgr)
+            return combined_bgr, combined_url, url1, url2
+
+        single_frame = frame1 if frame1 is not None else frame2
+        single_url = url1 if url1 is not None else url2
+        return single_frame, single_url, url1, url2
+
     def update_30s_baseline(
         self,
         shelf_id: str,
@@ -377,14 +463,17 @@ class ESP32ReferenceManager:
         expected_action: str = "BORROW",
         current_quantity: int = 4,
         esp32_ip: Optional[str] = None,
+        esp32_ip2: Optional[str] = None,
         after_data_url: Optional[str] = None,
+        tm_predicted_box_count: Optional[int] = None,
+        tm_confidence: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Executes hybrid OpenCV baseline diff & reference signature matching:
-        Step A: Fetch post-trigger 'After' frame.
+        Executes hybrid OpenCV baseline diff & reference signature matching with Teachable Machine dual-angle support:
+        Step A: Fetch post-trigger 'After' frame (dual-angle if esp32_ip2 provided, or single).
         Step B: Retrieve 30s 'Before' baseline (or stored reference sample fallback).
         Step C: OpenCV absdiff between before and after frame.
-        Step D: Reference sample matching against stored tested samples for this compartment.
+        Step D: Teachable Machine Dual-Angle Prediction or 2x2 Feature Signature Matching.
         Step E: Multi-tier decision logic for delta (-1, +1, 0) and state_delta.
         """
         shelf_id = shelf_id.strip()
@@ -394,18 +483,28 @@ class ESP32ReferenceManager:
         # Step A: Fetch Post-Trigger "After" Frame
         after_bgr = None
         after_url = None
+        url_back = None
+        url_front = None
+
         if after_data_url:
             after_bgr = decode_data_url_to_bgr(after_data_url)
             after_url = after_data_url
 
         if after_bgr is None:
-            # Fallback simulated target count based on expected action
-            target_boxes = max(0, min(4, current_quantity - 1 if exp_action == "BORROW" else current_quantity + 1))
-            after_bgr, after_url = self.fetch_esp32_frame(
-                esp32_ip=esp32_ip,
-                mode="live",
-                box_count_fallback=target_boxes,
-            )
+            if esp32_ip and esp32_ip2:
+                after_bgr, after_url, url_back, url_front = self.fetch_dual_esp32_frame(
+                    esp32_ip1=esp32_ip,
+                    esp32_ip2=esp32_ip2,
+                    mode="live",
+                )
+            else:
+                # Fallback single camera or simulated
+                target_boxes = max(0, min(4, current_quantity - 1 if exp_action == "BORROW" else current_quantity + 1))
+                after_bgr, after_url = self.fetch_esp32_frame(
+                    esp32_ip=esp32_ip,
+                    mode="live",
+                    box_count_fallback=target_boxes,
+                )
 
         # Step B: Retrieve 30s "Before" Baseline
         before_bgr = None
@@ -438,34 +537,47 @@ class ESP32ReferenceManager:
         # Step C: OpenCV Frame Delta between 30s Baseline & After Frame
         diff_score = self._compute_absdiff_score(before_bgr, after_bgr)
 
-        # Step D: Reference Sample Matching using 2x2 Feature Signatures
-        after_sig = extract_2x2_feature_signature(after_bgr)
+        # Step D: Teachable Machine Dual-Angle Prediction OR Reference Sample Matching
         best_match: Optional[Dict[str, Any]] = None
         highest_similarity: float = 0.0
         matched_box_count: Optional[int] = None
+        matched_scenario_label: Optional[str] = None
 
-        if stored_samples:
-            for sample in stored_samples:
-                ref_sig = sample.get("feature_signature")
-                if not ref_sig and sample.get("image_url"):
-                    ref_frame = decode_data_url_to_bgr(sample["image_url"])
-                    if ref_frame is not None:
-                        ref_sig = extract_2x2_feature_signature(ref_frame)
+        if tm_predicted_box_count is not None:
+            # Direct Teachable Machine Dual-Camera classification result passed from client
+            matched_box_count = max(0, min(4, int(tm_predicted_box_count)))
+            highest_similarity = float(tm_confidence if tm_confidence is not None else 95.0)
+            matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {5 - matched_box_count}: {matched_box_count}/4 Boxes")
+        else:
+            # 2x2 Feature Signature matching
+            after_sig = extract_2x2_feature_signature(after_bgr)
+            if stored_samples:
+                for sample in stored_samples:
+                    ref_sig = sample.get("feature_signature")
+                    if not ref_sig and sample.get("image_url"):
+                        ref_frame = decode_data_url_to_bgr(sample["image_url"])
+                        if ref_frame is not None:
+                            ref_sig = extract_2x2_feature_signature(ref_frame)
 
-                if ref_sig:
-                    sim = compute_signature_similarity(after_sig, ref_sig)
-                    if sim > highest_similarity:
-                        highest_similarity = sim
-                        best_match = sample
-                        matched_box_count = int(sample.get("box_count", current_quantity))
+                    if ref_sig:
+                        sim = compute_signature_similarity(after_sig, ref_sig)
+                        if sim > highest_similarity:
+                            highest_similarity = sim
+                            best_match = sample
+                            matched_box_count = int(sample.get("box_count", current_quantity))
+                if best_match:
+                    matched_scenario_label = best_match.get("sample_label")
 
         # Step E: Decision Logic for -1 / +1 / 0
         state_delta = "NO_CHANGE"
         delta = 0
 
-        # High-confidence reference matching takes priority (>= 75.0% similarity)
-        if stored_samples and matched_box_count is not None and highest_similarity >= 75.0:
-            if matched_box_count < current_quantity:
+        if matched_box_count is not None:
+            # If TM predicted count or high-confidence reference sample is available
+            if diff_score < 2.0 and matched_box_count == current_quantity:
+                state_delta = "NO_CHANGE"
+                delta = 0
+            elif matched_box_count < current_quantity:
                 state_delta = "ITEM_REMOVED"
                 delta = matched_box_count - current_quantity
             elif matched_box_count > current_quantity:
@@ -477,7 +589,6 @@ class ESP32ReferenceManager:
                     state_delta = "NO_CHANGE"
                     delta = 0
                 else:
-                    # Visual diff despite same matched count
                     if exp_action == "RETURN":
                         state_delta = "ITEM_RETURNED"
                         delta = +1
@@ -514,7 +625,7 @@ class ESP32ReferenceManager:
             "diff_score": diff_score,
             "similarity_score": highest_similarity if highest_similarity > 0 else None,
             "matched_box_count": matched_box_count,
-            "matched_scenario_label": best_match.get("sample_label") if best_match else None,
+            "matched_scenario_label": matched_scenario_label,
             "state_delta": state_delta,
             "delta": delta,
         }
