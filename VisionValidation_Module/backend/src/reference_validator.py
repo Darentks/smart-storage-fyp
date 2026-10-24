@@ -389,24 +389,34 @@ class ESP32ReferenceManager:
         self,
         shelf_id: str,
         esp32_ip: Optional[str] = None,
+        esp32_ip2: Optional[str] = None,
         image_data_url: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Updates the 30-second resting baseline cache for shelf_id and syncs to Supabase.
-        Fetches the JPEG from http://{esp32_ip}/capture?mode=baseline (or decodes image_data_url),
-        encodes to data_url, stores in self.baseline_cache[shelf_id],
-        calls update_compartment_baseline_in_supabase(shelf_id, data_url, esp32_ip), and returns entry.
+        Fetches both esp32_ip (CAM 1 Back) and esp32_ip2 (CAM 2 Front), stitches them into
+        combined_url [BACK CAM | FRONT CAM], caches in self.baseline_cache[shelf_id],
+        and updates baseline_image_url (stitched) and baseline_image_2_url (front) in public.compartments.
         """
         shelf_id = shelf_id.strip()
         now_iso = datetime.now(timezone.utc).isoformat()
         frame_bgr = None
         data_url = None
+        url_back = None
+        url_front = None
 
         if image_data_url:
             frame_bgr = decode_data_url_to_bgr(image_data_url)
             data_url = image_data_url
+        elif esp32_ip and esp32_ip2:
+            frame_bgr, data_url, url_back, url_front = self.fetch_dual_esp32_frame(
+                esp32_ip1=esp32_ip,
+                esp32_ip2=esp32_ip2,
+                mode="baseline",
+            )
         elif esp32_ip:
             frame_bgr, data_url = self.fetch_esp32_frame(esp32_ip, mode="baseline")
+            url_back = data_url
 
         if frame_bgr is None:
             synth = synthesize_compartment_frame(f"{shelf_id} (BASELINE)", box_count=4)
@@ -416,6 +426,8 @@ class ESP32ReferenceManager:
         cached_entry = {
             "frame_bgr": frame_bgr,
             "data_url": data_url or "",
+            "url_back": url_back or data_url or "",
+            "url_front": url_front or "",
             "updated_at": now_iso,
         }
         self.baseline_cache[shelf_id] = cached_entry
@@ -425,6 +437,7 @@ class ESP32ReferenceManager:
             shelf_id=shelf_id,
             baseline_image_url=data_url or "",
             ip_address=esp32_ip,
+            baseline_image_2_url=url_front,
         )
 
         print(f"[ESP32ReferenceManager] Updated 30s resting baseline for {shelf_id} at {now_iso}.")
@@ -465,22 +478,30 @@ class ESP32ReferenceManager:
         esp32_ip: Optional[str] = None,
         esp32_ip2: Optional[str] = None,
         after_data_url: Optional[str] = None,
+        baseline_box_count: Optional[int] = None,
+        predicted_box_count: Optional[int] = None,
         tm_predicted_box_count: Optional[int] = None,
+        scenario_label: Optional[str] = None,
         tm_confidence: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
-        Executes hybrid OpenCV baseline diff & reference signature matching with Teachable Machine dual-angle support:
-        Step A: Fetch post-trigger 'After' frame (dual-angle if esp32_ip2 provided, or single).
-        Step B: Retrieve 30s 'Before' baseline (or stored reference sample fallback).
-        Step C: OpenCV absdiff between before and after frame.
-        Step D: Teachable Machine Dual-Angle Prediction or 2x2 Feature Signature Matching.
-        Step E: Multi-tier decision logic for delta (-1, +1, 0) and state_delta.
+        Pure 30s Baseline vs. Teachable Machine Dual-Cam Validation:
+        Step A: Fetch post-trigger Dual-Cam frame (CAM 1 Back + CAM 2 Front stitched).
+        Step B: Retrieve latest 30-second baseline frame from self.baseline_cache[shelf_id].
+        Step C: Compute diff_score = self._compute_absdiff_score(before_bgr, after_bgr).
+        Step D: Evaluate Teachable Machine Dual-Cam classification result (0..4 boxes):
+               - matched_box_count = int(predicted_box_count)
+               - matched_scenario_label = SCENARIO_MAP[matched_box_count]
+               - matched_box_count < ref_quantity -> ITEM_REMOVED (delta = matched - ref)
+               - matched_box_count > ref_quantity -> ITEM_RETURNED (delta = matched - ref)
+               - matched_box_count == ref_quantity -> NO_CHANGE (delta = 0)
+        Step E: Update baseline cache if delta != 0 and return comparison details.
         """
         shelf_id = shelf_id.strip()
         mqtt_client_id = mqtt_client_id.strip()
         exp_action = expected_action.upper() if expected_action.upper() in ["BORROW", "RETURN"] else "BORROW"
 
-        # Step A: Fetch Post-Trigger "After" Frame
+        # Step A: Fetch Post-Trigger Dual-Cam Frame
         after_bgr = None
         after_url = None
         url_back = None
@@ -498,7 +519,6 @@ class ESP32ReferenceManager:
                     mode="live",
                 )
             else:
-                # Fallback single camera or simulated
                 target_boxes = max(0, min(4, current_quantity - 1 if exp_action == "BORROW" else current_quantity + 1))
                 after_bgr, after_url = self.fetch_esp32_frame(
                     esp32_ip=esp32_ip,
@@ -506,29 +526,13 @@ class ESP32ReferenceManager:
                     box_count_fallback=target_boxes,
                 )
 
-        # Step B: Retrieve 30s "Before" Baseline
+        # Step B: Retrieve 30s Baseline Frame
         before_bgr = None
         before_url = None
         cached_baseline = self.baseline_cache.get(shelf_id)
         if cached_baseline and cached_baseline.get("frame_bgr") is not None:
             before_bgr = cached_baseline["frame_bgr"]
             before_url = cached_baseline.get("data_url")
-
-        # Fallback to stored reference sample if no 30s baseline exists yet
-        stored_samples = list_esp32_reference_samples(shelf_id=shelf_id)
-        if before_bgr is None and stored_samples:
-            target_sample = next(
-                (s for s in stored_samples if int(s.get("box_count", -1)) == current_quantity),
-                None,
-            )
-            if not target_sample:
-                target_sample = next(
-                    (s for s in stored_samples if int(s.get("box_count", -1)) == 4),
-                    stored_samples[0] if stored_samples else None,
-                )
-            if target_sample and target_sample.get("image_url"):
-                before_url = target_sample["image_url"]
-                before_bgr = decode_data_url_to_bgr(before_url)
 
         if before_bgr is None:
             before_bgr = synthesize_compartment_frame(f"{shelf_id} (PRE-TRIGGER)", box_count=current_quantity)
@@ -537,67 +541,35 @@ class ESP32ReferenceManager:
         # Step C: OpenCV Frame Delta between 30s Baseline & After Frame
         diff_score = self._compute_absdiff_score(before_bgr, after_bgr)
 
-        # Step D: Teachable Machine Dual-Angle Prediction OR Reference Sample Matching
-        best_match: Optional[Dict[str, Any]] = None
-        highest_similarity: float = 0.0
+        # Step D: Teachable Machine Dual-Cam Classification Logic
+        # Accept either predicted_box_count or tm_predicted_box_count
+        target_tm_count = predicted_box_count if predicted_box_count is not None else tm_predicted_box_count
+        ref_quantity = baseline_box_count if baseline_box_count is not None else current_quantity
+
         matched_box_count: Optional[int] = None
-        matched_scenario_label: Optional[str] = None
+        matched_scenario_label: Optional[str] = scenario_label
+        highest_similarity: float = float(tm_confidence if tm_confidence is not None else 95.0)
 
-        if tm_predicted_box_count is not None:
-            # Direct Teachable Machine Dual-Camera classification result passed from client
-            matched_box_count = max(0, min(4, int(tm_predicted_box_count)))
-            highest_similarity = float(tm_confidence if tm_confidence is not None else 95.0)
-            matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {5 - matched_box_count}: {matched_box_count}/4 Boxes")
-        else:
-            # 2x2 Feature Signature matching
-            after_sig = extract_2x2_feature_signature(after_bgr)
-            if stored_samples:
-                for sample in stored_samples:
-                    ref_sig = sample.get("feature_signature")
-                    if not ref_sig and sample.get("image_url"):
-                        ref_frame = decode_data_url_to_bgr(sample["image_url"])
-                        if ref_frame is not None:
-                            ref_sig = extract_2x2_feature_signature(ref_frame)
-
-                    if ref_sig:
-                        sim = compute_signature_similarity(after_sig, ref_sig)
-                        if sim > highest_similarity:
-                            highest_similarity = sim
-                            best_match = sample
-                            matched_box_count = int(sample.get("box_count", current_quantity))
-                if best_match:
-                    matched_scenario_label = best_match.get("sample_label")
-
-        # Step E: Decision Logic for -1 / +1 / 0
         state_delta = "NO_CHANGE"
         delta = 0
 
-        if matched_box_count is not None:
-            # If TM predicted count or high-confidence reference sample is available
-            if diff_score < 2.0 and matched_box_count == current_quantity:
+        if target_tm_count is not None:
+            matched_box_count = max(0, min(4, int(target_tm_count)))
+            if not matched_scenario_label:
+                matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {5 - matched_box_count}: {matched_box_count}/4 Boxes")
+
+            if matched_box_count < ref_quantity:
+                state_delta = "ITEM_REMOVED"
+                delta = matched_box_count - ref_quantity
+            elif matched_box_count > ref_quantity:
+                state_delta = "ITEM_RETURNED"
+                delta = matched_box_count - ref_quantity
+            else:
                 state_delta = "NO_CHANGE"
                 delta = 0
-            elif matched_box_count < current_quantity:
-                state_delta = "ITEM_REMOVED"
-                delta = matched_box_count - current_quantity
-            elif matched_box_count > current_quantity:
-                state_delta = "ITEM_RETURNED"
-                delta = matched_box_count - current_quantity
-            else:
-                # matched_box_count == current_quantity
-                if diff_score < 15.0:
-                    state_delta = "NO_CHANGE"
-                    delta = 0
-                else:
-                    if exp_action == "RETURN":
-                        state_delta = "ITEM_RETURNED"
-                        delta = +1
-                    else:
-                        state_delta = "ITEM_REMOVED"
-                        delta = -1
         else:
-            # Fallback heuristic using baseline diff_score
-            if diff_score < 6.0:
+            # Fallback heuristic using baseline diff_score if TM was not passed
+            if diff_score < 4.0:
                 state_delta = "NO_CHANGE"
                 delta = 0
             else:
@@ -608,7 +580,7 @@ class ESP32ReferenceManager:
                     state_delta = "ITEM_REMOVED"
                     delta = -1
 
-        # If confirmed change, update rolling 30s baseline cache with after_bgr
+        # Step E: If confirmed change, update rolling 30s baseline cache with after_bgr
         if delta != 0:
             now_iso = datetime.now(timezone.utc).isoformat()
             self.baseline_cache[shelf_id] = {
@@ -626,6 +598,7 @@ class ESP32ReferenceManager:
             "similarity_score": highest_similarity if highest_similarity > 0 else None,
             "matched_box_count": matched_box_count,
             "matched_scenario_label": matched_scenario_label,
+            "scenario_label": matched_scenario_label,
             "state_delta": state_delta,
             "delta": delta,
         }

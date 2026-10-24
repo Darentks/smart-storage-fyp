@@ -619,9 +619,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             esp32_ip = body.get("ip_address") or body.get("ip")
             esp32_ip2 = body.get("ip2") or body.get("secondary_ip_address") or body.get("secondary_ip")
             after_image = body.get("image") or body.get("image_url")
+            baseline_box_count = body.get("baseline_box_count")
             predicted_box_count = body.get("predicted_box_count")
             if predicted_box_count is None and "box_count" in body:
                 predicted_box_count = body.get("box_count")
+            scenario_label = body.get("scenario_label")
             tm_confidence = body.get("tm_confidence") or body.get("confidence")
 
             # Determine current quantity
@@ -645,7 +647,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 esp32_ip=esp32_ip,
                 esp32_ip2=esp32_ip2,
                 after_data_url=after_image,
-                tm_predicted_box_count=int(predicted_box_count) if predicted_box_count is not None else None,
+                baseline_box_count=int(baseline_box_count) if baseline_box_count is not None else None,
+                predicted_box_count=int(predicted_box_count) if predicted_box_count is not None else None,
+                scenario_label=scenario_label,
                 tm_confidence=float(tm_confidence) if tm_confidence is not None else None,
             )
 

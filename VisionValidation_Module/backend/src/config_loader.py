@@ -416,10 +416,11 @@ def update_compartment_baseline_in_supabase(
     shelf_id: str,
     baseline_image_url: str,
     ip_address: Optional[str] = None,
+    baseline_image_2_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Updates baseline_image_url, baseline_updated_at = now(), status = 'ONLINE',
-    and optionally ip_address in public.compartments where shelf_id = shelf_id.
+    Updates baseline_image_url, baseline_image_2_url (Front Cam), baseline_updated_at = now(),
+    status = 'ONLINE', and optionally ip_address in public.compartments where shelf_id = shelf_id.
     """
     shelf_id = shelf_id.strip()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -429,6 +430,8 @@ def update_compartment_baseline_in_supabase(
         "status": "ONLINE",
         "last_seen_at": now_iso,
     }
+    if baseline_image_2_url:
+        update_data["baseline_image_2_url"] = baseline_image_2_url
     if ip_address:
         update_data["ip_address"] = str(ip_address).strip()
 
@@ -521,6 +524,7 @@ def apply_inventory_delta_in_supabase(
             print(f"[ConfigLoader] Updated {shelf_id} inventory via REST: {quantity_before} -> {quantity_after} ({state_delta}).")
 
     # d) Insert row into public.comparison_logs
+    scenario_label = comparison_result.get("matched_scenario_label") or comparison_result.get("scenario_label")
     log_record: Dict[str, Any] = {
         "shelf_id": shelf_id,
         "mqtt_client_id": mqtt_client_id,
@@ -530,6 +534,7 @@ def apply_inventory_delta_in_supabase(
         "diff_score": float(diff_score) if diff_score is not None else None,
         "similarity_score": float(similarity_score) if similarity_score is not None else None,
         "matched_box_count": int(matched_box_count) if matched_box_count is not None else None,
+        "scenario_label": scenario_label,
         "state_delta": state_delta,
         "quantity_before": quantity_before,
         "quantity_after": quantity_after,

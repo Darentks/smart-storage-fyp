@@ -100,6 +100,23 @@ class VisionValidationEngine:
         # Publish MQTT trigger to wake compartment ESP32-CAM
         self.mqtt_client.publish_trigger(shelf_id=shelf_id, expected_action=action, confidence=conf)
 
+        # Also notify local bridge about CCTV trigger so browser UI TM model can process dual-cam inference
+        def _notify_bridge_trigger():
+            try:
+                trig_url = "http://localhost:8008/esp32_trigger"
+                t_payload = json.dumps({
+                    "shelf_id": shelf_id,
+                    "command": "CAPTURE_STATE",
+                    "expected_action": action,
+                    "source": "CCTV",
+                }).encode("utf-8")
+                req = urllib.request.Request(trig_url, data=t_payload, headers={"Content-Type": "application/json"}, method="POST")
+                urllib.request.urlopen(req, timeout=1.5)
+            except Exception:
+                pass
+
+        threading.Thread(target=_notify_bridge_trigger, daemon=True).start()
+
         # Set HUD visual alert banner for 3 seconds
         self.active_alert = f"TRIGGER SENT: [{action}] at {shelf_id} (Dwell: {event['dwell_duration_seconds']}s)"
         self.alert_color = (0, 165, 255)
