@@ -27,6 +27,7 @@ try:
     from supabase import create_client
     _SUPABASE_AVAILABLE = True
 except ImportError:
+    create_client = None  # type: ignore
     _SUPABASE_AVAILABLE = False
 
 _client_cache: Optional[Any] = None
@@ -219,7 +220,7 @@ def get_supabase_client() -> Optional[Any]:
     if _client_cache is not None:
         return _client_cache
 
-    if not _SUPABASE_AVAILABLE:
+    if not _SUPABASE_AVAILABLE or create_client is None:
         print("[ConfigLoader] Warning: 'supabase' library is not installed. Operations will use SupabaseRestFallback.")
         return None
 
@@ -234,7 +235,7 @@ def get_supabase_client() -> Optional[Any]:
         return None
 
 
-def mask_rtsp_url(url: str) -> str:
+def mask_rtsp_url(url: Union[int, str]) -> str:
     """Masks password inside RTSP URL for safe terminal logging."""
     if not isinstance(url, str):
         return str(url)
@@ -546,9 +547,19 @@ def apply_inventory_delta_in_supabase(
             ins = client.table("comparison_logs").insert(log_record).execute()
             return ins.data[0] if ins.data else log_record
         except Exception as exc:
+            if "scenario_label" in str(exc).lower():
+                try:
+                    record_no_scen = {k: v for k, v in log_record.items() if k != "scenario_label"}
+                    ins = client.table("comparison_logs").insert(record_no_scen).execute()
+                    return ins.data[0] if ins.data else log_record
+                except Exception:
+                    pass
             print(f"[ConfigLoader] Failed to insert comparison_log via SDK ({exc}), trying SupabaseRestFallback.")
 
     inserted_logs = fallback.insert("comparison_logs", log_record)
+    if not inserted_logs and "scenario_label" in log_record:
+        record_no_scen = {k: v for k, v in log_record.items() if k != "scenario_label"}
+        inserted_logs = fallback.insert("comparison_logs", record_no_scen)
     return inserted_logs[0] if inserted_logs else log_record
 
 

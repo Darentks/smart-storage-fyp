@@ -25,13 +25,17 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+cv2: Any
+np: Any
 try:
-    import cv2
-    import numpy as np
+    import cv2 as _cv2_module
+    import numpy as _np_module
+    cv2 = _cv2_module
+    np = _np_module
     _OPENCV_AVAILABLE = True
 except ImportError:
-    cv2 = None  # type: ignore
-    np = None  # type: ignore
+    cv2 = None
+    np = None
     _OPENCV_AVAILABLE = False
 
 try:
@@ -270,6 +274,12 @@ class ESP32ReferenceManager:
         # 30-second rolling baseline cache per shelf_id:
         # self.baseline_cache[shelf_id] = { "frame_bgr": frame_bgr, "data_url": data_url, "updated_at": now_iso }
         self.baseline_cache: Dict[str, Dict[str, Any]] = {}
+        # Guardrail 1: 30-Second Baseline Freeze Lock timestamp per shelf_id
+        self.baseline_freeze_until: Dict[str, float] = {}
+
+    def freeze_baseline(self, shelf_id: str, duration_sec: float = 10.0) -> None:
+        """Sets freeze lock on shelf baseline so 30s poller won't overwrite during active user hand interaction."""
+        self.baseline_freeze_until[shelf_id.strip()] = time.time() + duration_sec
 
     def fetch_esp32_frame(
         self,
@@ -321,42 +331,44 @@ class ESP32ReferenceManager:
     ) -> Tuple[Any, str, Optional[str], Optional[str]]:
         """
         Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=0,
-        returns (combined_bgr, combined_data_url, url1, url2).
+        retrying failed HTTP requests once (timeout=2.0).
+        Returns (combined_bgr, combined_data_url, url1, url2).
         Stitches the two images side-by-side horizontally for logging & comparison.
         """
+        def _fetch_single_with_retry(ip: str) -> Tuple[Optional[Any], Optional[str]]:
+            clean = ip.replace("http://", "").replace("/", "").strip()
+            f_url = f"http://{clean}/capture?mode={mode}&flash=0&t={int(time.time() * 1000)}"
+            for attempt in range(2):
+                req_timeout = timeout if attempt == 0 else 2.0
+                try:
+                    req = urllib.request.Request(
+                        f_url,
+                        headers={"User-Agent": "SmartStorageVision/1.0", "Cache-Control": "no-cache"},
+                    )
+                    with urllib.request.urlopen(req, timeout=req_timeout) as resp:
+                        raw = resp.read()
+                        arr = np.asarray(bytearray(raw), dtype=np.uint8)
+                        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR) if _OPENCV_AVAILABLE else None
+                        if frame is not None:
+                            return frame, encode_bgr_to_data_url(frame)
+                except Exception as exc:
+                    if attempt == 0:
+                        time.sleep(0.1)
+                        continue
+                    print(f"[ReferenceValidator] Snapshot fetch failed for {clean} (attempt {attempt + 1}): {exc}")
+            # Degraded fallback to fetch_esp32_frame
+            return self.fetch_esp32_frame(esp32_ip=ip, mode=mode, timeout=timeout)
+
         frame1 = None
         url1 = None
         frame2 = None
         url2 = None
 
         if esp32_ip1:
-            clean1 = esp32_ip1.replace("http://", "").replace("/", "").strip()
-            # fetch with flash=0 and cache-buster
-            f_url1 = f"http://{clean1}/capture?mode={mode}&flash=0&t={int(time.time() * 1000)}"
-            try:
-                req1 = urllib.request.Request(f_url1, headers={"User-Agent": "SmartStorageVision/1.0", "Cache-Control": "no-cache"})
-                with urllib.request.urlopen(req1, timeout=timeout) as resp:
-                    raw1 = resp.read()
-                    arr1 = np.asarray(bytearray(raw1), dtype=np.uint8)
-                    frame1 = cv2.imdecode(arr1, cv2.IMREAD_COLOR)
-                    if frame1 is not None:
-                        url1 = encode_bgr_to_data_url(frame1)
-            except Exception:
-                frame1, url1 = self.fetch_esp32_frame(esp32_ip=esp32_ip1, mode=mode, timeout=timeout)
+            frame1, url1 = _fetch_single_with_retry(esp32_ip1)
 
         if esp32_ip2:
-            clean2 = esp32_ip2.replace("http://", "").replace("/", "").strip()
-            f_url2 = f"http://{clean2}/capture?mode={mode}&flash=0&t={int(time.time() * 1000)}"
-            try:
-                req2 = urllib.request.Request(f_url2, headers={"User-Agent": "SmartStorageVision/1.0", "Cache-Control": "no-cache"})
-                with urllib.request.urlopen(req2, timeout=timeout) as resp:
-                    raw2 = resp.read()
-                    arr2 = np.asarray(bytearray(raw2), dtype=np.uint8)
-                    frame2 = cv2.imdecode(arr2, cv2.IMREAD_COLOR)
-                    if frame2 is not None:
-                        url2 = encode_bgr_to_data_url(frame2)
-            except Exception:
-                frame2, url2 = self.fetch_esp32_frame(esp32_ip=esp32_ip2, mode=mode, timeout=timeout)
+            frame2, url2 = _fetch_single_with_retry(esp32_ip2)
 
         if frame1 is None and frame2 is None:
             synth = synthesize_compartment_frame(f"DUAL-CAM ({mode.upper()})", box_count=4)
@@ -382,7 +394,7 @@ class ESP32ReferenceManager:
             return combined_bgr, combined_url, url1, url2
 
         single_frame = frame1 if frame1 is not None else frame2
-        single_url = url1 if url1 is not None else url2
+        single_url = url1 if url1 is not None else (url2 or "")
         return single_frame, single_url, url1, url2
 
     def update_30s_baseline(
@@ -400,6 +412,11 @@ class ESP32ReferenceManager:
         in self.baseline_cache[shelf_id], and updates baseline_image_url and baseline_image_2_url in public.compartments.
         """
         shelf_id = shelf_id.strip()
+        # Guardrail 1: Skip updating if baseline is currently frozen during active hand interaction
+        if time.time() < self.baseline_freeze_until.get(shelf_id, 0.0):
+            print(f"[ESP32ReferenceManager] Baseline update frozen for {shelf_id} (active interaction lock).")
+            return self.baseline_cache.get(shelf_id)
+
         now_iso = datetime.now(timezone.utc).isoformat()
         frame_bgr = None
         data_url = None
@@ -545,9 +562,8 @@ class ESP32ReferenceManager:
         diff_score = self._compute_absdiff_score(before_bgr, after_bgr)
 
         # Step D: Teachable Machine Dual-Cam Classification Logic
-        # Accept either predicted_box_count or tm_predicted_box_count
-        target_tm_count = predicted_box_count if predicted_box_count is not None else tm_predicted_box_count
-        ref_quantity = baseline_box_count if baseline_box_count is not None else current_quantity
+        # Compare tm_predicted_box_count against current_quantity (< -> ITEM_REMOVED, > -> ITEM_RETURNED, == -> NO_CHANGE)
+        target_tm_count = tm_predicted_box_count if tm_predicted_box_count is not None else predicted_box_count
 
         matched_box_count: Optional[int] = None
         matched_scenario_label: Optional[str] = scenario_label
@@ -561,12 +577,12 @@ class ESP32ReferenceManager:
             if not matched_scenario_label:
                 matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {5 - matched_box_count}: {matched_box_count}/4 Boxes")
 
-            if matched_box_count < ref_quantity:
+            if matched_box_count < current_quantity:
                 state_delta = "ITEM_REMOVED"
-                delta = matched_box_count - ref_quantity
-            elif matched_box_count > ref_quantity:
+                delta = matched_box_count - current_quantity
+            elif matched_box_count > current_quantity:
                 state_delta = "ITEM_RETURNED"
-                delta = matched_box_count - ref_quantity
+                delta = matched_box_count - current_quantity
             else:
                 state_delta = "NO_CHANGE"
                 delta = 0
@@ -584,11 +600,14 @@ class ESP32ReferenceManager:
                     delta = -1
 
         # Step E: If confirmed change, update rolling 30s baseline cache with after_bgr
-        if delta != 0:
+        if delta != 0 or shelf_id not in self.baseline_cache:
             now_iso = datetime.now(timezone.utc).isoformat()
             self.baseline_cache[shelf_id] = {
                 "frame_bgr": after_bgr,
                 "data_url": after_url or "",
+                "data_url_2": url_front or "",
+                "url_back": url_back or after_url or "",
+                "url_front": url_front or "",
                 "updated_at": now_iso,
             }
 

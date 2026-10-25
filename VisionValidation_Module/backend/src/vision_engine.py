@@ -111,9 +111,10 @@ class VisionValidationEngine:
                     "source": "CCTV",
                 }).encode("utf-8")
                 req = urllib.request.Request(trig_url, data=t_payload, headers={"Content-Type": "application/json"}, method="POST")
-                urllib.request.urlopen(req, timeout=1.5)
-            except Exception:
-                pass
+                with urllib.request.urlopen(req, timeout=1.5) as resp:
+                    print(f"[VisionEngine] CCTV wrist interaction (1.2s dwell) queued in local bridge: {shelf_id} ({action})")
+            except Exception as e:
+                print(f"[VisionEngine] Notice: Local bridge not responding to CCTV trigger: {e}")
 
         threading.Thread(target=_notify_bridge_trigger, daemon=True).start()
 

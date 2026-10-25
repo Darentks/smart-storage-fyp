@@ -31,21 +31,28 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from supabase_auth import Any
+
 # Add backend directory to sys.path
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "backend"))
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
 
+cv2 : Any
+np : Any
 try:
-    import cv2
-    import numpy as np
+    import cv2 as _cv2_module
+    import numpy as _np_module
+    cv2 = _cv2_module
+    np = _np_module
+    
     _OPENCV_AVAILABLE = True
 except ImportError:
     cv2 = None  # type: ignore
     np = None  # type: ignore
     _OPENCV_AVAILABLE = False
 
-from src.config_loader import (
+from src.config_loader import (  # type: ignore
     get_active_rtsp_url,
     mask_rtsp_url,
     list_esp32_cameras,
@@ -57,9 +64,9 @@ from src.config_loader import (
     list_esp32_reference_samples,
     delete_esp32_reference_sample,
 )
-from src.spatial_mapper import SpatialMapper
-from src.mqtt_client import MQTTClientNode
-from src.reference_validator import (
+from src.spatial_mapper import SpatialMapper  # type: ignore
+from src.mqtt_client import MQTTClientNode  # type: ignore
+from src.reference_validator import (  # type: ignore
     ESP32ReferenceManager,
     extract_2x2_feature_signature,
     encode_bgr_to_data_url,
@@ -374,9 +381,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             nodes = get_merged_compartments_and_nodes()
             logs = list_comparison_logs(15)
 
-            # Return pending triggers and clear so dashboard consumes them once
-            pending = list(PENDING_CCTV_TRIGGERS)
-            PENDING_CCTV_TRIGGERS.clear()
+            # Expose pending CCTV triggers (retain recent items within last 60s, max 20)
+            # Dashboard deduplicates by trigger_id via processedCctvTriggers set
+            now = time.time()
+            pending = [t for t in PENDING_CCTV_TRIGGERS if (now - t.get("timestamp", 0)) < 60.0][-20:]
 
             self._send_json(200, {
                 "status": "success",
@@ -512,6 +520,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # MANUAL TRIGGER: Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
         if path == "/esp32_trigger":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
+            # Guardrail 1: Freeze 30s baseline for 10s during interaction
+            esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
+
             command = str(body.get("command", "CAPTURE_STATE")).upper()
             expected_action = str(body.get("expected_action", "BORROW")).upper()
             rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
@@ -626,6 +637,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # VALIDATE: Run hybrid 30s baseline + reference validation and apply Supabase delta
         if path == "/esp32_validate":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
+            # Guardrail 1: Freeze 30s baseline for 10s during interaction
+            esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
+
             mqtt_client_id = str(body.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}").strip()
             expected_action = str(body.get("expected_action", "BORROW")).upper()
             esp32_ip = body.get("ip_address") or body.get("ip")
