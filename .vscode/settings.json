@@ -1,9 +1,15 @@
 {
     "python-envs.defaultEnvManager": "ms-python.python:system",
     "python.analysis.extraPaths": [
-        "${workspaceFolder}/VisionValidation_Module/backend"
+        "${workspaceFolder}/VisionValidation_Module/backend",
+        "${workspaceFolder}/VisionValidation_Module",
+        "VisionValidation_Module/backend",
+        "./VisionValidation_Module/backend"
     ],
     "python.autoComplete.extraPaths": [
-        "${workspaceFolder}/VisionValidation_Module/backend"
+        "${workspaceFolder}/VisionValidation_Module/backend",
+        "${workspaceFolder}/VisionValidation_Module",
+        "VisionValidation_Module/backend",
+        "./VisionValidation_Module/backend"
     ]
 }

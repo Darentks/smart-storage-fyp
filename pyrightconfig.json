@@ -1,0 +1,13 @@
+{
+  "include": [
+    "VisionValidation_Module",
+    "."
+  ],
+  "extraPaths": [
+    "VisionValidation_Module/backend",
+    "VisionValidation_Module",
+    "backend"
+  ]
+  
+}
+
