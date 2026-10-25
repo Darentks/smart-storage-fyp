@@ -769,11 +769,11 @@
       </div>
     </section>
 
-    <!-- Panel 2: Dual ESP32-CAM Live Preview & Google Teachable Machine Validator -->
+    <!-- Panel 2: Dual ESP32-CAM Live Preview & Google Teachable Machine Live Validator -->
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">&#128247; Panel 2 &bull; Dual ESP32-CAM Live Preview &amp; Google Teachable Machine (5-Scenario) Validator</h2>
+          <h2 class="panel-title">&#128247; Panel 2 &bull; Dual ESP32-CAM (<code>CAM1 Back</code> + <code>CAM2 Front</code>) &amp; Google Teachable Machine (5-Scenario) Live Validator</h2>
           <p class="panel-desc">Real-time dual-camera perspective (CAM 1 Back + CAM 2 Front) &amp; client-side Google Teachable Machine AI classification into 5 physical inventory scenarios.</p>
         </div>
         <div style="display: flex; gap: 8px; align-items: center;">
@@ -781,85 +781,128 @@
         </div>
       </div>
 
-      <!-- Controls & IP Selection -->
-      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; background: var(--surface-card); border: 1px solid var(--border); padding: 16px; border-radius: 10px; margin-bottom: 20px;">
-        <div class="form-group">
-          <label for="refShelfSelect">Target Shelf Compartment</label>
-          <select id="refShelfSelect" class="form-control" onchange="syncSelectedShelfTelemetry()">
-            <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
-            <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
-            <option value="SHELF_R1_C3">SHELF_R1_C3 (ESP32 Node R1-C3)</option>
-          </select>
-        </div>
+      <div class="tester-grid">
+        <!-- Left Column (Dual Camera Preview Canvas) -->
+        <div class="tester-preview-col">
+          <!-- 2-column preview grid for CAM 1 and CAM 2 -->
+          <div class="dual-preview-grid">
+            <!-- CAM 1 Back Box -->
+            <div class="cam-box" id="backCamBox">
+              <span class="cam-badge-tag">&#128247; CAM 1 (Back Angle)</span>
+              <div id="backPlaceholder" class="snapshot-placeholder">
+                <span>Waiting for Cam 1...</span>
+              </div>
+              <img id="backPreviewImg" src="" crossOrigin="anonymous" alt="CAM 1 Back Preview" style="display:none;" />
+              <span id="backPredBadge" class="cam-pred-badge" style="display:none;">Back: Ready</span>
+            </div>
 
-        <div class="form-group">
-          <label for="refEspIpInput">ESP32-CAM 1 (Back Angle IP)</label>
-          <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" />
-        </div>
-
-        <div class="form-group">
-          <label for="refEspIp2Input">ESP32-CAM 2 (Front Angle IP)</label>
-          <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102" value="192.168.0.102" />
-        </div>
-
-        <div class="form-group" style="justify-content: flex-end;">
-          <button type="button" class="btn-primary" style="height: 38px; justify-content: center;" onclick="fetchLiveAnglePreview()">
-            &#128065; Preview Live Dual Cameras
-          </button>
-        </div>
-      </div>
-
-      <!-- Dual Preview Boxes: CAM 1 (Back) & CAM 2 (Front) -->
-      <div class="dual-preview-grid">
-        <!-- CAM 1 Back Box -->
-        <div class="cam-box" id="backCamBox">
-          <span class="cam-badge-tag">&#128247; CAM 1 (Back Angle)</span>
-          <div id="backPlaceholder" class="snapshot-placeholder">
-            <span>Waiting for Cam 1...</span>
+            <!-- CAM 2 Front Box -->
+            <div class="cam-box" id="frontCamBox">
+              <span class="cam-badge-tag">&#128247; CAM 2 (Front Angle)</span>
+              <div id="frontPlaceholder" class="snapshot-placeholder">
+                <span>Waiting for Cam 2...</span>
+              </div>
+              <img id="frontPreviewImg" src="" crossOrigin="anonymous" alt="CAM 2 Front Preview" style="display:none;" />
+              <span id="frontPredBadge" class="cam-pred-badge" style="display:none;">Front: Ready</span>
+            </div>
           </div>
-          <img id="backPreviewImg" src="" crossOrigin="anonymous" alt="CAM 1 Back Preview" style="display:none;" />
-          <span id="backPredBadge" class="cam-pred-badge" style="display:none;">Back: Ready</span>
-        </div>
 
-        <!-- CAM 2 Front Box -->
-        <div class="cam-box" id="frontCamBox">
-          <span class="cam-badge-tag">&#128247; CAM 2 (Front Angle)</span>
-          <div id="frontPlaceholder" class="snapshot-placeholder">
-            <span>Waiting for Cam 2...</span>
+          <!-- Stitched Combined [BACK CAM | FRONT CAM] View -->
+          <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <span style="font-size: 13px; font-weight: 700; color: var(--text-muted);">&#127916; Combined Stitched Feed [BACK CAM | FRONT CAM]</span>
+              <span id="previewOverlayText" style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span>
+            </div>
+            <div class="preview-canvas-box" id="previewContainer" style="max-height: 240px;">
+              <div id="previewPlaceholder" class="snapshot-placeholder">
+                <span>&#128249; No snapshot yet. Click "Preview Both Angles" or upload test photos.</span>
+              </div>
+              <img id="livePreviewImg" src="" crossOrigin="anonymous" alt="Combined Stitched View" style="display:none;" />
+            </div>
           </div>
-          <img id="frontPreviewImg" src="" crossOrigin="anonymous" alt="CAM 2 Front Preview" style="display:none;" />
-          <span id="frontPredBadge" class="cam-pred-badge" style="display:none;">Front: Ready</span>
-        </div>
-      </div>
 
-      <!-- Combined Stitched View -->
-      <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 16px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <span style="font-size: 13px; font-weight: 700; color: var(--text-muted);">&#127916; Combined Stitched Feed [CAM 1 Back | CAM 2 Front]</span>
-          <span id="previewOverlayText" style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span>
-        </div>
-        <div class="preview-canvas-box" id="previewContainer" style="max-height: 280px;">
-          <div id="previewPlaceholder" class="snapshot-placeholder">
-            <span>&#128249; No snapshot yet. Click "Preview Live Dual Cameras".</span>
+          <!-- Prominent status banner -->
+          <div id="tmLivePredictionBanner" style="display: block; background: #0b1528; border: 1px solid var(--primary); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: var(--font-mono); color: var(--primary); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.1);">
+            Teachable Machine (0cQO4TjOm): Waiting for preview...
           </div>
-          <img id="livePreviewImg" src="" alt="Combined Stitched View" style="display:none;" />
         </div>
-      </div>
 
-      <!-- Live Teachable Machine Calculation Banner -->
-      <div id="tmLivePredictionBanner" style="display: none; background: #0b1528; border: 1px solid var(--primary); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: var(--font-mono); color: var(--primary); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.1);">
-        TM AI: Initializing...
+        <!-- Right Column (Dual Camera Controls & Offline Home Photo Tester) -->
+        <div class="tester-controls-col" style="display: flex; flex-direction: column; gap: 14px;">
+          <!-- Dual Camera Controls Card -->
+          <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
+            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-primary);">&#9881; Target Shelf &amp; ESP32-CAM Setup</h3>
+
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label for="refShelfSelect">Target Shelf Compartment</label>
+              <select id="refShelfSelect" class="form-control" onchange="syncSelectedShelfTelemetry()">
+                <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
+                <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
+                <option value="SHELF_R1_C3">SHELF_R1_C3 (ESP32 Node R1-C3)</option>
+              </select>
+            </div>
+
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label for="refEspIpInput">ESP32-CAM 1 Back Angle IP</label>
+              <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" />
+            </div>
+
+            <div class="form-group" style="margin-bottom: 16px;">
+              <label for="refEspIp2Input">ESP32-CAM 2 Front Angle IP</label>
+              <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102" value="192.168.0.102" />
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 10px;">
+              <button type="button" class="btn-primary" style="height: 40px; justify-content: center;" onclick="fetchLiveAnglePreview()">
+                &#128065; Preview Both Angles &amp; Run Teachable Machine
+              </button>
+              <button type="button" class="btn-action" style="height: 40px; justify-content: center; background: rgba(56, 189, 248, 0.1); border-color: var(--primary); color: var(--primary);" onclick="runFullDualCamValidation(refShelfSelect.value, 'BORROW')">
+                &#9889; Run Full Validation &amp; Update Supabase DB
+              </button>
+            </div>
+          </div>
+
+          <!-- Offline Home Test Box (For Testing Without Physical ESP32-CAMs) -->
+          <div style="background: rgba(14, 165, 233, 0.05); border: 1px dashed var(--primary); border-radius: 10px; padding: 16px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+              <h3 style="font-size: 13px; font-weight: 700; color: var(--primary); margin: 0;">&#127968; Offline Home Photo Tester</h3>
+              <span id="homeTestModeBadge" class="badge badge-offline" style="font-size: 10px;">Hardware Stream</span>
+            </div>
+            <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
+              Test Teachable Machine classification and trigger +1 / -1 Supabase inventory updates without physical ESP32-CAMs connected.
+            </p>
+
+            <div class="form-group" style="margin-bottom: 10px;">
+              <label for="testBackFileInput" style="font-size: 11px;">Upload CAM 1 Back Photo:</label>
+              <input type="file" id="testBackFileInput" accept="image/*" class="form-control" style="font-size: 12px; padding: 6px 10px;" />
+            </div>
+
+            <div class="form-group" style="margin-bottom: 14px;">
+              <label for="testFrontFileInput" style="font-size: 11px;">Upload CAM 2 Front Photo:</label>
+              <input type="file" id="testFrontFileInput" accept="image/*" class="form-control" style="font-size: 12px; padding: 6px 10px;" />
+            </div>
+
+            <button type="button" class="btn-action" style="width: 100%; height: 38px; justify-content: center; font-weight: 700;" onclick="runOfflinePhotoTest()">
+              &#127968; Test Teachable Machine with Uploaded Photos
+            </button>
+          </div>
+        </div>
       </div>
     </section>
 
     <!-- Panel 3: OpenCV Before vs. After Comparison Log -->
     <section class="panel">
-      <div class="panel-header">
+      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div>
           <h2 class="panel-title">&#128248; Panel 3 &bull; OpenCV Before (30s Baseline) vs. After (Post-Trigger) Comparison Logs</h2>
           <p class="panel-desc">Every physical inventory interaction verification recorded in <code>public.comparison_logs</code>.</p>
         </div>
-        <span id="logCountBadge" style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">0 Logs</span>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <button type="button" class="btn btn-secondary" onclick="exportComparisonLogsCsv()" style="font-size: 12px; padding: 6px 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid var(--primary); color: var(--primary); cursor: pointer; border-radius: 6px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;">
+            &#11015; Export CSV for Thesis
+          </button>
+          <span id="logCountBadge" style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">0 Logs</span>
+        </div>
       </div>
 
       <div id="comparisonLogsList" class="logs-list">
@@ -939,10 +982,15 @@
     const frontPlaceholder = document.getElementById('frontPlaceholder');
     const previewPlaceholder = document.getElementById('previewPlaceholder');
     const previewOverlayText = document.getElementById('previewOverlayText');
+    const testBackFileInput = document.getElementById('testBackFileInput');
+    const testFrontFileInput = document.getElementById('testFrontFileInput');
+    const homeTestModeBadge = document.getElementById('homeTestModeBadge');
 
     let compartmentsData = [];
     let comparisonLogsData = [];
     let currentPreviewDataUrl = null;
+    let homeTestBackDataUrl = null;
+    let homeTestFrontDataUrl = null;
 
     // =========================================================================
     // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 5 CORE SCENARIOS
@@ -988,34 +1036,92 @@
           loadTmModelBtn.style.color = 'var(--success)';
         }
       } catch (err) {
-        console.error('[TM Loader] Failed to load Teachable Machine model:', err);
-        showToast(`TM Model load failed: ${err.message}`, 'error');
-        if (loadTmModelBtn) {
-          loadTmModelBtn.disabled = false;
-          loadTmModelBtn.textContent = 'Load TM Model';
+        console.warn(`[TM Loader] Remote load failed: ${err.message}. Attempting offline local fallback...`);
+        try {
+          // Guardrail 3: Offline local fallback when lab internet is disconnected
+          window.tmModel = await tmImage.load('./models/tm_0cQO4TjOm/model.json', './models/tm_0cQO4TjOm/metadata.json');
+          console.log('[TM Loader] Offline Local Teachable Machine Model loaded successfully.');
+          showToast('Loaded offline local Teachable Machine model (./models/tm_0cQO4TjOm/)!', 'info');
+          if (loadTmModelBtn) {
+            loadTmModelBtn.disabled = false;
+            loadTmModelBtn.textContent = 'TM Model: Offline';
+            loadTmModelBtn.style.borderColor = 'var(--warning)';
+            loadTmModelBtn.style.color = 'var(--warning)';
+          }
+        } catch (offlineErr) {
+          console.error('[TM Loader] Both remote and local offline TM loads failed:', offlineErr);
+          showToast(`TM Model load failed: ${err.message}`, 'error');
+          if (loadTmModelBtn) {
+            loadTmModelBtn.disabled = false;
+            loadTmModelBtn.textContent = 'Load TM Model';
+            loadTmModelBtn.style.borderColor = 'var(--danger)';
+            loadTmModelBtn.style.color = 'var(--danger)';
+          }
         }
       }
     }
 
     async function predictDualCamerasWithTM(backImgEl, frontImgEl) {
       if (!window.tmModel) return null;
+
+      const isUsable = (img) => {
+        if (!img) return false;
+        if (img instanceof HTMLImageElement) {
+          return img.complete && img.naturalWidth > 0 && Boolean(img.src) && !img.src.endsWith('/null') && !img.src.endsWith('/undefined');
+        }
+        return Boolean(img);
+      };
+
+      const backOk = isUsable(backImgEl);
+      const frontOk = isUsable(frontImgEl);
+
+      if (!backOk && !frontOk) {
+        console.warn('[TM] Neither camera image is usable for prediction.');
+        return null;
+      }
+
       // 1. Predict Back Camera (filter classes starting with "Back_")
-      const backPreds = await window.tmModel.predict(backImgEl);
-      const backOnly = backPreds.filter(p => p.className.toLowerCase().startsWith("back_"));
-      const bestBack = (backOnly.length ? backOnly : backPreds).reduce((a, b) => a.probability > b.probability ? a : b);
-      const backMatch = bestBack.className.match(/(\d+)/);
-      const backCount = backMatch ? parseInt(backMatch[1], 10) : 0;
+      let bestBack = { className: 'Back_Offline', probability: 0 };
+      let backCount = 0;
+      if (backOk) {
+        try {
+          const backPreds = await window.tmModel.predict(backImgEl);
+          const backOnly = backPreds.filter(p => p.className.toLowerCase().startsWith("back_"));
+          bestBack = (backOnly.length ? backOnly : backPreds).reduce((a, b) => a.probability > b.probability ? a : b);
+          const backMatch = bestBack.className.match(/(\d+)/);
+          backCount = backMatch ? parseInt(backMatch[1], 10) : 0;
+        } catch (e) {
+          console.warn('[TM] Back camera predict failed:', e);
+        }
+      }
 
       // 2. Predict Front Camera (filter classes starting with "Front_")
-      const frontPreds = await window.tmModel.predict(frontImgEl);
-      const frontOnly = frontPreds.filter(p => p.className.toLowerCase().startsWith("front_"));
-      const bestFront = (frontOnly.length ? frontOnly : frontPreds).reduce((a, b) => a.probability > b.probability ? a : b);
-      const frontMatch = bestFront.className.match(/(\d+)/);
-      const frontCount = frontMatch ? parseInt(frontMatch[1], 10) : 0;
+      let bestFront = { className: 'Front_Offline', probability: 0 };
+      let frontCount = 0;
+      if (frontOk) {
+        try {
+          const frontPreds = await window.tmModel.predict(frontImgEl);
+          const frontOnly = frontPreds.filter(p => p.className.toLowerCase().startsWith("front_"));
+          bestFront = (frontOnly.length ? frontOnly : frontPreds).reduce((a, b) => a.probability > b.probability ? a : b);
+          const frontMatch = bestFront.className.match(/(\d+)/);
+          frontCount = frontMatch ? parseInt(frontMatch[1], 10) : 0;
+        } catch (e) {
+          console.warn('[TM] Front camera predict failed:', e);
+        }
+      }
 
       // 3. Combine Back + Front into the 5 Scenarios (4/4, 3/4, 2/4, 1/4, 0/4)
+      // Guardrail 4: Graceful single-camera degraded fallback
       const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
-      const avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
+      let avgConfidence = 0.0;
+      if (backOk && frontOk) {
+        avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
+      } else if (backOk) {
+        avgConfidence = Number((bestBack.probability * 100).toFixed(1));
+      } else {
+        avgConfidence = Number((bestFront.probability * 100).toFixed(1));
+      }
+
       return {
         backClass: bestBack.className,
         backCount,
@@ -1024,8 +1130,9 @@
         frontCount,
         frontConfidence: Number((bestFront.probability * 100).toFixed(1)),
         totalBoxes,
-        scenarioLabel: SCENARIO_LABELS[totalBoxes],
-        confidence: avgConfidence
+        scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/4 Boxes`,
+        confidence: avgConfidence,
+        degraded: !backOk || !frontOk
       };
     }
 
@@ -1086,81 +1193,398 @@
     }
 
     // =========================================================================
-    // DUAL-CAMERA TEACHABLE MACHINE VALIDATION PIPELINE
+    // DUAL-CAMERA IMAGE STITCHING & CALIBRATION HELPERS
     // =========================================================================
-    async function runFullDualCamValidation(shelfId, action) {
-      const comp = compartmentsData.find(c => c.shelf_id === shelfId);
-      const ip1 = (comp && comp.ip_address ? comp.ip_address : (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.101')) || '192.168.0.101';
-      const ip2 = (comp && comp.secondary_ip_address ? comp.secondary_ip_address : (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.102')) || '192.168.0.102';
+    function stitchTwoImages(imgBack, imgFront) {
+      const canvas = document.createElement('canvas');
+      const w1 = imgBack.naturalWidth || imgBack.width || 320;
+      const h1 = imgBack.naturalHeight || imgBack.height || 240;
+      const w2 = imgFront.naturalWidth || imgFront.width || 320;
+      const h2 = imgFront.naturalHeight || imgFront.height || 240;
+      const targetH = Math.max(h1, h2, 240);
+      const targetW1 = Math.round(w1 * (targetH / (h1 || 1)));
+      const targetW2 = Math.round(w2 * (targetH / (h2 || 1)));
+      canvas.width = targetW1 + targetW2;
+      canvas.height = targetH;
+      const ctx = canvas.getContext('2d');
+      // Draw Cam 1 Back on Left
+      ctx.drawImage(imgBack, 0, 0, targetW1, targetH);
+      // Draw Cam 2 Front on Right
+      ctx.drawImage(imgFront, targetW1, 0, targetW2, targetH);
 
-      showToast(`Running Dual-Camera TM Validation for ${shelfId} (${action})...`, 'info');
+      // Angle watermark labels
+      ctx.fillStyle = "#facc15";
+      ctx.font = "bold 16px sans-serif";
+      ctx.fillText("BACK CAM", 15, 25);
+      ctx.fillText("FRONT CAM", targetW1 + 15, 25);
+
+      return canvas.toDataURL('image/jpeg', 0.85);
+    }
+
+    // =========================================================================
+    // PANEL 2: DUAL-CAMERA SETUP & LIVE PREVIEW
+    // =========================================================================
+    function syncSelectedShelfTelemetry() {
+      const selShelf = refShelfSelect.value;
+      const comp = compartmentsData.find(c => c.shelf_id === selShelf);
+      if (comp) {
+        if (comp.ip_address && refEspIpInput) refEspIpInput.value = comp.ip_address;
+        if (comp.secondary_ip_address && refEspIp2Input) refEspIp2Input.value = comp.secondary_ip_address;
+      }
+    }
+
+    async function fetchLiveAnglePreview() {
+      const shelfId = refShelfSelect.value;
+      const ip1 = refEspIpInput.value.trim();
+      const ip2 = refEspIp2Input.value.trim();
+      const t0 = performance.now();
+      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
+
+      previewOverlayText.textContent = `Fetching live dual-angle snapshot (${ip1} + ${ip2})...`;
+      showToast(`Fetching live dual preview from ${ip1} & ${ip2}...`, 'info');
 
       try {
-        // Step 1: Fetch fresh dual-camera snapshots from local bridge
-        const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
-        const prevResp = await fetch(previewUrl, { cache: 'no-store' });
-        if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
-        const previewData = await prevResp.json();
+        const resp = await fetch(bridgeUrl, { cache: 'no-store' });
+        const latencyMs = Math.round(performance.now() - t0);
+        if (resp.ok) {
+          const data = await resp.json();
+          if (data.status === 'success' && data.image) {
+            currentPreviewDataUrl = data.image;
 
+            // 1. Show Combined Feed
+            livePreviewImg.src = data.image;
+            livePreviewImg.style.display = 'block';
+            previewPlaceholder.style.display = 'none';
+            previewOverlayText.textContent = `Dual View \u2022 ${shelfId} (${ip1} & ${ip2}) \u2022 ${new Date().toLocaleTimeString()} (${latencyMs}ms)`;
+
+            // 2. Show CAM 1 Back & CAM 2 Front Previews
+            const backUrl = data.image_back || data.image;
+            const frontUrl = data.image_front || data.image;
+
+            backPreviewImg.src = backUrl;
+            backPreviewImg.style.display = 'block';
+            backPlaceholder.style.display = 'none';
+
+            frontPreviewImg.src = frontUrl;
+            frontPreviewImg.style.display = 'block';
+            frontPlaceholder.style.display = 'none';
+
+            // Wait for both images to load before running prediction
+            const loadImgPromise = (img) => new Promise(resolve => {
+              if (img.complete && img.naturalHeight !== 0) return resolve(true);
+              img.onload = () => resolve(true);
+              img.onerror = () => resolve(false);
+            });
+            await Promise.all([loadImgPromise(backPreviewImg), loadImgPromise(frontPreviewImg)]);
+
+            // 3. Run Teachable Machine Prediction if model loaded
+            if (window.tmModel) {
+              try {
+                const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
+                if (tmRes) {
+                  // Update badges on individual cameras
+                  backPredBadge.style.display = 'block';
+                  backPredBadge.textContent = `${tmRes.backClass} (${tmRes.backConfidence}%)`;
+
+                  frontPredBadge.style.display = 'block';
+                  frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
+
+                  // Update Prominent Status Banner
+                  tmLivePredictionBanner.style.display = 'block';
+                  tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
+                  showToast(`Live TM Prediction: ${tmRes.scenarioLabel}`, 'success');
+                }
+              } catch (tmErr) {
+                console.warn('[TM AI] Dual camera prediction error:', tmErr);
+              }
+            }
+
+            return;
+          }
+        }
+      } catch (err) {
+        console.warn('Bridge dual preview fetch failed:', err);
+      }
+
+      previewOverlayText.textContent = `Preview Failed \u2022 Check Local Bridge`;
+      showToast('Could not fetch dual preview from Local Bridge. Check camera_service.py.', 'error');
+    }
+
+    // =========================================================================
+    // OFFLINE HOME PHOTO TESTER
+    // =========================================================================
+    async function runOfflinePhotoTest() {
+      const file1 = testBackFileInput && testBackFileInput.files ? testBackFileInput.files[0] : null;
+      const file2 = testFrontFileInput && testFrontFileInput.files ? testFrontFileInput.files[0] : null;
+
+      if (!file1 && !file2 && !homeTestBackDataUrl && !homeTestFrontDataUrl) {
+        showToast('Please select at least one photo (CAM 1 Back or CAM 2 Front) to test!', 'warning');
+        return;
+      }
+
+      showToast('Loading offline test photos & running Teachable Machine...', 'info');
+
+      const readFilePromise = (file) => new Promise((resolve) => {
+        if (!file) return resolve(null);
+        const reader = new FileReader();
+        reader.onload = (e) => resolve(e.target.result);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+      });
+
+      const [dataUrl1, dataUrl2] = await Promise.all([
+        file1 ? readFilePromise(file1) : Promise.resolve(homeTestBackDataUrl),
+        file2 ? readFilePromise(file2) : Promise.resolve(homeTestFrontDataUrl),
+      ]);
+
+      const backSrc = dataUrl1 || dataUrl2;
+      const frontSrc = dataUrl2 || dataUrl1;
+
+      homeTestBackDataUrl = backSrc;
+      homeTestFrontDataUrl = frontSrc;
+
+      const loadImgPromise = (img, src) => new Promise(resolve => {
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        img.src = src;
+      });
+
+      // 1. Load into preview elements
+      backPreviewImg.style.display = 'block';
+      backPlaceholder.style.display = 'none';
+      frontPreviewImg.style.display = 'block';
+      frontPlaceholder.style.display = 'none';
+
+      await Promise.all([
+        loadImgPromise(backPreviewImg, backSrc),
+        loadImgPromise(frontPreviewImg, frontSrc)
+      ]);
+
+      // 2. Draw side-by-side onto canvas for combined view
+      const stitchedDataUrl = stitchTwoImages(backPreviewImg, frontPreviewImg);
+      livePreviewImg.src = stitchedDataUrl;
+      livePreviewImg.style.display = 'block';
+      previewPlaceholder.style.display = 'none';
+      previewOverlayText.textContent = `Offline Test \u2022 ${refShelfSelect.value} \u2022 ${new Date().toLocaleTimeString()}`;
+
+      if (homeTestModeBadge) {
+        homeTestModeBadge.className = 'badge badge-online';
+        homeTestModeBadge.innerHTML = '<span class="pulse-dot"></span>Offline Home Test Active';
+      }
+
+      // 3. Run Teachable Machine Prediction
+      if (!window.tmModel) {
+        showToast('Teachable Machine model is still loading. Please wait...', 'warning');
+        return;
+      }
+
+      const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
+      if (!tmRes) {
+        showToast('Teachable Machine prediction returned no result.', 'error');
+        return;
+      }
+
+      // 4. Update individual camera badges & status banner
+      backPredBadge.style.display = 'block';
+      backPredBadge.textContent = `${tmRes.backClass} (${tmRes.backConfidence}%)`;
+      frontPredBadge.style.display = 'block';
+      frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
+
+      tmLivePredictionBanner.style.display = 'block';
+      tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
+
+      // 5. Send result to POST /esp32_validate or directly update Supabase
+      const shelfId = refShelfSelect.value;
+      const comp = compartmentsData.find(c => c.shelf_id === shelfId) || { shelf_id: shelfId, current_quantity: 4 };
+      const beforeBoxes = comp.current_quantity != null ? comp.current_quantity : 4;
+      const ip1 = refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.101';
+      const ip2 = refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.102';
+
+      const valPayload = {
+        shelf_id: shelfId,
+        expected_action: "BORROW",
+        ip: ip1,
+        ip2: ip2,
+        image: stitchedDataUrl,
+        baseline_box_count: beforeBoxes,
+        predicted_box_count: tmRes.totalBoxes,
+        scenario_label: tmRes.scenarioLabel,
+        tm_confidence: tmRes.confidence
+      };
+
+      let bridgeSuccess = false;
+      try {
+        const valResp = await fetch(`${getBridgeUrl()}/esp32_validate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(valPayload)
+        });
+        if (valResp.ok) {
+          bridgeSuccess = true;
+          const resultJson = await valResp.json();
+          const compRes = resultJson.comparison || {};
+          const delta = compRes.delta !== undefined ? compRes.delta : 0;
+          const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
+          showToast(`Offline Test Verified: ${compRes.state_delta || 'NO_CHANGE'} (${deltaSign}) | ${tmRes.scenarioLabel}`, 'success');
+        }
+      } catch (bridgeErr) {
+        console.warn('Local bridge offline during offline photo test:', bridgeErr);
+      }
+
+      // If local bridge was offline, directly update Supabase
+      if (!bridgeSuccess) {
+        const delta = tmRes.totalBoxes - beforeBoxes;
+        const stateDelta = delta < 0 ? 'ITEM_REMOVED' : (delta > 0 ? 'ITEM_RETURNED' : 'NO_CHANGE');
+        const newQty = tmRes.totalBoxes;
+        try {
+          await sbRest(`compartments?shelf_id=eq.${shelfId}`, 'PATCH', {
+            current_quantity: newQty,
+            baseline_image_url: stitchedDataUrl,
+            baseline_updated_at: new Date().toISOString()
+          });
+
+          await sbRest('comparison_logs', 'POST', {
+            shelf_id: shelfId,
+            mqtt_client_id: comp.mqtt_client_id || `ESP32_${shelfId.replace('SHELF_', '')}`,
+            trigger_action: 'BORROW',
+            before_image_url: comp.baseline_image_url || null,
+            after_image_url: stitchedDataUrl,
+            diff_score: 15.0,
+            similarity_score: tmRes.confidence,
+            matched_box_count: newQty,
+            scenario_label: tmRes.scenarioLabel,
+            state_delta: stateDelta,
+            quantity_before: beforeBoxes,
+            quantity_after: newQty
+          });
+          const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
+          showToast(`Offline Test (Direct Supabase): ${stateDelta} (${deltaSign}) | ${tmRes.scenarioLabel}`, 'success');
+        } catch (sbErr) {
+          console.warn('Direct Supabase update failed:', sbErr);
+          showToast(`Offline Test: ${tmRes.scenarioLabel} (${tmRes.totalBoxes}/4 boxes)`, 'info');
+        }
+      }
+
+      refreshAllData();
+    }
+
+    // =========================================================================
+    // DUAL-CAMERA TEACHABLE MACHINE VALIDATION PIPELINE
+    // =========================================================================
+    async function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
+      const comp = compartmentsData.find(c => c.shelf_id === shelfId);
+      const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.101');
+      const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.102');
+
+      const prefix = isCctvTrigger ? 'CCTV Trigger' : 'Dual-Camera Validation';
+      showToast(`${prefix}: Running validation for ${shelfId} (${action})...`, 'info');
+
+      // Guardrail 2: 500ms Post-Withdrawal Settle Delay when triggered by CCTV interaction
+      if (isCctvTrigger) {
+        console.log(`[DualCam] Waiting 500ms settle delay after CCTV interaction for ${shelfId}...`);
+        await new Promise(r => setTimeout(r, 500));
+      }
+
+      try {
         const loadImgPromise = (img, src) => new Promise(resolve => {
           img.onload = () => resolve(true);
           img.onerror = () => resolve(false);
           img.src = src;
         });
 
-        // Step 2: Teachable Machine Dual-Angle Inference on new Post-Trigger photos
-        let tmRes = null;
-        if (window.tmModel && (previewData.image_back || previewData.image)) {
+        const fetchSnapshots = async () => {
+          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
+          const prevResp = await fetch(previewUrl, { cache: 'no-store' });
+          if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
+          return await prevResp.json();
+        };
+
+        const updatePreviewUI = (data, bSrc, fSrc) => {
+          if (livePreviewImg && data.image) {
+            livePreviewImg.src = data.image;
+            livePreviewImg.style.display = 'block';
+            if (previewPlaceholder) previewPlaceholder.style.display = 'none';
+          }
+          if (backPreviewImg && bSrc) {
+            backPreviewImg.src = bSrc;
+            backPreviewImg.style.display = 'block';
+            if (backPlaceholder) backPlaceholder.style.display = 'none';
+          }
+          if (frontPreviewImg && fSrc) {
+            frontPreviewImg.src = fSrc;
+            frontPreviewImg.style.display = 'block';
+            if (frontPlaceholder) frontPlaceholder.style.display = 'none';
+          }
+        };
+
+        const executePrediction = async (bSrc, fSrc) => {
+          if (!window.tmModel || (!bSrc && !fSrc)) return null;
           const imgBack = new Image();
           const imgFront = new Image();
           imgBack.crossOrigin = "anonymous";
           imgFront.crossOrigin = "anonymous";
 
           await Promise.all([
-            loadImgPromise(imgBack, previewData.image_back || previewData.image),
-            loadImgPromise(imgFront, previewData.image_front || previewData.image)
+            bSrc ? loadImgPromise(imgBack, bSrc) : Promise.resolve(false),
+            fSrc ? loadImgPromise(imgFront, fSrc) : Promise.resolve(false)
           ]);
 
           try {
-            tmRes = await predictDualCamerasWithTM(imgBack, imgFront);
-            console.log(`[DualCam TM] Post-trigger prediction for ${shelfId}:`, tmRes);
+            return await predictDualCamerasWithTM(imgBack, imgFront);
           } catch (predErr) {
-            console.warn('[DualCam TM] Prediction warning:', predErr);
+            console.warn('[DualCam TM] Prediction error:', predErr);
+            return null;
           }
-        }
+        };
 
-        // Step 3: Run TM prediction on 30s baseline images if available (or use comp.current_quantity)
-        let beforeBoxes = comp && comp.current_quantity != null ? comp.current_quantity : 4;
-        if (window.tmModel && comp && comp.baseline_image_url && comp.baseline_image_2_url) {
+        // 1. Fetch live dual-camera snapshots from local bridge
+        let previewData = await fetchSnapshots();
+        let backSrc = previewData.image_back || previewData.image;
+        let frontSrc = previewData.image_front || previewData.image;
+        updatePreviewUI(previewData, backSrc, frontSrc);
+
+        // 2. Load into Image() objects and run Teachable Machine
+        let tmRes = await executePrediction(backSrc, frontSrc);
+        console.log(`[DualCam TM] Initial prediction for ${shelfId}:`, tmRes);
+
+        // Guardrail 2: Low-Confidence Retry (if tmRes && tmRes.confidence < 75.0, wait 700ms and retry)
+        if (tmRes && tmRes.confidence < 75.0) {
+          console.warn(`[DualCam TM] Confidence ${tmRes.confidence}% < 75.0%. Waiting 700ms and retrying snapshot...`);
+          showToast(`Low TM confidence (${tmRes.confidence}%). Settle retry in 700ms...`, 'warning');
+          await new Promise(r => setTimeout(r, 700));
+
           try {
-            const bImgBack = new Image();
-            const bImgFront = new Image();
-            bImgBack.crossOrigin = "anonymous";
-            bImgFront.crossOrigin = "anonymous";
-            await Promise.all([
-              loadImgPromise(bImgBack, comp.baseline_image_url),
-              loadImgPromise(bImgFront, comp.baseline_image_2_url)
-            ]);
-            const bTmRes = await predictDualCamerasWithTM(bImgBack, bImgFront);
-            if (bTmRes && bTmRes.totalBoxes != null) {
-              beforeBoxes = bTmRes.totalBoxes;
+            previewData = await fetchSnapshots();
+            backSrc = previewData.image_back || previewData.image;
+            frontSrc = previewData.image_front || previewData.image;
+            updatePreviewUI(previewData, backSrc, frontSrc);
+
+            const retryTmRes = await executePrediction(backSrc, frontSrc);
+            if (retryTmRes) {
+              console.log(`[DualCam TM] Settle retry prediction: ${retryTmRes.confidence}% (was ${tmRes.confidence}%)`);
+              tmRes = retryTmRes;
             }
-          } catch (bErr) {
-            console.warn('[DualCam TM] Baseline prediction fallback to current_quantity:', bErr);
+          } catch (retryErr) {
+            console.warn('[DualCam TM] Retry snapshot failed, continuing with initial prediction:', retryErr);
           }
         }
 
-        // Step 4: Send POST /esp32_validate to Local Bridge
+        if (tmRes && tmLivePredictionBanner) {
+          tmLivePredictionBanner.style.display = 'block';
+          const degradedTag = tmRes.degraded ? ' <span style="color:var(--warning);font-size:11px;">(Degraded 1-Cam Mode)</span>' : '';
+          tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)${degradedTag}`;
+        }
+
+        // 3. Send POST /esp32_validate to Local Bridge
         const valPayload = {
           shelf_id: shelfId,
           expected_action: action,
           ip: ip1,
           ip2: ip2,
           image: previewData.image,
-          baseline_box_count: beforeBoxes,
           predicted_box_count: tmRes ? tmRes.totalBoxes : null,
           scenario_label: tmRes ? tmRes.scenarioLabel : null,
-          tm_confidence: tmRes ? tmRes.confidence : null,
+          tm_confidence: tmRes ? tmRes.confidence : null
         };
 
         const valResp = await fetch(`${getBridgeUrl()}/esp32_validate`, {
@@ -1176,9 +1600,8 @@
         const delta = compRes.delta !== undefined ? compRes.delta : 0;
         const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
 
-        // Step 5: Show Toast & Refresh Data
-        const tmInfo = tmRes ? ` | ${tmRes.scenarioLabel} (${tmRes.confidence}%)` : '';
-        showToast(`Verified ${shelfId}: ${stateDelta} (${deltaSign})${tmInfo}`, stateDelta === 'ITEM_REMOVED' ? 'error' : 'success');
+        const tmScenario = tmRes ? ` | ${tmRes.scenarioLabel} (${tmRes.confidence}%)` : '';
+        showToast(`Verified ${shelfId}: ${stateDelta} (${deltaSign})${tmScenario}`, stateDelta === 'ITEM_REMOVED' ? 'error' : 'success');
         refreshAllData();
         return valResult;
       } catch (err) {
@@ -1188,124 +1611,15 @@
       }
     }
 
-    // Trigger Test Capture via Local Bridge (Redirects to Full Dual-Cam TM Validation)
-    async function triggerTestCapture(shelfId, action) {
-      await runFullDualCamValidation(shelfId, action);
+    // Trigger Test Capture via Local Bridge
+    function triggerTestCapture(shelfId, action) {
+      return runFullDualCamValidation(shelfId, action, false);
     }
 
     // =========================================================================
-    // PANEL 2: LIVE DUAL ANGLE TESTER & TM PREVIEW
+    // FETCH COMPARTMENTS & COMPARISON LOGS
     // =========================================================================
-    function syncSelectedShelfTelemetry() {
-      const selShelf = refShelfSelect.value;
-      const comp = compartmentsData.find(c => c.shelf_id === selShelf);
-      if (comp) {
-        if (comp.ip_address) {
-          refEspIpInput.value = comp.ip_address;
-        } else if (!refEspIpInput.value) {
-          refEspIpInput.value = '192.168.0.101';
-        }
-
-        if (comp.secondary_ip_address) {
-          refEspIp2Input.value = comp.secondary_ip_address;
-        } else if (!refEspIp2Input.value) {
-          refEspIp2Input.value = '192.168.0.102';
-        }
-      }
-    }
-
-    async function fetchLiveAnglePreview() {
-      const shelfId = refShelfSelect.value;
-      const ip = refEspIpInput.value.trim();
-      const ip2 = refEspIp2Input ? refEspIp2Input.value.trim() : '';
-      const t0 = performance.now();
-      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
-
-      previewOverlayText.textContent = `Fetching live dual-angle snapshot (${ip} + ${ip2})...`;
-      showToast(`Fetching live dual preview from ${ip} & ${ip2}...`, 'info');
-
-      try {
-        const resp = await fetch(bridgeUrl, { cache: 'no-store' });
-        const latencyMs = Math.round(performance.now() - t0);
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.status === 'success' && data.image) {
-            currentPreviewDataUrl = data.image;
-
-            // 1. Show Combined Feed
-            livePreviewImg.src = data.image;
-            livePreviewImg.style.display = 'block';
-            previewPlaceholder.style.display = 'none';
-            previewOverlayText.textContent = `Dual View \u2022 ${shelfId} (${ip} & ${ip2}) \u2022 ${new Date().toLocaleTimeString()} (${latencyMs}ms)`;
-
-            // 2. Show CAM 1 Back & CAM 2 Front Previews
-            const backUrl = data.image_back || data.image;
-            const frontUrl = data.image_front || data.image;
-
-            backPreviewImg.src = backUrl;
-            backPreviewImg.style.display = 'block';
-            backPlaceholder.style.display = 'none';
-
-            frontPreviewImg.src = frontUrl;
-            frontPreviewImg.style.display = 'block';
-            frontPlaceholder.style.display = 'none';
-
-            // 3. Run Teachable Machine Prediction if model loaded
-            if (window.tmModel) {
-              const runPrediction = async () => {
-                try {
-                  const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
-                  if (tmRes) {
-                    // Update badges on individual cameras
-                    backPredBadge.style.display = 'block';
-                    backPredBadge.textContent = `${tmRes.backClass} (${tmRes.backConfidence}%)`;
-
-                    frontPredBadge.style.display = 'block';
-                    frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
-
-                    // Update Calculation Banner
-                    tmLivePredictionBanner.style.display = 'block';
-                    tmLivePredictionBanner.innerHTML = `
-                      <strong>CAM 1 (Back):</strong> <code>${tmRes.backCount} Boxes</code> (${tmRes.backConfidence}%) + 
-                      <strong>CAM 2 (Front):</strong> <code>${tmRes.frontCount} Boxes</code> (${tmRes.frontConfidence}%) = 
-                      <strong>Total ${tmRes.totalBoxes}/4 Boxes</strong> &rarr; 
-                      <span style="color: var(--success); font-weight: 800;">${tmRes.scenarioLabel}</span> 
-                      (Confidence: <strong>${tmRes.confidence}%</strong>)
-                    `;
-                  }
-                } catch (tmErr) {
-                  console.warn('[TM AI] Dual camera prediction error:', tmErr);
-                }
-              };
-
-              let count = 0;
-              const onImgLoaded = () => {
-                count++;
-                if (count >= 2) runPrediction();
-              };
-              backPreviewImg.onload = onImgLoaded;
-              frontPreviewImg.onload = onImgLoaded;
-              if (backPreviewImg.complete && frontPreviewImg.complete) {
-                runPrediction();
-              }
-            }
-
-            showToast('Dual-camera preview & TM prediction updated!', 'success');
-            return;
-          }
-        }
-      } catch (err) {
-        console.warn('Bridge dual preview fetch failed:', err);
-      }
-
-      previewOverlayText.textContent = `Preview Failed \u2022 Check Local Bridge`;
-      showToast('Could not fetch dual preview from Local Bridge. Check camera_service.py.', 'error');
-    }
-
-    // =========================================================================
-    // FETCH COMPARTMENTS, COMPARISON LOGS, & REFERENCES
-    // =========================================================================
-    let processedCctvTriggers = new Set();
+    const processedTriggerIds = new Set();
 
     async function loadCompartments() {
       let data = null;
@@ -1363,15 +1677,15 @@
               });
             }
 
-            // Check for pending CCTV intent triggers from run_pipeline.py
+            // Auto-process Hikvision CCTV triggers from run_pipeline.py
             if (Array.isArray(bridgeJson.pending_cctv_triggers) && bridgeJson.pending_cctv_triggers.length > 0) {
               for (const trig of bridgeJson.pending_cctv_triggers) {
-                if (trig.trigger_id && !processedCctvTriggers.has(trig.trigger_id)) {
-                  processedCctvTriggers.add(trig.trigger_id);
+                if (trig.trigger_id && !processedTriggerIds.has(trig.trigger_id)) {
+                  processedTriggerIds.add(trig.trigger_id);
                   console.log('[CCTV Integration] Detected new CCTV intent confirmation trigger:', trig);
                   showToast(`CCTV Dwell Trigger: Running Dual-Cam TM AI for ${trig.shelf_id}...`, 'info');
                   // Run full dual-camera Teachable Machine validation
-                  runFullDualCamValidation(trig.shelf_id, trig.expected_action || 'BORROW');
+                  runFullDualCamValidation(trig.shelf_id, trig.expected_action || 'BORROW', true);
                 }
               }
             }
@@ -1525,20 +1839,24 @@
       }
 
       comparisonLogsList.innerHTML = logs.map((log) => {
+        // Guardrail 5: Dynamic Multi-Box Delta Badges (-2 / +2)
+        const deltaNum = (log.quantity_after ?? 0) - (log.quantity_before ?? 0);
         let badgeClass = 'badge-nochange';
         let deltaLabel = 'NO CHANGE (0)';
-        if (log.state_delta === 'ITEM_REMOVED') {
+        if (log.state_delta === 'ITEM_REMOVED' || deltaNum < 0) {
           badgeClass = 'badge-removed';
-          deltaLabel = 'ITEM REMOVED (-1)';
-        } else if (log.state_delta === 'ITEM_RETURNED') {
+          const dVal = deltaNum < 0 ? deltaNum : -1;
+          deltaLabel = `ITEM REMOVED (${dVal})`;
+        } else if (log.state_delta === 'ITEM_RETURNED' || deltaNum > 0) {
           badgeClass = 'badge-returned';
-          deltaLabel = 'ITEM RETURNED (+1)';
+          const dVal = deltaNum > 0 ? `+${deltaNum}` : '+1';
+          deltaLabel = `ITEM RETURNED (${dVal})`;
         }
 
         const timeStr = log.created_at ? new Date(log.created_at).toLocaleString() : 'Just now';
         const diffText = log.diff_score != null ? `${log.diff_score}%` : 'N/A';
         const tmConfText = log.similarity_score != null ? `${log.similarity_score}%` : 'N/A';
-        const scenarioText = log.scenario_label || (log.matched_box_count != null ? `Scenario ${5 - log.matched_box_count}: ${log.matched_box_count}/4 Boxes` : 'N/A');
+        const scenarioText = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/4 Boxes` : 'N/A');
 
         const beforeImg = log.before_image_url
           ? `<img src="${log.before_image_url}" alt="Baseline Before [CAM1 | CAM2]" />`
@@ -1577,7 +1895,7 @@
               <!-- Teachable Machine Scenario Result Banner -->
               <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 6px; padding: 6px 10px; margin-top: 4px; font-size: 12px; font-family: var(--font-mono);">
                 <span style="color: var(--primary); font-weight: 700;">&#129302; Teachable Machine:</span> 
-                <strong style="color: #fff;">${scenarioText}</strong> 
+                <strong style="color: #fff;">Scenario: ${scenarioText}</strong> 
                 <span style="color: var(--text-muted);">&bull; TM Confidence: <strong style="color: var(--success);">${tmConfText}</strong></span>
               </div>
 
@@ -1591,6 +1909,67 @@
           </div>
         `;
       }).join('');
+    }
+
+    // Guardrail 5: 1-Click CSV Thesis Exporter for comparison_logs
+    function exportComparisonLogsCsv() {
+      if (!comparisonLogsData || comparisonLogsData.length === 0) {
+        showToast('No comparison logs available to export.', 'warning');
+        return;
+      }
+
+      const headers = [
+        "log_id",
+        "created_at",
+        "shelf_id",
+        "rack_id",
+        "mqtt_client_id",
+        "trigger_action",
+        "quantity_before",
+        "quantity_after",
+        "delta",
+        "state_delta",
+        "scenario_label",
+        "matched_box_count",
+        "similarity_score_pct",
+        "diff_score_pct"
+      ];
+
+      const csvRows = [headers.join(",")];
+
+      comparisonLogsData.forEach(log => {
+        const deltaNum = (log.quantity_after ?? 0) - (log.quantity_before ?? 0);
+        const scenarioVal = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/4 Boxes` : "");
+        const row = [
+          log.log_id || "",
+          `"${log.created_at || ""}"`,
+          `"${log.shelf_id || ""}"`,
+          `"${log.rack_id || ""}"`,
+          `"${log.mqtt_client_id || ""}"`,
+          `"${log.trigger_action || ""}"`,
+          log.quantity_before ?? "",
+          log.quantity_after ?? "",
+          deltaNum,
+          `"${log.state_delta || ""}"`,
+          `"${scenarioVal.replace(/"/g, '""')}"`,
+          log.matched_box_count ?? "",
+          log.similarity_score ?? "",
+          log.diff_score ?? ""
+        ];
+        csvRows.push(row.join(","));
+      });
+
+      const csvString = csvRows.join("\r\n");
+      const blob = new Blob([csvString], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", "smart_storage_thesis_logs.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+      showToast(`Exported ${comparisonLogsData.length} logs to smart_storage_thesis_logs.csv`, 'success');
     }
 
     // =========================================================================
