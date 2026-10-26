@@ -326,19 +326,26 @@ def list_esp32_cameras() -> List[Dict[str, Any]]:
     return fallback.select("compartments", "?select=*&order=shelf_id.asc")
 
 
-def update_esp32_health_in_supabase(telemetry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def update_esp32_health_in_supabase(node_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Updates live health status, ip_address, rssi_dbm, free_heap_bytes, and last_seen_at
+    Updates live health status, ip_address / secondary_ip_address, rssi_dbm, free_heap_bytes, and last_seen_at
     in 'public.compartments' whenever a 30-second MQTT heartbeat arrives on 'iotlab/storage/health'.
-    Identifies the compartment by mqtt_client_id (or shelf_id).
+    Identifies the compartment by shelf_id or mqtt_client_id.
     """
-    mqtt_client_id = telemetry.get("device_id") or telemetry.get("mqtt_client_id")
-    shelf_id = telemetry.get("shelf_id")
-    if not mqtt_client_id and not shelf_id:
+    device_id = str(node_payload.get("device_id") or node_payload.get("mqtt_client_id") or "").strip()
+    shelf_id = str(node_payload.get("shelf_id") or "").strip()
+
+    # If shelf_id is missing, attempt to derive it from device_id (e.g. ESP32_R1_C1 or ESP32_R1_C1_CAM2)
+    if not shelf_id and device_id:
+        clean_dev = device_id.upper().replace("_CAM1", "").replace("_CAM2", "")
+        if clean_dev.startswith("ESP32_"):
+            shelf_id = f"SHELF_{clean_dev.replace('ESP32_', '')}"
+
+    if not device_id and not shelf_id:
         return None
 
     now_iso = datetime.now(timezone.utc).isoformat()
-    raw_status = str(telemetry.get("status", "ONLINE")).upper()
+    raw_status = str(node_payload.get("status", "ONLINE")).upper()
     normalized_status = "ONLINE" if raw_status in ["ALIVE", "ONLINE"] else raw_status
 
     update_fields: Dict[str, Any] = {
@@ -346,16 +353,29 @@ def update_esp32_health_in_supabase(telemetry: Dict[str, Any]) -> Optional[Dict[
         "last_seen_at": now_iso,
     }
 
-    if "ip_address" in telemetry and telemetry["ip_address"]:
-        update_fields["ip_address"] = str(telemetry["ip_address"]).strip()
-    if "rssi_dbm" in telemetry and telemetry["rssi_dbm"] is not None:
+    raw_ip = str(node_payload.get("ip_address") or node_payload.get("ip") or "").strip()
+
+    # Solution 3: Separate CAM1 vs. CAM2 IP columns on MQTT heartbeat
+    is_cam2 = device_id.upper().endswith("_CAM2")
+    if is_cam2:
+        if raw_ip:
+            update_fields["secondary_ip_address"] = raw_ip
+        if device_id:
+            update_fields["secondary_mqtt_client_id"] = device_id
+    else:
+        if raw_ip:
+            update_fields["ip_address"] = raw_ip
+        if device_id:
+            update_fields["mqtt_client_id"] = device_id
+
+    if "rssi_dbm" in node_payload and node_payload["rssi_dbm"] is not None:
         try:
-            update_fields["rssi_dbm"] = int(telemetry["rssi_dbm"])
+            update_fields["rssi_dbm"] = int(node_payload["rssi_dbm"])
         except (ValueError, TypeError):
             pass
-    if "free_heap_bytes" in telemetry and telemetry["free_heap_bytes"] is not None:
+    if "free_heap_bytes" in node_payload and node_payload["free_heap_bytes"] is not None:
         try:
-            update_fields["free_heap_bytes"] = int(telemetry["free_heap_bytes"])
+            update_fields["free_heap_bytes"] = int(node_payload["free_heap_bytes"])
         except (ValueError, TypeError):
             pass
 
@@ -363,22 +383,24 @@ def update_esp32_health_in_supabase(telemetry: Dict[str, Any]) -> Optional[Dict[
     if client is not None:
         try:
             query = client.table("compartments").update(update_fields)
-            if mqtt_client_id:
-                query = query.eq("mqtt_client_id", mqtt_client_id)
-            elif shelf_id:
+            if shelf_id:
                 query = query.eq("shelf_id", shelf_id)
+            elif is_cam2:
+                query = query.eq("secondary_mqtt_client_id", device_id)
+            elif device_id:
+                query = query.eq("mqtt_client_id", device_id)
 
             resp = query.execute()
             if resp.data and len(resp.data) > 0:
                 return resp.data[0]
 
-            # Auto-insert if node row doesn't exist yet
-            if shelf_id and mqtt_client_id:
+            # Auto-insert if node row doesn't exist yet (primary node only)
+            if shelf_id and not is_cam2:
                 insert_fields = dict(update_fields)
                 insert_fields["shelf_id"] = shelf_id
-                insert_fields["mqtt_client_id"] = mqtt_client_id
-                insert_fields.setdefault("rack_id", telemetry.get("rack_id", "RACK_01"))
-                insert_fields.setdefault("camera_name", telemetry.get("camera_name", f"ESP32 Node ({shelf_id})"))
+                insert_fields["mqtt_client_id"] = device_id or f"ESP32_{shelf_id.replace('SHELF_', '')}"
+                insert_fields.setdefault("rack_id", node_payload.get("rack_id", "RACK_01"))
+                insert_fields.setdefault("camera_name", node_payload.get("camera_name", f"ESP32 Node ({shelf_id})"))
                 insert_fields.setdefault("current_quantity", 4)
                 insert_fields.setdefault("max_capacity", 4)
                 insert_resp = client.table("compartments").insert(insert_fields).execute()
@@ -390,17 +412,23 @@ def update_esp32_health_in_supabase(telemetry: Dict[str, Any]) -> Optional[Dict[
 
     # REST Fallback
     fallback = SupabaseRestFallback()
-    query_param = f"?mqtt_client_id=eq.{urllib.parse.quote(str(mqtt_client_id))}" if mqtt_client_id else f"?shelf_id=eq.{urllib.parse.quote(str(shelf_id))}"
+    if shelf_id:
+        query_param = f"?shelf_id=eq.{urllib.parse.quote(str(shelf_id))}"
+    elif is_cam2:
+        query_param = f"?secondary_mqtt_client_id=eq.{urllib.parse.quote(str(device_id))}"
+    else:
+        query_param = f"?mqtt_client_id=eq.{urllib.parse.quote(str(device_id))}"
+
     updated = fallback.update("compartments", query_param, update_fields)
     if updated:
         return updated[0]
 
-    if shelf_id and mqtt_client_id:
+    if shelf_id and not is_cam2:
         insert_fields = dict(update_fields)
         insert_fields["shelf_id"] = shelf_id
-        insert_fields["mqtt_client_id"] = mqtt_client_id
-        insert_fields.setdefault("rack_id", telemetry.get("rack_id", "RACK_01"))
-        insert_fields.setdefault("camera_name", telemetry.get("camera_name", f"ESP32 Node ({shelf_id})"))
+        insert_fields["mqtt_client_id"] = device_id or f"ESP32_{shelf_id.replace('SHELF_', '')}"
+        insert_fields.setdefault("rack_id", node_payload.get("rack_id", "RACK_01"))
+        insert_fields.setdefault("camera_name", node_payload.get("camera_name", f"ESP32 Node ({shelf_id})"))
         insert_fields.setdefault("current_quantity", 4)
         insert_fields.setdefault("max_capacity", 4)
         inserted = fallback.insert("compartments", insert_fields)
