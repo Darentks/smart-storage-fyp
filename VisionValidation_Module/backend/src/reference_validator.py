@@ -294,7 +294,7 @@ class ESP32ReferenceManager:
         """
         if esp32_ip and _OPENCV_AVAILABLE:
             clean_ip = esp32_ip.replace("http://", "").replace("/", "").strip()
-            url = f"http://{clean_ip}/capture?mode={mode}&t={int(time.time() * 1000)}"
+            url = f"http://{clean_ip}/capture?mode={mode}&flash=1&t={int(time.time() * 1000)}"
             try:
                 req = urllib.request.Request(
                     url,
@@ -330,14 +330,14 @@ class ESP32ReferenceManager:
         timeout: float = 3.5,
     ) -> Tuple[Any, str, Optional[str], Optional[str]]:
         """
-        Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=0,
+        Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=1,
         retrying failed HTTP requests once (timeout=2.0).
         Returns (combined_bgr, combined_data_url, url1, url2).
         Stitches the two images side-by-side horizontally for logging & comparison.
         """
         def _fetch_single_with_retry(ip: str) -> Tuple[Optional[Any], Optional[str]]:
             clean = ip.replace("http://", "").replace("/", "").strip()
-            f_url = f"http://{clean}/capture?mode={mode}&flash=0&t={int(time.time() * 1000)}"
+            f_url = f"http://{clean}/capture?mode={mode}&flash=1&t={int(time.time() * 1000)}"
             for attempt in range(2):
                 req_timeout = timeout if attempt == 0 else 2.0
                 try:
