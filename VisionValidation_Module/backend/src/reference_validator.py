@@ -587,17 +587,13 @@ class ESP32ReferenceManager:
                 state_delta = "NO_CHANGE"
                 delta = 0
         else:
-            # Fallback heuristic using baseline diff_score if TM was not passed
-            if diff_score < 4.0:
-                state_delta = "NO_CHANGE"
-                delta = 0
-            else:
-                if exp_action == "RETURN":
-                    state_delta = "ITEM_RETURNED"
-                    delta = +1
-                else:
-                    state_delta = "ITEM_REMOVED"
-                    delta = -1
+            # Pure Teachable Machine mode: never allow OpenCV diff_score to guess or mutate inventory
+            # when Teachable Machine prediction is absent.
+            matched_box_count = current_quantity
+            if not matched_scenario_label:
+                matched_scenario_label = SCENARIO_MAP.get(current_quantity, f"Scenario {5 - current_quantity}: {current_quantity}/4 Boxes")
+            state_delta = "NO_CHANGE"
+            delta = 0
 
         # Step E: If confirmed change, update rolling 30s baseline cache with after_bgr
         if delta != 0 or shelf_id not in self.baseline_cache:

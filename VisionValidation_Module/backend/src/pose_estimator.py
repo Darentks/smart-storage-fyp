@@ -6,9 +6,19 @@ Complies with NFR-03 (Accuracy), NFR-04 (Hardware/Skeletal Constraints), and NFR
 
 import os
 import time
+from typing import Any
 import numpy as np
 import cv2
 from ultralytics import YOLO
+
+
+def _to_numpy(val: Any) -> np.ndarray:
+    """Safely converts a PyTorch Tensor or NumPy array to a CPU NumPy ndarray."""
+    if val is None:
+        return np.array([])
+    if hasattr(val, "cpu"):
+        return val.cpu().numpy()
+    return np.asarray(val)
 
 
 class PoseEstimator:
@@ -99,13 +109,17 @@ class PoseEstimator:
 
         detections = []
         for result in results:
-            if result.keypoints is None or len(result.keypoints) == 0:
+            kpts_obj: Any = getattr(result, "keypoints", None)
+            if kpts_obj is None or len(kpts_obj) == 0:
                 continue
 
-            xy_data = result.keypoints.xy.cpu().numpy()
-            conf_data = result.keypoints.conf.cpu().numpy() if result.keypoints.conf is not None else None
-            boxes = result.boxes.xyxy.cpu().numpy() if result.boxes is not None else None
-            box_confs = result.boxes.conf.cpu().numpy() if result.boxes is not None else None
+            xy_data = _to_numpy(getattr(kpts_obj, "xy", None))
+            kpt_conf = getattr(kpts_obj, "conf", None)
+            conf_data = _to_numpy(kpt_conf) if kpt_conf is not None else None
+
+            boxes_obj: Any = getattr(result, "boxes", None)
+            boxes = _to_numpy(getattr(boxes_obj, "xyxy", None)) if boxes_obj is not None else None
+            box_confs = _to_numpy(getattr(boxes_obj, "conf", None)) if boxes_obj is not None else None
 
             for i, kpts in enumerate(xy_data):
                 confs = conf_data[i] if conf_data is not None else np.ones(len(kpts))

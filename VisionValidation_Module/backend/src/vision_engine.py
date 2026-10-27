@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from typing import Any, Optional, Tuple
 import cv2
 from .pose_estimator import PoseEstimator
 from .spatial_mapper import SpatialMapper
@@ -43,16 +44,16 @@ class VisionValidationEngine:
         self.is_running = False
 
         # Subsystems
-        self.video_processor = None
-        self.pose_estimator = None
-        self.spatial_mapper = None
-        self.behavior_classifier = None
-        self.mqtt_client = None
+        self.video_processor: Optional[VideoProcessor] = None
+        self.pose_estimator: Optional[PoseEstimator] = None
+        self.spatial_mapper: Optional[SpatialMapper] = None
+        self.behavior_classifier: Optional[BehaviorClassifier] = None
+        self.mqtt_client: Optional[MQTTClientNode] = None
 
         # Notification banners for trigger & ESP32 verification response
-        self.active_alert = None
-        self.alert_expiry_time = 0.0
-        self.alert_color = (0, 180, 0)
+        self.active_alert: Optional[str] = None
+        self.alert_expiry_time: float = 0.0
+        self.alert_color: Tuple[int, int, int] = (0, 180, 0)
 
     def initialize_system(self):
         """Initializes all sub-modules including bidirectional MQTT listeners."""
@@ -98,7 +99,8 @@ class VisionValidationEngine:
         conf = event.get("oks_confidence", 1.0)
 
         # Publish MQTT trigger to wake compartment ESP32-CAM
-        self.mqtt_client.publish_trigger(shelf_id=shelf_id, expected_action=action, confidence=conf)
+        if self.mqtt_client is not None:
+            self.mqtt_client.publish_trigger(shelf_id=shelf_id, expected_action=action, confidence=conf)
 
         # Also notify local bridge about CCTV trigger so browser UI TM model can process dual-cam inference
         def _notify_bridge_trigger():
@@ -201,9 +203,26 @@ class VisionValidationEngine:
         Executes the continuous video processing and inference pipeline.
         Press 'q' to quit, 'p' to toggle privacy anonymization, 'r' to reload ROI config.
         """
-        if self.video_processor is None or not self.video_processor.is_streaming:
+        if (
+            self.video_processor is None
+            or self.pose_estimator is None
+            or self.behavior_classifier is None
+            or self.spatial_mapper is None
+        ):
+            self.initialize_system()
+
+        video_proc = self.video_processor
+        pose_est = self.pose_estimator
+        behav_clf = self.behavior_classifier
+        spatial_map = self.spatial_mapper
+
+        if video_proc is None or pose_est is None or behav_clf is None or spatial_map is None:
+            print("[-] Error: Engine subsystems failed to initialize. Exiting.")
+            return
+
+        if not video_proc.is_streaming:
             print("[-] Error: Video stream is not active. Attempting reconnection...")
-            if not self.video_processor.connect():
+            if not video_proc.connect():
                 print("[-] Could not start pipeline. Exiting.")
                 return
 
@@ -215,24 +234,24 @@ class VisionValidationEngine:
 
         try:
             while self.is_running:
-                ret, frame = self.video_processor.capture_frame()
+                ret, frame = video_proc.capture_frame()
                 if not ret or frame is None:
                     time.sleep(0.5)
-                    self.video_processor.connect()
+                    video_proc.connect()
                     continue
 
                 # 1. Pose estimation keypoint extraction
-                detections = self.pose_estimator.extract_keypoints(frame)
+                detections = pose_est.extract_keypoints(frame)
 
                 # 2. Behavioral dwell tracking and intent classification
-                self.behavior_classifier.process_detections(detections)
+                behav_clf.process_detections(detections)
 
                 # 3. Render skeleton and privacy anonymization
-                annotated = self.pose_estimator.draw_skeleton(frame, detections, privacy_mode=self.privacy_mode)
+                annotated = pose_est.draw_skeleton(frame, detections, privacy_mode=self.privacy_mode)
 
                 # 4. Render Dynamic ROIs and live dwell progress
-                active_states = self.behavior_classifier.get_all_states()
-                annotated = self.spatial_mapper.draw_rois(annotated, active_states)
+                active_states = behav_clf.get_all_states()
+                annotated = spatial_map.draw_rois(annotated, active_states)
 
                 # 5. Render HUD telemetry bar
                 annotated = self._render_hud(annotated, detections)
@@ -249,7 +268,7 @@ class VisionValidationEngine:
                     self.privacy_mode = not self.privacy_mode
                     print(f"[VisionValidationEngine] Privacy mode toggled: {self.privacy_mode}")
                 elif key == ord('r'):
-                    self.spatial_mapper.load_roi_config()
+                    spatial_map.load_roi_config()
                     print("[VisionValidationEngine] Reloaded ROI configuration from disk.")
 
         finally:
@@ -265,10 +284,14 @@ class VisionValidationEngine:
         cv2.rectangle(hud_overlay, (0, 0), (w, bar_height), (20, 20, 20), -1)
         cv2.addWeighted(hud_overlay, 0.75, frame, 0.25, 0, frame)
 
-        fps_text = f"FPS: {self.video_processor.fps:.1f}"
-        latency_text = f"Inference: {self.pose_estimator.last_inference_time_ms:.1f}ms"
+        fps_val = self.video_processor.fps if self.video_processor is not None else 0.0
+        latency_val = self.pose_estimator.last_inference_time_ms if self.pose_estimator is not None else 0.0
+        rois_count = len(self.spatial_mapper.compartments) if self.spatial_mapper is not None else 0
+
+        fps_text = f"FPS: {fps_val:.1f}"
+        latency_text = f"Inference: {latency_val:.1f}ms"
         persons_text = f"Subjects: {len(detections)}"
-        rois_text = f"ROIs: {len(self.spatial_mapper.compartments)}"
+        rois_text = f"ROIs: {rois_count}"
         nodes_online = len(self.mqtt_client.edge_nodes) if self.mqtt_client else 0
         mqtt_text = f"MQTT: {'ONLINE' if (self.mqtt_client and self.mqtt_client.is_connected) else 'SIM'} (Nodes:{nodes_online})"
 

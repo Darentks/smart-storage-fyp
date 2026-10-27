@@ -8,7 +8,7 @@ Author: Daren Tan Khai Shuen
 import os
 import re
 import time
-from typing import Optional, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 import cv2
 
 
@@ -138,7 +138,7 @@ class VideoProcessor:
         print(f"[VideoProcessor] Reconnection failed after {max_retries} attempts.")
         return False
 
-    def capture_frame(self) -> Tuple[bool, Optional[cv2.Mat]]:
+    def capture_frame(self) -> Tuple[bool, Optional[Any]]:
         """
         Captures and returns the next frame from the stream buffer.
         Handles frame drop detection and optional auto-reconnection.

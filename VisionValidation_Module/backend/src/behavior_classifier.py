@@ -7,6 +7,7 @@ Complies with FR-04 (Behavioral Classification) and NFR-04 (Dwell Duration >= 1.
 import time
 from datetime import datetime, timezone
 from collections import deque
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 class CompartmentTracker:
@@ -24,28 +25,28 @@ class CompartmentTracker:
     STATE_INTENT_CONFIRMED = "INTENT_CONFIRMED"
     STATE_COOLDOWN = "COOLDOWN"
 
-    def __init__(self, shelf_id, dwell_threshold_seconds=1.2, trajectory_history_len=30):
+    def __init__(self, shelf_id: str, dwell_threshold_seconds: float = 1.2, trajectory_history_len: int = 30):
         self.shelf_id = shelf_id
         self.dwell_threshold = dwell_threshold_seconds
         self.state = self.STATE_IDLE
 
-        self.dwell_start_time = None
-        self.last_seen_time = None
-        self.current_dwell_duration = 0.0
+        self.dwell_start_time: Optional[float] = None
+        self.last_seen_time: Optional[float] = None
+        self.current_dwell_duration: float = 0.0
 
         # Grace period (seconds) before resetting dwell timer on temporary keypoint drop
-        self.drop_grace_period = 0.3
+        self.drop_grace_period: float = 0.3
 
         # Trajectory buffer: store recent wrist coordinates with timestamp [(x, y, t), ...]
-        self.trajectory_history = deque(maxlen=trajectory_history_len)
+        self.trajectory_history: deque[Tuple[float, float, float]] = deque(maxlen=trajectory_history_len)
 
         # Trigger latch
-        self.trigger_fired = False
-        self.last_confirmed_event = None
+        self.trigger_fired: bool = False
+        self.last_confirmed_event: Optional[Dict[str, Any]] = None
 
-        self.last_confirmed_conf = 0.0
+        self.last_confirmed_conf: float = 0.0
 
-    def update(self, wrist_present, wrist_coord=None, wrist_conf=0.0):
+    def update(self, wrist_present: bool, wrist_coord: Optional[Tuple[float, float]] = None, wrist_conf: float = 0.0) -> Optional[Dict[str, Any]]:
         """
         Updates tracking state for this compartment in the current frame.
         :param wrist_present: bool, True if a valid wrist is currently inside the ROI
@@ -54,11 +55,11 @@ class CompartmentTracker:
         :return: event_dict if intent just confirmed, else None
         """
         now = time.time()
-        event_to_dispatch = None
+        event_to_dispatch: Optional[Dict[str, Any]] = None
 
         if wrist_present and wrist_coord is not None:
             self.last_seen_time = now
-            self.trajectory_history.append((wrist_coord[0], wrist_coord[1], now))
+            self.trajectory_history.append((float(wrist_coord[0]), float(wrist_coord[1]), now))
 
             if self.state == self.STATE_IDLE:
                 self.state = self.STATE_DWELLING
@@ -67,7 +68,8 @@ class CompartmentTracker:
                 self.trigger_fired = False
 
             elif self.state == self.STATE_DWELLING:
-                self.current_dwell_duration = now - self.dwell_start_time
+                start_t = self.dwell_start_time if self.dwell_start_time is not None else now
+                self.current_dwell_duration = now - start_t
 
                 # Check if sustained dwell duration passes dwell threshold (1.2s NFR-04)
                 if self.current_dwell_duration >= self.dwell_threshold:
@@ -75,7 +77,8 @@ class CompartmentTracker:
                     self.last_confirmed_conf = float(wrist_conf)
 
             elif self.state == self.STATE_INTENT_CONFIRMED:
-                self.current_dwell_duration = now - self.dwell_start_time
+                start_t = self.dwell_start_time if self.dwell_start_time is not None else now
+                self.current_dwell_duration = now - start_t
                 self.last_confirmed_conf = float(wrist_conf)
 
                 # Fallback: if hand stays inside for more than 3.5s, fire trigger so action isn't lost
