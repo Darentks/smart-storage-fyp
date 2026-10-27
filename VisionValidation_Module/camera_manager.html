@@ -840,6 +840,9 @@
                 <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
                 <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
                 <option value="SHELF_R1_C3">SHELF_R1_C3 (ESP32 Node R1-C3)</option>
+                <option value="SHELF_R1_C4">SHELF_R1_C4 (ESP32 Node R1-C4)</option>
+                <option value="SHELF_R1_C5">SHELF_R1_C5 (ESP32 Node R1-C5)</option>
+                <option value="SHELF_R1_C6">SHELF_R1_C6 (ESP32 Node R1-C6)</option>
               </select>
             </div>
 
@@ -973,9 +976,9 @@
             <option value="SHELF_R1_C1">SHELF_R1_C1</option>
             <option value="SHELF_R1_C2">SHELF_R1_C2</option>
             <option value="SHELF_R1_C3">SHELF_R1_C3</option>
-            <option value="SHELF_R2_C1">SHELF_R2_C1</option>
-            <option value="SHELF_R2_C2">SHELF_R2_C2</option>
-            <option value="SHELF_R2_C3">SHELF_R2_C3</option>
+            <option value="SHELF_R1_C4">SHELF_R1_C4</option>
+            <option value="SHELF_R1_C5">SHELF_R1_C5</option>
+            <option value="SHELF_R1_C6">SHELF_R1_C6</option>
           </select>
         </div>
         <div class="form-group">
@@ -1343,12 +1346,12 @@
       { ip: "192.168.0.104", label: "CAM 4 \u2014 SHELF_R1_C2 Front Angle [192.168.0.104]" },
       { ip: "192.168.0.105", label: "CAM 5 \u2014 SHELF_R1_C3 Back Angle [192.168.0.105]" },
       { ip: "192.168.0.106", label: "CAM 6 \u2014 SHELF_R1_C3 Front Angle [192.168.0.106]" },
-      { ip: "192.168.0.107", label: "CAM 7 \u2014 R2-C1 Back Angle [192.168.0.107]" },
-      { ip: "192.168.0.108", label: "CAM 8 \u2014 R2-C1 Front Angle [192.168.0.108]" },
-      { ip: "192.168.0.109", label: "CAM 9 \u2014 R2-C2 Back Angle [192.168.0.109]" },
-      { ip: "192.168.0.110", label: "CAM 10 \u2014 R2-C2 Front Angle [192.168.0.110]" },
-      { ip: "192.168.0.111", label: "CAM 11 \u2014 R2-C3 Back Angle [192.168.0.111]" },
-      { ip: "192.168.0.112", label: "CAM 12 \u2014 R2-C3 Front Angle [192.168.0.112]" },
+      { ip: "192.168.0.107", label: "CAM 7 \u2014 SHELF_R1_C4 Back Angle [192.168.0.107]" },
+      { ip: "192.168.0.108", label: "CAM 8 \u2014 SHELF_R1_C4 Front Angle [192.168.0.108]" },
+      { ip: "192.168.0.109", label: "CAM 9 \u2014 SHELF_R1_C5 Back Angle [192.168.0.109]" },
+      { ip: "192.168.0.110", label: "CAM 10 \u2014 SHELF_R1_C5 Front Angle [192.168.0.110]" },
+      { ip: "192.168.0.111", label: "CAM 11 \u2014 SHELF_R1_C6 Back Angle [192.168.0.111]" },
+      { ip: "192.168.0.112", label: "CAM 12 \u2014 SHELF_R1_C6 Front Angle [192.168.0.112]" },
       { ip: "192.168.0.201", label: "Legacy R1-C1 Node [192.168.0.201]" },
       { ip: "192.168.0.202", label: "Legacy R1-C2 Node [192.168.0.202]" },
       { ip: "esp32_r1_c1_cam1.local", label: "mDNS Hostname \u2014 CAM 1 Back [esp32_r1_c1_cam1.local]" },
@@ -1470,6 +1473,9 @@
         'SHELF_R1_C1': { ip1: '192.168.0.101', ip2: '192.168.0.102' },
         'SHELF_R1_C2': { ip1: '192.168.0.103', ip2: '192.168.0.104' },
         'SHELF_R1_C3': { ip1: '192.168.0.105', ip2: '192.168.0.106' },
+        'SHELF_R1_C4': { ip1: '192.168.0.107', ip2: '192.168.0.108' },
+        'SHELF_R1_C5': { ip1: '192.168.0.109', ip2: '192.168.0.110' },
+        'SHELF_R1_C6': { ip1: '192.168.0.111', ip2: '192.168.0.112' },
       }[selShelf] || { ip1: '192.168.0.101', ip2: '192.168.0.102' };
 
       const activeEl = document.activeElement;
@@ -2351,12 +2357,12 @@
       { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
       { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
       { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-107', device_id: 'ESP32_R2_C1_CAM1', camera_name: 'R2-C1 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C1', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-108', device_id: 'ESP32_R2_C1_CAM2', camera_name: 'R2-C1 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C1', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-109', device_id: 'ESP32_R2_C2_CAM1', camera_name: 'R2-C2 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C2', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-110', device_id: 'ESP32_R2_C2_CAM2', camera_name: 'R2-C2 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C2', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-111', device_id: 'ESP32_R2_C3_CAM1', camera_name: 'R2-C3 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C3', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-112', device_id: 'ESP32_R2_C3_CAM2', camera_name: 'R2-C3 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C3', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null }
+      { id: 'cam-107', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-108', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-109', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-110', device_id: 'ESP32_R1_C5_CAM2', camera_name: 'R1-C5 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-111', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-112', device_id: 'ESP32_R1_C6_CAM2', camera_name: 'R1-C6 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null }
     ];
 
     let esp32CameraNodesList = [...DEFAULT_12_ESP32_CAMERAS];
@@ -2509,7 +2515,7 @@
       const gridEl = document.getElementById('esp32CameraManagerGrid');
       if (!gridEl) return;
 
-      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R2_C1', 'SHELF_R2_C2', 'SHELF_R2_C3'];
+      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
       const grouped = {};
       SHELF_IDS.forEach((s) => { grouped[s] = []; });
       esp32CameraNodesList.forEach((cam) => {
@@ -2738,7 +2744,7 @@
     function onModalShelfOrAngleChange() {
       const shelfId = document.getElementById('provShelfSelect').value || 'SHELF_R1_C1';
       const angleIndex = Number(document.getElementById('provAngleSelect').value) || 1;
-      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R2_C1', 'SHELF_R2_C2', 'SHELF_R2_C3'];
+      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
       const shelfIdx = Math.max(0, SHELF_IDS.indexOf(shelfId));
       const suggestedOctet = 101 + shelfIdx * 2 + (angleIndex === 2 ? 1 : 0);
       const shortShelf = shelfId.replace('SHELF_', '');

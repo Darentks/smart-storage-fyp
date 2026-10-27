@@ -199,12 +199,12 @@ INSERT INTO public.esp32_cameras (
     ('ESP32_R1_C2_CAM2', 'R1-C2 Front Angle (CAM 4)', 'RACK_01', 'SHELF_R1_C2', 2, '192.168.0.104', 'OFFLINE'),
     ('ESP32_R1_C3_CAM1', 'R1-C3 Back Angle (CAM 5)',  'RACK_01', 'SHELF_R1_C3', 1, '192.168.0.105', 'OFFLINE'),
     ('ESP32_R1_C3_CAM2', 'R1-C3 Front Angle (CAM 6)', 'RACK_01', 'SHELF_R1_C3', 2, '192.168.0.106', 'OFFLINE'),
-    ('ESP32_R2_C1_CAM1', 'R2-C1 Back Angle (CAM 7)',  'RACK_01', 'SHELF_R2_C1', 1, '192.168.0.107', 'OFFLINE'),
-    ('ESP32_R2_C1_CAM2', 'R2-C1 Front Angle (CAM 8)', 'RACK_01', 'SHELF_R2_C1', 2, '192.168.0.108', 'OFFLINE'),
-    ('ESP32_R2_C2_CAM1', 'R2-C2 Back Angle (CAM 9)',  'RACK_01', 'SHELF_R2_C2', 1, '192.168.0.109', 'OFFLINE'),
-    ('ESP32_R2_C2_CAM2', 'R2-C2 Front Angle (CAM 10)','RACK_01', 'SHELF_R2_C2', 2, '192.168.0.110', 'OFFLINE'),
-    ('ESP32_R2_C3_CAM1', 'R2-C3 Back Angle (CAM 11)', 'RACK_01', 'SHELF_R2_C3', 1, '192.168.0.111', 'OFFLINE'),
-    ('ESP32_R2_C3_CAM2', 'R2-C3 Front Angle (CAM 12)','RACK_01', 'SHELF_R2_C3', 2, '192.168.0.112', 'OFFLINE')
+    ('ESP32_R1_C4_CAM1', 'R1-C4 Back Angle (CAM 7)',  'RACK_01', 'SHELF_R1_C4', 1, '192.168.0.107', 'OFFLINE'),
+    ('ESP32_R1_C4_CAM2', 'R1-C4 Front Angle (CAM 8)', 'RACK_01', 'SHELF_R1_C4', 2, '192.168.0.108', 'OFFLINE'),
+    ('ESP32_R1_C5_CAM1', 'R1-C5 Back Angle (CAM 9)',  'RACK_01', 'SHELF_R1_C5', 1, '192.168.0.109', 'OFFLINE'),
+    ('ESP32_R1_C5_CAM2', 'R1-C5 Front Angle (CAM 10)','RACK_01', 'SHELF_R1_C5', 2, '192.168.0.110', 'OFFLINE'),
+    ('ESP32_R1_C6_CAM1', 'R1-C6 Back Angle (CAM 11)', 'RACK_01', 'SHELF_R1_C6', 1, '192.168.0.111', 'OFFLINE'),
+    ('ESP32_R1_C6_CAM2', 'R1-C6 Front Angle (CAM 12)','RACK_01', 'SHELF_R1_C6', 2, '192.168.0.112', 'OFFLINE')
 ON CONFLICT (device_id) DO UPDATE SET
     camera_name = EXCLUDED.camera_name,
     rack_id = EXCLUDED.rack_id,

@@ -13,9 +13,9 @@ const SHELF_OPTIONS = [
   'SHELF_R1_C1',
   'SHELF_R1_C2',
   'SHELF_R1_C3',
-  'SHELF_R2_C1',
-  'SHELF_R2_C2',
-  'SHELF_R2_C3',
+  'SHELF_R1_C4',
+  'SHELF_R1_C5',
+  'SHELF_R1_C6',
 ];
 
 export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008', onNotify }) {

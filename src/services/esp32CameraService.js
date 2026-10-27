@@ -20,12 +20,12 @@ export const DEFAULT_12_ESP32_CAMERAS = [
   { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 4)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
   { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 5)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
   { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 6)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-107', device_id: 'ESP32_R2_C1_CAM1', camera_name: 'R2-C1 Back Angle (CAM 7)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C1', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-108', device_id: 'ESP32_R2_C1_CAM2', camera_name: 'R2-C1 Front Angle (CAM 8)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C1', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-109', device_id: 'ESP32_R2_C2_CAM1', camera_name: 'R2-C2 Back Angle (CAM 9)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C2', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-110', device_id: 'ESP32_R2_C2_CAM2', camera_name: 'R2-C2 Front Angle (CAM 10)',rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C2', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-111', device_id: 'ESP32_R2_C3_CAM1', camera_name: 'R2-C3 Back Angle (CAM 11)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C3', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-112', device_id: 'ESP32_R2_C3_CAM2', camera_name: 'R2-C3 Front Angle (CAM 12)',rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C3', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+  { id: 'cam-107', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 7)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+  { id: 'cam-108', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 8)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+  { id: 'cam-109', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 9)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+  { id: 'cam-110', device_id: 'ESP32_R1_C5_CAM2', camera_name: 'R1-C5 Front Angle (CAM 10)',rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+  { id: 'cam-111', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 11)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+  { id: 'cam-112', device_id: 'ESP32_R1_C6_CAM2', camera_name: 'R1-C6 Front Angle (CAM 12)',rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
 ];
 
 function cleanIpAddress(ip) {
