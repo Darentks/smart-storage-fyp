@@ -1176,6 +1176,37 @@
       }
     }
 
+    function parseBoxCountFromClassLabel(className, maxCount = 4) {
+      const raw = String(className || '').trim();
+      const lower = raw.toLowerCase();
+      if (lower.includes('no box') || lower.includes('empty') || lower.includes('0_box') || lower.includes('0 box') || lower.includes('0/4')) {
+        return 0;
+      }
+      // Match explicit "X/4" or "X box" or "Back_X" / "Front_X" before any "Scenario N" prefix
+      const slashMatch = lower.match(/(\d+)\s*\/\s*4/);
+      if (slashMatch) {
+        return Math.min(maxCount, Math.max(0, parseInt(slashMatch[1], 10)));
+      }
+      const boxWordMatch = lower.match(/(\d+)\s*(?:_|-|\s)*box/);
+      if (boxWordMatch) {
+        return Math.min(maxCount, Math.max(0, parseInt(boxWordMatch[1], 10)));
+      }
+      const angleMatch = lower.match(/(?:back|front)[_\-\s]*(\d+)/);
+      if (angleMatch) {
+        return Math.min(maxCount, Math.max(0, parseInt(angleMatch[1], 10)));
+      }
+      // If label is "Scenario 1..5" without explicit box count, map Scenario 1->4, 2->3, 3->2, 4->1, 5->0
+      const scenMatch = lower.match(/scenario\s*(\d+)/);
+      if (scenMatch) {
+        const scenNum = parseInt(scenMatch[1], 10);
+        if (scenNum >= 1 && scenNum <= 5) {
+          return Math.min(maxCount, Math.max(0, 5 - scenNum));
+        }
+      }
+      const genericMatch = raw.match(/(\d+)/);
+      return genericMatch ? Math.min(maxCount, Math.max(0, parseInt(genericMatch[1], 10))) : 0;
+    }
+
     async function predictDualCamerasWithTM(backImgEl, frontImgEl) {
       if (!window.tmModel) return null;
 
@@ -1195,7 +1226,14 @@
         return null;
       }
 
-      // 1. Predict Back Camera (filter classes starting with "Back_")
+      // Detect whether the loaded TM model uses per-angle classes ("Back_*" / "Front_*") or whole-shelf classes (0..4)
+      const modelLabels = typeof window.tmModel.getClassLabels === 'function' ? window.tmModel.getClassLabels() : [];
+      const hasAnglePrefixes = modelLabels.some(lbl => {
+        const l = String(lbl || '').toLowerCase();
+        return l.startsWith('back_') || l.startsWith('front_');
+      });
+
+      // 1. Predict Back Camera
       let bestBack = { className: 'Back_Offline', probability: 0 };
       let backCount = 0;
       if (backOk) {
@@ -1203,14 +1241,13 @@
           const backPreds = await window.tmModel.predict(backImgEl);
           const backOnly = backPreds.filter(p => p.className.toLowerCase().startsWith("back_"));
           bestBack = (backOnly.length ? backOnly : backPreds).reduce((a, b) => a.probability > b.probability ? a : b);
-          const backMatch = bestBack.className.match(/(\d+)/);
-          backCount = backMatch ? parseInt(backMatch[1], 10) : 0;
+          backCount = parseBoxCountFromClassLabel(bestBack.className, hasAnglePrefixes ? 2 : 4);
         } catch (e) {
           console.warn('[TM] Back camera predict failed:', e);
         }
       }
 
-      // 2. Predict Front Camera (filter classes starting with "Front_")
+      // 2. Predict Front Camera
       let bestFront = { className: 'Front_Offline', probability: 0 };
       let frontCount = 0;
       if (frontOk) {
@@ -1218,16 +1255,28 @@
           const frontPreds = await window.tmModel.predict(frontImgEl);
           const frontOnly = frontPreds.filter(p => p.className.toLowerCase().startsWith("front_"));
           bestFront = (frontOnly.length ? frontOnly : frontPreds).reduce((a, b) => a.probability > b.probability ? a : b);
-          const frontMatch = bestFront.className.match(/(\d+)/);
-          frontCount = frontMatch ? parseInt(frontMatch[1], 10) : 0;
+          frontCount = parseBoxCountFromClassLabel(bestFront.className, hasAnglePrefixes ? 2 : 4);
         } catch (e) {
           console.warn('[TM] Front camera predict failed:', e);
         }
       }
 
       // 3. Combine Back + Front into the 5 Scenarios (4/4, 3/4, 2/4, 1/4, 0/4)
-      // Guardrail 4: Graceful single-camera degraded fallback
-      const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
+      let totalBoxes = 0;
+      if (hasAnglePrefixes) {
+        // Per-angle model (Back: 0..2 + Front: 0..2 = 0..4)
+        totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
+      } else {
+        // Whole-shelf model (0..4 boxes directly): use higher-confidence camera prediction without double-summing
+        if (backOk && frontOk) {
+          totalBoxes = bestBack.probability >= bestFront.probability ? backCount : frontCount;
+        } else if (backOk) {
+          totalBoxes = backCount;
+        } else {
+          totalBoxes = frontCount;
+        }
+      }
+
       let avgConfidence = 0.0;
       if (backOk && frontOk) {
         avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
@@ -1247,7 +1296,8 @@
         totalBoxes,
         scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/4 Boxes`,
         confidence: avgConfidence,
-        degraded: !backOk || !frontOk
+        degraded: !backOk || !frontOk,
+        hasAnglePrefixes
       };
     }
 
@@ -1946,6 +1996,17 @@
           tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)${degradedTag}`;
         }
 
+        // Guardrail 4b: If per-angle model is in single-camera degraded mode (1 of 2 cameras offline),
+        // do not allow a missing camera's 0 count to falsely deduct inventory in the database.
+        const currentShelfQty = (comp && typeof comp.current_quantity === 'number') ? comp.current_quantity : 4;
+        const safePredictedBoxes = (tmRes && tmRes.degraded && tmRes.hasAnglePrefixes)
+          ? currentShelfQty
+          : (tmRes ? tmRes.totalBoxes : null);
+
+        if (tmRes && tmRes.degraded && tmRes.hasAnglePrefixes) {
+          showToast(`Warning: 1 of 2 cameras offline for ${shelfId}. Holding quantity at ${currentShelfQty}/4 to prevent false deduction.`, 'warning');
+        }
+
         // 3. Send POST /esp32_validate to Local Bridge
         const valPayload = {
           shelf_id: shelfId,
@@ -1953,7 +2014,7 @@
           ip: ip1,
           ip2: ip2,
           image: previewData.image,
-          predicted_box_count: tmRes ? tmRes.totalBoxes : null,
+          predicted_box_count: safePredictedBoxes,
           scenario_label: tmRes ? tmRes.scenarioLabel : null,
           tm_confidence: tmRes ? tmRes.confidence : null
         };

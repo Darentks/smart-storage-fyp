@@ -81,8 +81,9 @@ class MQTTClientNode:
         unique_suffix = int(time.time() * 1000) % 100000
         client_id = f"{client_id_prefix}_{self.rack_id}_{unique_suffix}"
         if _PAHO_AVAILABLE and mqtt is not None:
-            if hasattr(mqtt, "CallbackAPIVersion"):
-                self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=client_id, clean_session=True)
+            cb_api_ver = getattr(mqtt, "CallbackAPIVersion", None)
+            if cb_api_ver is not None:
+                self.client = mqtt.Client(cb_api_ver.VERSION1, client_id=client_id, clean_session=True)
             else:
                 self.client = mqtt.Client(client_id=client_id, clean_session=True)
             self.client.on_connect = self._on_connect
@@ -180,12 +181,13 @@ class MQTTClientNode:
 
         # 3. ESP32 Snapshot Verification / Capture Response
         elif topic.endswith("/response"):
-            device_id = payload.get("device_id") or payload.get("mqtt_client_id")
+            device_id = str(payload.get("device_id") or payload.get("mqtt_client_id") or "")
             shelf_id = payload.get("shelf_id")
             if not shelf_id and len(topic.split("/")) >= 3:
                 shelf_id = topic.split("/")[2]
 
-            ip_address = payload.get("ip_address") or (self.edge_nodes.get(device_id, {}).get("ip_address"))
+            node_entry = self.edge_nodes.get(device_id, {}) if device_id else {}
+            ip_address = payload.get("ip_address") or node_entry.get("ip_address")
             expected_action = payload.get("expected_action") or "BORROW"
             payload["received_at"] = now_iso
 
@@ -203,7 +205,29 @@ class MQTTClientNode:
                 print(f"[MQTT Reference Capture] Received reference sample telemetry for {device_id} ({shelf_id}).")
                 return
 
-            # Otherwise: VALIDATION capture after a wrist trigger
+            # Guardrail: Only execute inventory validation & database deduction when a Teachable Machine
+            # predicted_box_count is explicitly provided (or via POST /esp32_validate from the dashboard).
+            # Raw hardware MQTT /response ACKs do not carry TM predictions and must not overwrite DB state
+            # with an OpenCV heuristic guess before Teachable Machine finishes.
+            tm_count = payload.get("predicted_box_count")
+            if tm_count is None:
+                tm_count = payload.get("tm_predicted_box_count")
+
+            if tm_count is None:
+                print(
+                    f"[MQTT Response ACK] Hardware capture acknowledged by {device_id} ({shelf_id}). "
+                    f"Deferring inventory decision to Google Teachable Machine (/esp32_validate)."
+                )
+                if self.on_verification_response:
+                    self.on_verification_response({
+                        "device_id": device_id,
+                        "shelf_id": shelf_id,
+                        "state_delta": "AWAITING_TM",
+                        "status_code": payload.get("status_code", 200),
+                    })
+                return
+
+            # Otherwise: VALIDATION capture with explicit Teachable Machine prediction
             # 1. Read current compartment quantity from list_esp32_cameras() for shelf_id (default 4)
             curr_qty = 4
             try:
@@ -223,6 +247,9 @@ class MQTTClientNode:
                 current_quantity=curr_qty,
                 esp32_ip=ip_address,
                 after_data_url=payload.get("image_url"),
+                predicted_box_count=int(tm_count),
+                scenario_label=payload.get("scenario_label"),
+                tm_confidence=payload.get("tm_confidence"),
             )
 
             # 3. Call apply_inventory_delta_in_supabase if sync enabled
@@ -297,7 +324,7 @@ class MQTTClientNode:
 
         payload_json = json.dumps(payload)
 
-        if self.is_connected:
+        if self.is_connected and self.client is not None:
             self.client.publish(topic, payload_json, qos=1)
             print(f"[MQTT Published Trigger] Topic: {topic} -> {payload_json}")
         else:
@@ -328,7 +355,7 @@ class MQTTClientNode:
 
         payload_json = json.dumps(payload)
 
-        if self.is_connected:
+        if self.is_connected and self.client is not None:
             self.client.publish(topic, payload_json, qos=1)
             print(f"[MQTT Published Ref Capture] Topic: {topic} -> {payload_json}")
         else:
@@ -344,13 +371,14 @@ class MQTTClientNode:
             "reason": reason,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        if self.is_connected:
+        if self.is_connected and self.client is not None:
             self.client.publish(topic, json.dumps(payload), qos=1)
 
     def disconnect(self):
         """Clean shutdown of MQTT network loop."""
         try:
-            self.client.loop_stop()
-            self.client.disconnect()
+            if self.client is not None:
+                self.client.loop_stop()
+                self.client.disconnect()
         except Exception:
             pass

@@ -29,6 +29,7 @@ import os
 import sys
 import json
 import time
+from typing import Any, Optional
 import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,7 +38,7 @@ from src.video_processor import VideoProcessor
 from src.config_loader import get_active_rtsp_url
 
 # State variables
-spatial_mapper = None
+spatial_mapper: Optional[SpatialMapper] = None
 selected_idx = 0  # Default to first compartment if available
 drawing_new = False
 dragging_box = False
@@ -48,7 +49,7 @@ drag_offset = (0, 0)
 start_pt = (-1, -1)
 current_pt = (-1, -1)
 is_frozen = False
-frozen_frame = None
+frozen_frame: Optional[Any] = None
 
 status_msg = "Ready. Click any box to select & edit. Press [S] to save."
 status_color = (0, 255, 255)
@@ -97,6 +98,8 @@ def find_handle_under_cursor(x, y, comp, radius=12):
 def add_new_compartment(x1, y1, x2, y2):
     """Adds a new compartment and selects it."""
     global selected_idx, spatial_mapper
+    if spatial_mapper is None:
+        return False
 
     rx1, rx2 = min(x1, x2), max(x1, x2)
     ry1, ry2 = min(y1, y2), max(y1, y2)
@@ -133,6 +136,8 @@ def spawn_center_compartment(frame_w=640, frame_h=480):
 def mouse_callback(event, x, y, flags, param):
     global selected_idx, drawing_new, dragging_box, active_handle, hover_handle
     global drag_offset, start_pt, current_pt, spatial_mapper
+    if spatial_mapper is None:
+        return
 
     # Update hover state when not dragging
     if event == cv2.EVENT_MOUSEMOVE and not dragging_box and active_handle == -1 and not drawing_new:
@@ -278,7 +283,7 @@ def main():
     set_status(f"Loaded {len(spatial_mapper.compartments)} ROIs. Click any box to edit its shape/size.", (0, 255, 255))
 
     while True:
-        if not is_frozen:
+        if not is_frozen or frozen_frame is None:
             ret, frame = video.capture_frame()
             if not ret or frame is None:
                 continue
