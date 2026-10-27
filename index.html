@@ -746,7 +746,8 @@
         <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control" placeholder="https://teachablemachine.withgoogle.com/models/.../" />
         <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302; Load TM Model</button>
       </div>
-      <div style="display: flex; gap: 8px; margin-left: auto;">
+      <div style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
+        <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);" onclick="document.getElementById('esp32CameraManagerPanel').scrollIntoView({ behavior: 'smooth' })">&#128225; 12-Node &amp; OTA Manager</button>
         <button type="button" class="btn-action" onclick="launchLocalCalibrator()">&#9881; Launch Desktop Calibrator</button>
         <button type="button" class="btn-action" onclick="refreshAllData()">&circlearrowright; Refresh All</button>
       </div>
@@ -835,7 +836,7 @@
 
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refShelfSelect">Target Shelf Compartment</label>
-              <select id="refShelfSelect" class="form-control" onchange="syncSelectedShelfTelemetry()">
+              <select id="refShelfSelect" class="form-control" onchange="onTargetShelfChange()">
                 <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
                 <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
                 <option value="SHELF_R1_C3">SHELF_R1_C3 (ESP32 Node R1-C3)</option>
@@ -844,12 +845,23 @@
 
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refEspIpInput">ESP32-CAM 1 Back Angle IP</label>
-              <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" />
+              <select id="cam1IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;" onchange="onSelectAssignedCameraIp(1, this.value)"></select>
+              <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" oninput="markIpInputDirty(1)" />
             </div>
 
-            <div class="form-group" style="margin-bottom: 16px;">
+            <div class="form-group" style="margin-bottom: 12px;">
               <label for="refEspIp2Input">ESP32-CAM 2 Front Angle IP</label>
-              <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102" value="192.168.0.102" />
+              <select id="cam2IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;" onchange="onSelectAssignedCameraIp(2, this.value)"></select>
+              <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102" value="192.168.0.102" oninput="markIpInputDirty(2)" />
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
+              <button type="button" class="btn-action" id="scanCamIpsBtn" style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
+                &#128269; Scan Online Camera IPs
+              </button>
+              <button type="button" class="btn-action" id="saveCamIpsBtn" style="height: 36px; justify-content: center; font-size: 11px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);" onclick="saveAssignedShelfIps()">
+                &#128190; Save Assigned IPs to Shelf
+              </button>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 10px;">
@@ -911,6 +923,99 @@
         </div>
       </div>
     </section>
+
+    <!-- Panel 4: Esp32CameraManager — 12-Node Hardware CRUD, NVS Provisioning & Wireless OTA Manager -->
+    <section class="panel" id="esp32CameraManagerPanel" style="margin-top: 24px;">
+      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+        <div>
+          <h2 class="panel-title">&#128225; Panel 4 &bull; ESP32-CAM Hardware Node CRUD, NVS Reassignment &amp; Wireless OTA Manager (12 Nodes)</h2>
+          <p class="panel-desc">Manage up to 12 ESP32-CAM compartment nodes (Angle 1 Back &amp; Angle 2 Front per shelf) in <code>public.esp32_cameras</code>, push wireless NVS config, and upload <code>.bin</code> firmware via OTA.</p>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+          <button type="button" class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">
+            &#128269; Probe All 12 Nodes
+          </button>
+          <button type="button" class="btn-primary" style="height: 36px; padding: 0 14px; font-size: 12px;" onclick="openEsp32ProvisionModal(null)">
+            &#10133; Add / Provision Camera Node
+          </button>
+        </div>
+      </div>
+
+      <div id="esp32CameraManagerGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 16px;">
+        <div style="grid-column: 1 / -1; text-align: center; padding: 32px; color: var(--text-muted);">
+          Loading 12 ESP32-CAM hardware nodes...
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Add / Provision ESP32-CAM Modal -->
+  <div id="esp32ProvisionModal" style="display: none; position: fixed; inset: 0; background: rgba(5, 8, 17, 0.85); z-index: 9999; align-items: center; justify-content: center; padding: 16px;">
+    <form onsubmit="submitEsp32ProvisionModal(event)" style="background: var(--surface); border: 1px solid var(--primary); border-radius: 12px; padding: 22px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 50px rgba(0,0,0,0.6);">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <h3 style="margin: 0; font-size: 16px; color: var(--text-primary);">&#128225; Add / Provision ESP32-CAM Node (Wireless NVS)</h3>
+        <button type="button" class="btn-action" style="padding: 2px 8px; font-size: 12px;" onclick="closeEsp32ProvisionModal()">&#10005;</button>
+      </div>
+      <input type="hidden" id="provCamIdInput" value="" />
+
+      <div class="form-group">
+        <label for="provCurrentIpInput">Current Camera IP (to Probe &amp; Push NVS Config)</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="provCurrentIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" required />
+          <button type="button" class="btn-action" id="provProbeBtn" onclick="probeModalCurrentCameraIp()" style="white-space: nowrap;">&#128269; Probe IP</button>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <div class="form-group">
+          <label for="provShelfSelect">Target Shelf ID</label>
+          <select id="provShelfSelect" class="form-control" onchange="onModalShelfOrAngleChange()">
+            <option value="SHELF_R1_C1">SHELF_R1_C1</option>
+            <option value="SHELF_R1_C2">SHELF_R1_C2</option>
+            <option value="SHELF_R1_C3">SHELF_R1_C3</option>
+            <option value="SHELF_R2_C1">SHELF_R2_C1</option>
+            <option value="SHELF_R2_C2">SHELF_R2_C2</option>
+            <option value="SHELF_R2_C3">SHELF_R2_C3</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="provAngleSelect">Angle Index (1 or 2)</label>
+          <select id="provAngleSelect" class="form-control" onchange="onModalShelfOrAngleChange()">
+            <option value="1">Angle 1 (Back Camera)</option>
+            <option value="2">Angle 2 (Front Camera)</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <div class="form-group">
+          <label for="provDeviceIdInput">Target Device ID</label>
+          <input type="text" id="provDeviceIdInput" class="form-control" value="ESP32_R1_C1_CAM1" required />
+        </div>
+        <div class="form-group">
+          <label for="provIpOctetInput">Target IP Octet (101–112)</label>
+          <input type="number" id="provIpOctetInput" class="form-control" min="101" max="250" value="101" required />
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+        <div class="form-group">
+          <label for="provRackIdInput">Rack ID</label>
+          <input type="text" id="provRackIdInput" class="form-control" value="RACK_01" required />
+        </div>
+        <div class="form-group">
+          <label for="provCameraNameInput">Camera Name</label>
+          <input type="text" id="provCameraNameInput" class="form-control" value="R1-C1 Back Angle (CAM 1)" required />
+        </div>
+      </div>
+
+      <div id="provStatusBanner" style="display: none; font-size: 11px; font-family: var(--font-mono); padding: 8px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.1); border: 1px solid var(--primary); color: var(--primary);"></div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
+        <button type="button" class="btn-action" onclick="closeEsp32ProvisionModal()">Cancel</button>
+        <button type="submit" class="btn-primary" id="provSubmitBtn" style="height: 36px; padding: 0 16px;">&#9889; Provision &amp; Save</button>
+      </div>
+    </form>
   </div>
 
   <!-- Toast Notification -->
@@ -970,8 +1075,12 @@
     const comparisonLogsList = document.getElementById('comparisonLogsList');
     const logCountBadge = document.getElementById('logCountBadge');
     const refShelfSelect = document.getElementById('refShelfSelect');
+    const cam1IpSelect = document.getElementById('cam1IpSelect');
+    const cam2IpSelect = document.getElementById('cam2IpSelect');
     const refEspIpInput = document.getElementById('refEspIpInput');
     const refEspIp2Input = document.getElementById('refEspIp2Input');
+    const scanCamIpsBtn = document.getElementById('scanCamIpsBtn');
+    const saveCamIpsBtn = document.getElementById('saveCamIpsBtn');
     const tmLivePredictionBanner = document.getElementById('tmLivePredictionBanner');
     const livePreviewImg = document.getElementById('livePreviewImg');
     const backPreviewImg = document.getElementById('backPreviewImg');
@@ -987,6 +1096,9 @@
     const homeTestModeBadge = document.getElementById('homeTestModeBadge');
 
     let compartmentsData = [];
+    let discoveredCamerasList = [];
+    let lastSyncedShelfId = null;
+    let userEditedCamIp = { 1: false, 2: false };
     let comparisonLogsData = [];
     let currentPreviewDataUrl = null;
     let homeTestBackDataUrl = null;
@@ -1222,14 +1334,267 @@
     }
 
     // =========================================================================
-    // PANEL 2: DUAL-CAMERA SETUP & LIVE PREVIEW
+    // PANEL 2: DUAL-CAMERA SETUP, IP SELECTOR DROPDOWNS & LIVE PREVIEW
     // =========================================================================
-    function syncSelectedShelfTelemetry() {
+    const PLATFORMIO_CAMERA_IP_PRESETS = [
+      { ip: "192.168.0.101", label: "CAM 1 \u2014 SHELF_R1_C1 Back Angle [192.168.0.101]" },
+      { ip: "192.168.0.102", label: "CAM 2 \u2014 SHELF_R1_C1 Front Angle [192.168.0.102]" },
+      { ip: "192.168.0.103", label: "CAM 3 \u2014 SHELF_R1_C2 Back Angle [192.168.0.103]" },
+      { ip: "192.168.0.104", label: "CAM 4 \u2014 SHELF_R1_C2 Front Angle [192.168.0.104]" },
+      { ip: "192.168.0.105", label: "CAM 5 \u2014 SHELF_R1_C3 Back Angle [192.168.0.105]" },
+      { ip: "192.168.0.106", label: "CAM 6 \u2014 SHELF_R1_C3 Front Angle [192.168.0.106]" },
+      { ip: "192.168.0.107", label: "CAM 7 \u2014 R2-C1 Back Angle [192.168.0.107]" },
+      { ip: "192.168.0.108", label: "CAM 8 \u2014 R2-C1 Front Angle [192.168.0.108]" },
+      { ip: "192.168.0.109", label: "CAM 9 \u2014 R2-C2 Back Angle [192.168.0.109]" },
+      { ip: "192.168.0.110", label: "CAM 10 \u2014 R2-C2 Front Angle [192.168.0.110]" },
+      { ip: "192.168.0.111", label: "CAM 11 \u2014 R2-C3 Back Angle [192.168.0.111]" },
+      { ip: "192.168.0.112", label: "CAM 12 \u2014 R2-C3 Front Angle [192.168.0.112]" },
+      { ip: "192.168.0.201", label: "Legacy R1-C1 Node [192.168.0.201]" },
+      { ip: "192.168.0.202", label: "Legacy R1-C2 Node [192.168.0.202]" },
+      { ip: "esp32_r1_c1_cam1.local", label: "mDNS Hostname \u2014 CAM 1 Back [esp32_r1_c1_cam1.local]" },
+      { ip: "esp32_r1_c1_cam2.local", label: "mDNS Hostname \u2014 CAM 2 Front [esp32_r1_c1_cam2.local]" }
+    ];
+
+    function syncDropdownToIpValue(selectEl, ipVal) {
+      if (!selectEl) return;
+      const clean = (ipVal || "").trim();
+      const hasMatch = Array.from(selectEl.options).some(opt => opt.value === clean);
+      selectEl.value = hasMatch ? clean : "__custom__";
+    }
+
+    function populateAssignedIpDropdowns() {
+      if (!cam1IpSelect || !cam2IpSelect) return;
+      const activeEl = document.activeElement;
+      if (activeEl === cam1IpSelect || activeEl === cam2IpSelect) return;
+
+      const buildOptionsHtml = () => {
+        let html = "";
+
+        // 1. Live Discovered / Online ESP32-CAMs
+        const liveNodes = (discoveredCamerasList || []).filter(c => c && c.ip_address);
+        if (liveNodes.length > 0) {
+          html += `<optgroup label="\uD83D\uDFE2 Live Discovered / Online ESP32-CAMs">`;
+          const seenLive = new Set();
+          liveNodes.forEach(node => {
+            const ip = String(node.ip_address).trim();
+            if (!ip || seenLive.has(ip)) return;
+            seenLive.add(ip);
+            const devId = node.device_id || "ESP32-CAM";
+            const angleTag = node.angle === "FRONT" || String(devId).toUpperCase().endsWith("_CAM2") ? "Front" : "Back";
+            const rssiTag = node.rssi_dbm != null ? ` (${node.rssi_dbm} dBm)` : "";
+            const statusIcon = node.status === "ONLINE" ? "\uD83D\uDFE2" : "\uD83D\uDCCC";
+            html += `<option value="${ip}">${statusIcon} ${devId} (${angleTag}) \u2014 ${ip}${rssiTag}</option>`;
+          });
+          html += `</optgroup>`;
+        }
+
+        // 2. Saved Compartment Camera IPs
+        if (compartmentsData && compartmentsData.length > 0) {
+          html += `<optgroup label="\uD83D\uDCCC Saved Compartment Camera IPs">`;
+          compartmentsData.forEach(c => {
+            const sId = c.shelf_id || "SHELF";
+            if (c.ip_address) {
+              html += `<option value="${c.ip_address}">\uD83D\uDCCC ${sId} CAM 1 (Back) \u2014 ${c.ip_address}</option>`;
+            }
+            if (c.secondary_ip_address) {
+              html += `<option value="${c.secondary_ip_address}">\uD83D\uDCCC ${sId} CAM 2 (Front) \u2014 ${c.secondary_ip_address}</option>`;
+            }
+          });
+          html += `</optgroup>`;
+        }
+
+        // 3. PlatformIO Assigned Camera IP Presets
+        html += `<optgroup label="\uD83D\uDCF7 PlatformIO Assigned Camera IP Presets (CAM 1 \u2013 CAM 12 &amp; mDNS)">`;
+        PLATFORMIO_CAMERA_IP_PRESETS.forEach(preset => {
+          html += `<option value="${preset.ip}">${preset.label}</option>`;
+        });
+        html += `</optgroup>`;
+
+        // 4. Custom / Manual IP Address
+        html += `<optgroup label="\u270F\uFE0F Custom Router / Hotspot DHCP IP">`;
+        html += `<option value="__custom__">\u270F\uFE0F Custom / Manual IP Address...</option>`;
+        html += `</optgroup>`;
+
+        return html;
+      };
+
+      const optionsHtml = buildOptionsHtml();
+      cam1IpSelect.innerHTML = optionsHtml;
+      cam2IpSelect.innerHTML = optionsHtml;
+
+      if (refEspIpInput) syncDropdownToIpValue(cam1IpSelect, refEspIpInput.value);
+      if (refEspIp2Input) syncDropdownToIpValue(cam2IpSelect, refEspIp2Input.value);
+    }
+
+    function markIpInputDirty(camNum) {
+      userEditedCamIp[camNum] = true;
+      if (camNum === 1 && cam1IpSelect && refEspIpInput) {
+        syncDropdownToIpValue(cam1IpSelect, refEspIpInput.value);
+      } else if (camNum === 2 && cam2IpSelect && refEspIp2Input) {
+        syncDropdownToIpValue(cam2IpSelect, refEspIp2Input.value);
+      }
+    }
+
+    function onSelectAssignedCameraIp(camNum, selectedVal) {
+      userEditedCamIp[camNum] = true;
+      const targetInput = camNum === 1 ? refEspIpInput : refEspIp2Input;
+      if (!targetInput) return;
+
+      if (selectedVal === "__custom__") {
+        targetInput.focus();
+        targetInput.select();
+        showToast(`Type custom IP address for ESP32-CAM ${camNum} below, then click Save Assigned IPs.`, 'info');
+      } else if (selectedVal) {
+        targetInput.value = selectedVal;
+        showToast(`Selected ${selectedVal} for ESP32-CAM ${camNum}. Click "Save Assigned IPs" or "Preview" to apply.`, 'info');
+      }
+    }
+
+    function onTargetShelfChange() {
+      userEditedCamIp = { 1: false, 2: false };
+      lastSyncedShelfId = null;
+      syncSelectedShelfTelemetry(true);
+    }
+
+    function syncSelectedShelfTelemetry(forceReset = false) {
+      if (!refShelfSelect) return;
       const selShelf = refShelfSelect.value;
+      const shelfChanged = (selShelf !== lastSyncedShelfId);
+      if (forceReset || shelfChanged) {
+        userEditedCamIp = { 1: false, 2: false };
+        lastSyncedShelfId = selShelf;
+      }
+
       const comp = compartmentsData.find(c => c.shelf_id === selShelf);
-      if (comp) {
-        if (comp.ip_address && refEspIpInput) refEspIpInput.value = comp.ip_address;
-        if (comp.secondary_ip_address && refEspIp2Input) refEspIp2Input.value = comp.secondary_ip_address;
+      const defaultFallbacks = {
+        'SHELF_R1_C1': { ip1: '192.168.0.101', ip2: '192.168.0.102' },
+        'SHELF_R1_C2': { ip1: '192.168.0.103', ip2: '192.168.0.104' },
+        'SHELF_R1_C3': { ip1: '192.168.0.105', ip2: '192.168.0.106' },
+      }[selShelf] || { ip1: '192.168.0.101', ip2: '192.168.0.102' };
+
+      const activeEl = document.activeElement;
+      const cam1Focused = (activeEl === refEspIpInput || activeEl === cam1IpSelect);
+      const cam2Focused = (activeEl === refEspIp2Input || activeEl === cam2IpSelect);
+
+      if (!userEditedCamIp[1] && !cam1Focused && refEspIpInput) {
+        refEspIpInput.value = (comp && comp.ip_address) ? comp.ip_address : defaultFallbacks.ip1;
+      }
+      if (!userEditedCamIp[2] && !cam2Focused && refEspIp2Input) {
+        refEspIp2Input.value = (comp && comp.secondary_ip_address) ? comp.secondary_ip_address : defaultFallbacks.ip2;
+      }
+
+      populateAssignedIpDropdowns();
+    }
+
+    async function discoverOnlineEsp32Cameras() {
+      if (scanCamIpsBtn) {
+        scanCamIpsBtn.disabled = true;
+        scanCamIpsBtn.textContent = '\uD83D\uDD0D Scanning LAN...';
+      }
+      showToast('Scanning local network for active ESP32-CAM nodes...', 'info');
+
+      try {
+        const resp = await fetch(`${getBridgeUrl()}/esp32_discover`, { cache: 'no-store' });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (Array.isArray(data.discovered_cameras)) {
+          discoveredCamerasList = data.discovered_cameras;
+        }
+
+        const selShelf = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
+        const onlineNodes = discoveredCamerasList.filter(c => c.status === 'ONLINE');
+
+        // Auto-select discovered CAM1 and CAM2 for current shelf if found
+        const shelfCam1 = onlineNodes.find(c => c.shelf_id === selShelf && c.angle === 'BACK');
+        const shelfCam2 = onlineNodes.find(c => c.shelf_id === selShelf && c.angle === 'FRONT');
+        if (shelfCam1 && shelfCam1.ip_address && refEspIpInput) {
+          refEspIpInput.value = shelfCam1.ip_address;
+          userEditedCamIp[1] = true;
+        }
+        if (shelfCam2 && shelfCam2.ip_address && refEspIp2Input) {
+          refEspIp2Input.value = shelfCam2.ip_address;
+          userEditedCamIp[2] = true;
+        }
+
+        populateAssignedIpDropdowns();
+        showToast(`Scan complete: ${onlineNodes.length} online ESP32-CAM(s) discovered!`, onlineNodes.length > 0 ? 'success' : 'info');
+      } catch (err) {
+        console.warn('[ESP32 Discover] Scan error:', err);
+        populateAssignedIpDropdowns();
+        showToast('Local bridge offline or scan failed. Using preset & saved camera IPs.', 'error');
+      } finally {
+        if (scanCamIpsBtn) {
+          scanCamIpsBtn.disabled = false;
+          scanCamIpsBtn.innerHTML = '&#128269; Scan Online Camera IPs';
+        }
+      }
+    }
+
+    async function saveAssignedShelfIps() {
+      const shelfId = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
+      const ip1 = refEspIpInput ? refEspIpInput.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.101';
+      const ip2 = refEspIp2Input ? refEspIp2Input.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.102';
+
+      if (!ip1 || !ip2) {
+        showToast('Please enter or select valid IP addresses for both CAM 1 and CAM 2.', 'error');
+        return;
+      }
+
+      if (saveCamIpsBtn) {
+        saveCamIpsBtn.disabled = true;
+        saveCamIpsBtn.textContent = 'Saving...';
+      }
+
+      let savedCloud = false;
+      let savedBridge = false;
+
+      // 1. Update in Supabase public.compartments
+      try {
+        await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
+          ip_address: ip1,
+          secondary_ip_address: ip2
+        });
+        savedCloud = true;
+      } catch (sbErr) {
+        console.warn('[Save IPs] Supabase PATCH warning:', sbErr);
+      }
+
+      // 2. Update in Local Python Bridge
+      try {
+        const resp = await fetch(`${getBridgeUrl()}/esp32_assign_ips`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shelf_id: shelfId,
+            ip_address: ip1,
+            secondary_ip_address: ip2
+          })
+        });
+        if (resp.ok) savedBridge = true;
+      } catch (brErr) {
+        console.warn('[Save IPs] Local bridge POST warning:', brErr);
+      }
+
+      // 3. Update compartmentsData in memory & clear dirty flags
+      compartmentsData = (compartmentsData || []).map(c => {
+        if (c.shelf_id === shelfId) {
+          return { ...c, ip_address: ip1, secondary_ip_address: ip2 };
+        }
+        return c;
+      });
+      userEditedCamIp = { 1: false, 2: false };
+      populateAssignedIpDropdowns();
+      renderCompartments(compartmentsData);
+
+      if (saveCamIpsBtn) {
+        saveCamIpsBtn.disabled = false;
+        saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf';
+      }
+
+      if (savedCloud || savedBridge) {
+        showToast(`Saved ${shelfId} IPs: CAM1=${ip1}, CAM2=${ip2}`, 'success');
+      } else {
+        showToast(`Updated ${shelfId} IPs locally in session: CAM1=${ip1}, CAM2=${ip2}`, 'info');
       }
     }
 
@@ -1649,6 +2014,9 @@
           const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
           if (bridgeResp.ok) {
             const bridgeJson = await bridgeResp.json();
+            if (Array.isArray(bridgeJson.discovered_cameras)) {
+              discoveredCamerasList = bridgeJson.discovered_cameras;
+            }
             const bridgeComps = bridgeJson.compartments || [];
             if (!compartmentsData || compartmentsData.length === 0) {
               compartmentsData = bridgeComps;
@@ -1696,12 +2064,13 @@
 
         if (compartmentsData && compartmentsData.length > 0) {
           renderCompartments(compartmentsData);
-          syncSelectedShelfTelemetry();
         }
+        syncSelectedShelfTelemetry();
       } catch (err) {
         console.error('Error loading compartments:', err);
         dbStatusDot.className = 'status-dot error';
         dbStatusText.textContent = 'Cloud DB: Error';
+        populateAssignedIpDropdowns();
       }
     }
 
@@ -1973,6 +2342,506 @@
     }
 
     // =========================================================================
+    // ESP32-CAM 12-NODE HARDWARE CRUD, WIRELESS NVS & OTA SERVICE (Panel 4)
+    // =========================================================================
+    const DEFAULT_12_ESP32_CAMERAS = [
+      { id: 'cam-101', device_id: 'ESP32_R1_C1_CAM1', camera_name: 'R1-C1 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 1, ip_address: '192.168.0.101', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-102', device_id: 'ESP32_R1_C1_CAM2', camera_name: 'R1-C1 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 2, ip_address: '192.168.0.102', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-103', device_id: 'ESP32_R1_C2_CAM1', camera_name: 'R1-C2 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 1, ip_address: '192.168.0.103', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-107', device_id: 'ESP32_R2_C1_CAM1', camera_name: 'R2-C1 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C1', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-108', device_id: 'ESP32_R2_C1_CAM2', camera_name: 'R2-C1 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C1', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-109', device_id: 'ESP32_R2_C2_CAM1', camera_name: 'R2-C2 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C2', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-110', device_id: 'ESP32_R2_C2_CAM2', camera_name: 'R2-C2 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C2', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-111', device_id: 'ESP32_R2_C3_CAM1', camera_name: 'R2-C3 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C3', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-112', device_id: 'ESP32_R2_C3_CAM2', camera_name: 'R2-C3 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R2_C3', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null }
+    ];
+
+    let esp32CameraNodesList = [...DEFAULT_12_ESP32_CAMERAS];
+    let esp32NodeSnapshotModeMap = {};
+    let esp32NodeCacheBustMap = {};
+    let esp32NodeOtaUploadingMap = {};
+
+    function cleanCameraHost(ip) {
+      return String(ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+    }
+
+    async function probeCameraStatus(ip) {
+      const host = cleanCameraHost(ip);
+      if (!host) throw new Error('Camera IP address is required');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      try {
+        const res = await fetch(`http://${host}/status`, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { Accept: 'application/json' }
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status} from ${host}`);
+        const data = await res.json();
+        return {
+          online: true,
+          device_id: data.device_id || '',
+          camera_name: data.camera_name || '',
+          rack_id: data.rack_id || 'RACK_01',
+          shelf_id: data.shelf_id || '',
+          rssi_dbm: typeof data.rssi_dbm === 'number' ? data.rssi_dbm : null,
+          ip_address: data.ip_address || host,
+          status: data.status || 'ONLINE'
+        };
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    async function pushCameraConfig(ip, payload) {
+      const host = cleanCameraHost(ip);
+      if (!host) throw new Error('Camera IP address is required');
+      const body = {
+        device_id: String(payload.device_id || '').trim(),
+        rack_id: String(payload.rack_id || 'RACK_01').trim(),
+        shelf_id: String(payload.shelf_id || '').trim(),
+        camera_name: String(payload.camera_name || payload.device_id || '').trim(),
+        ip_octet: Number(payload.ip_octet) || 101
+      };
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      try {
+        const res = await fetch(`http://${host}/config`, {
+          method: 'POST',
+          signal: controller.signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        if (!res.ok) throw new Error(`Failed to push NVS config (HTTP ${res.status})`);
+        return await res.json();
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    }
+
+    async function uploadCameraFirmware(ip, binFile) {
+      const host = cleanCameraHost(ip);
+      if (!host) throw new Error('Camera IP address is required');
+      if (!binFile) throw new Error('Firmware .bin file is required');
+      const formData = new FormData();
+      formData.append('file', binFile, binFile.name || 'firmware.bin');
+      const res = await fetch(`http://${host}/update`, {
+        method: 'POST',
+        body: formData
+      });
+      const text = await res.text();
+      if (!res.ok) throw new Error(`OTA upload failed (HTTP ${res.status}): ${text}`);
+      return { ok: true, message: text || 'OK - Rebooting' };
+    }
+
+    function captureLiveSnapshotUrl(ip, mode = 'live') {
+      const host = cleanCameraHost(ip);
+      if (!host) return '';
+      const cleanMode = mode === 'baseline' ? 'baseline' : 'live';
+      return `http://${host}/capture?mode=${cleanMode}&t=${Date.now()}`;
+    }
+
+    async function getCameras() {
+      if (!supabaseClient) return [...DEFAULT_12_ESP32_CAMERAS];
+      const { data, error } = await supabaseClient
+        .from('esp32_cameras')
+        .select('*')
+        .order('shelf_id', { ascending: true })
+        .order('angle_index', { ascending: true });
+      if (error || !data || data.length === 0) {
+        return [...DEFAULT_12_ESP32_CAMERAS];
+      }
+      return data;
+    }
+
+    async function upsertCamera(cam) {
+      const record = {
+        device_id: String(cam.device_id || '').trim(),
+        camera_name: String(cam.camera_name || cam.device_id || '').trim(),
+        rack_id: String(cam.rack_id || 'RACK_01').trim(),
+        shelf_id: String(cam.shelf_id || 'SHELF_R1_C1').trim(),
+        angle_index: Number(cam.angle_index) === 2 ? 2 : 1,
+        ip_address: cleanCameraHost(cam.ip_address),
+        status: String(cam.status || 'ONLINE').toUpperCase(),
+        rssi_dbm: typeof cam.rssi_dbm === 'number' ? cam.rssi_dbm : null,
+        last_seen: cam.last_seen || new Date().toISOString()
+      };
+      if (cam.id && !String(cam.id).startsWith('cam-')) {
+        record.id = cam.id;
+      }
+      if (supabaseClient) {
+        const { data, error } = await supabaseClient
+          .from('esp32_cameras')
+          .upsert(record, { onConflict: 'device_id' })
+          .select()
+          .single();
+        if (!error && data) return data;
+      }
+      return { ...cam, ...record };
+    }
+
+    async function deleteCamera(id) {
+      if (supabaseClient && id && !String(id).startsWith('cam-')) {
+        const { error } = await supabaseClient
+          .from('esp32_cameras')
+          .delete()
+          .eq('id', id);
+        if (error) throw error;
+      }
+      return true;
+    }
+
+    async function loadEsp32CameraNodes() {
+      try {
+        const rows = await getCameras();
+        esp32CameraNodesList = rows;
+        renderEsp32CameraManager();
+      } catch (err) {
+        console.warn('loadEsp32CameraNodes fallback:', err);
+        renderEsp32CameraManager();
+      }
+    }
+
+    function renderEsp32CameraManager() {
+      const gridEl = document.getElementById('esp32CameraManagerGrid');
+      if (!gridEl) return;
+
+      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R2_C1', 'SHELF_R2_C2', 'SHELF_R2_C3'];
+      const grouped = {};
+      SHELF_IDS.forEach((s) => { grouped[s] = []; });
+      esp32CameraNodesList.forEach((cam) => {
+        const s = cam.shelf_id || 'UNASSIGNED';
+        if (!grouped[s]) grouped[s] = [];
+        grouped[s].push(cam);
+      });
+
+      gridEl.innerHTML = Object.entries(grouped).map(([shelfId, shelfCams]) => {
+        const sortedCams = [...shelfCams].sort((a, b) => (a.angle_index || 1) - (b.angle_index || 1));
+        const cardsHtml = sortedCams.map((cam) => {
+          const isOnline = String(cam.status || '').toUpperCase() === 'ONLINE';
+          const mode = esp32NodeSnapshotModeMap[cam.device_id] || 'live';
+          const cb = esp32NodeCacheBustMap[cam.device_id] || Date.now();
+          const snapUrl = cam.ip_address ? `http://${cleanCameraHost(cam.ip_address)}/capture?mode=${mode}&t=${cb}` : '';
+          const isUploading = Boolean(esp32NodeOtaUploadingMap[cam.device_id]);
+          const safeJson = encodeURIComponent(JSON.stringify(cam));
+
+          return `
+            <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid ${isOnline ? 'rgba(16, 185, 129, 0.45)' : 'var(--border)'}; border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; gap: 6px;">
+                <div>
+                  <div style="font-size: 11px; font-weight: 700; color: ${cam.angle_index === 2 ? '#a78bfa' : '#38bdf8'};">
+                    ANGLE ${cam.angle_index || 1} &bull; ${cam.angle_index === 2 ? 'FRONT CAM' : 'BACK CAM'}
+                  </div>
+                  <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-primary); font-weight: 600;">
+                    ${cam.device_id}
+                  </div>
+                  <div style="font-size: 10px; font-family: var(--font-mono); color: var(--text-muted);">
+                    IP: ${cam.ip_address || 'Unassigned'}
+                  </div>
+                </div>
+                <span class="shelf-badge ${isOnline ? 'badge-normal' : 'badge-alert'}" style="font-size: 10px;">
+                  ${isOnline ? 'ONLINE' : 'OFFLINE'}${typeof cam.rssi_dbm === 'number' ? ` (${cam.rssi_dbm}dBm)` : ''}
+                </span>
+              </div>
+
+              <div style="position: relative; width: 100%; height: 125px; background: #050811; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center;">
+                ${snapUrl ? `
+                  <img
+                    src="${snapUrl}"
+                    alt="${cam.device_id}"
+                    style="width: 100%; height: 100%; object-fit: cover;"
+                    onerror="this.style.opacity='0.18'"
+                    onload="this.style.opacity='1'"
+                  />
+                ` : '<span style="font-size: 11px; color: var(--text-muted);">No IP</span>'}
+                <span style="position: absolute; bottom: 4px; right: 6px; font-size: 9px; font-family: var(--font-mono); background: rgba(0,0,0,0.75); color: #e2e8f0; padding: 2px 5px; border-radius: 4px;">
+                  MODE: ${mode.toUpperCase()}
+                </span>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                <button type="button" class="btn-action" style="font-size: 10px; padding: 5px 6px;" onclick="toggleNodeSnapshotMode('${cam.device_id}')">
+                  &#128247; ${mode === 'live' ? 'Switch Baseline' : 'Switch Live'}
+                </button>
+                <button type="button" class="btn-action" style="font-size: 10px; padding: 5px 6px; border-color: var(--primary); color: var(--primary);" onclick="triggerSingleCameraNode('${cam.device_id}', '${cam.ip_address}', '${cam.shelf_id}')">
+                  &#9889; Test Trigger
+                </button>
+                <button type="button" class="btn-action" style="font-size: 10px; padding: 5px 6px;" onclick="openEsp32ProvisionModal('${safeJson}')">
+                  &#9881; Edit/Reassign NVS
+                </button>
+                <label class="btn-action" style="font-size: 10px; padding: 5px 6px; text-align: center; cursor: pointer; margin: 0; border-color: rgba(167, 139, 250, 0.5); color: #c4b5fd;">
+                  ${isUploading ? '&#8987; Uploading...' : '&#128228; Wireless OTA (.bin)'}
+                  <input type="file" accept=".bin" style="display: none;" ${isUploading ? 'disabled' : ''} onchange="uploadNodeOtaBin(event, '${cam.device_id}', '${cam.ip_address}')" />
+                </label>
+              </div>
+
+              <button type="button" class="btn-action" style="font-size: 10px; padding: 4px 6px; color: #f87171; border-color: rgba(248, 113, 113, 0.3);" onclick="deleteEsp32CameraNode('${cam.id}', '${cam.device_id}')">
+                &#128465; Delete Node
+              </button>
+            </div>
+          `;
+        }).join('');
+
+        return `
+          <div style="background: var(--surface-alt); border: 1px solid var(--border); border-radius: 10px; padding: 14px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border);">
+              <span style="font-family: var(--font-mono); font-weight: 700; font-size: 13px; color: var(--primary);">
+                &#128230; ${shelfId}
+              </span>
+              <span style="font-size: 11px; color: var(--text-muted);">
+                ${sortedCams.length} / 2 Camera Angles Assigned
+              </span>
+            </div>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+              ${cardsHtml}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    async function probeAllEsp32CameraNodes() {
+      const btn = document.getElementById('probeAllNodesBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '&#8987; Probing 12 Nodes...';
+      }
+      try {
+        const updated = await Promise.all(
+          esp32CameraNodesList.map(async (cam) => {
+            try {
+              const live = await probeCameraStatus(cam.ip_address);
+              const merged = {
+                ...cam,
+                device_id: live.device_id || cam.device_id,
+                shelf_id: live.shelf_id || cam.shelf_id,
+                rssi_dbm: live.rssi_dbm,
+                status: 'ONLINE',
+                last_seen: new Date().toISOString()
+              };
+              await upsertCamera(merged);
+              return merged;
+            } catch (_) {
+              return { ...cam, status: 'OFFLINE' };
+            }
+          })
+        );
+        esp32CameraNodesList = updated;
+        renderEsp32CameraManager();
+        const onlineCount = updated.filter((c) => c.status === 'ONLINE').length;
+        showToast(`Probed 12 camera nodes: ${onlineCount} ONLINE`, onlineCount > 0 ? 'success' : 'info');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '&#128269; Probe All 12 Nodes';
+        }
+      }
+    }
+
+    function toggleNodeSnapshotMode(deviceId) {
+      const current = esp32NodeSnapshotModeMap[deviceId] || 'live';
+      esp32NodeSnapshotModeMap[deviceId] = current === 'live' ? 'baseline' : 'live';
+      esp32NodeCacheBustMap[deviceId] = Date.now();
+      renderEsp32CameraManager();
+    }
+
+    async function triggerSingleCameraNode(deviceId, ipAddress, shelfId) {
+      esp32NodeCacheBustMap[deviceId] = Date.now();
+      renderEsp32CameraManager();
+      try {
+        const live = await probeCameraStatus(ipAddress);
+        esp32CameraNodesList = esp32CameraNodesList.map((c) =>
+          c.device_id === deviceId ? { ...c, status: 'ONLINE', rssi_dbm: live.rssi_dbm, last_seen: new Date().toISOString() } : c
+        );
+        renderEsp32CameraManager();
+        showToast(`Triggered & captured snapshot from ${deviceId} (${ipAddress})`, 'success');
+      } catch (_) {
+        // Also try triggering via local Python bridge if available
+        if (shelfId) {
+          selectShelfForValidation(shelfId, ipAddress);
+        }
+        showToast(`Snapshot refreshed for ${deviceId} (${ipAddress})`, 'info');
+      }
+    }
+
+    async function uploadNodeOtaBin(event, deviceId, ipAddress) {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      if (!file.name.toLowerCase().endsWith('.bin')) {
+        showToast('Please select a compiled ESP32-CAM .bin firmware file.', 'error');
+        return;
+      }
+      esp32NodeOtaUploadingMap[deviceId] = true;
+      renderEsp32CameraManager();
+      try {
+        await uploadCameraFirmware(ipAddress, file);
+        showToast(`OTA firmware uploaded to ${deviceId} (${ipAddress})! Rebooting camera...`, 'success');
+      } catch (err) {
+        showToast(`OTA upload failed for ${deviceId}: ${err.message}`, 'error');
+      } finally {
+        esp32NodeOtaUploadingMap[deviceId] = false;
+        event.target.value = '';
+        renderEsp32CameraManager();
+      }
+    }
+
+    async function deleteEsp32CameraNode(id, deviceId) {
+      try {
+        await deleteCamera(id);
+        esp32CameraNodesList = esp32CameraNodesList.filter((c) => c.device_id !== deviceId);
+        renderEsp32CameraManager();
+        showToast(`Deleted camera node ${deviceId}`, 'info');
+      } catch (err) {
+        showToast(`Failed to delete ${deviceId}: ${err.message}`, 'error');
+      }
+    }
+
+    function openEsp32ProvisionModal(encodedCamJson) {
+      const modal = document.getElementById('esp32ProvisionModal');
+      const statusBanner = document.getElementById('provStatusBanner');
+      if (statusBanner) statusBanner.style.display = 'none';
+      if (!modal) return;
+
+      if (encodedCamJson) {
+        try {
+          const cam = JSON.parse(decodeURIComponent(encodedCamJson));
+          const lastOctet = Number(String(cam.ip_address || '192.168.0.101').split('.').pop()) || 101;
+          document.getElementById('provCamIdInput').value = cam.id || '';
+          document.getElementById('provCurrentIpInput').value = cam.ip_address || '192.168.0.101';
+          document.getElementById('provShelfSelect').value = cam.shelf_id || 'SHELF_R1_C1';
+          document.getElementById('provAngleSelect').value = String(cam.angle_index || 1);
+          document.getElementById('provDeviceIdInput').value = cam.device_id || 'ESP32_R1_C1_CAM1';
+          document.getElementById('provIpOctetInput').value = String(lastOctet);
+          document.getElementById('provRackIdInput').value = cam.rack_id || 'RACK_01';
+          document.getElementById('provCameraNameInput').value = cam.camera_name || cam.device_id || '';
+        } catch (e) {
+          console.warn('Failed to parse camera JSON for modal:', e);
+        }
+      } else {
+        document.getElementById('provCamIdInput').value = '';
+        document.getElementById('provCurrentIpInput').value = '192.168.0.101';
+        document.getElementById('provShelfSelect').value = 'SHELF_R1_C1';
+        document.getElementById('provAngleSelect').value = '1';
+        onModalShelfOrAngleChange();
+      }
+      modal.style.display = 'flex';
+    }
+
+    function closeEsp32ProvisionModal() {
+      const modal = document.getElementById('esp32ProvisionModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    function onModalShelfOrAngleChange() {
+      const shelfId = document.getElementById('provShelfSelect').value || 'SHELF_R1_C1';
+      const angleIndex = Number(document.getElementById('provAngleSelect').value) || 1;
+      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R2_C1', 'SHELF_R2_C2', 'SHELF_R2_C3'];
+      const shelfIdx = Math.max(0, SHELF_IDS.indexOf(shelfId));
+      const suggestedOctet = 101 + shelfIdx * 2 + (angleIndex === 2 ? 1 : 0);
+      const shortShelf = shelfId.replace('SHELF_', '');
+      document.getElementById('provDeviceIdInput').value = `ESP32_${shortShelf}_CAM${angleIndex}`;
+      document.getElementById('provIpOctetInput').value = String(suggestedOctet);
+      document.getElementById('provCameraNameInput').value = `${shortShelf.replace('_', '-')} ${angleIndex === 2 ? 'Front Angle (CAM 2)' : 'Back Angle (CAM 1)'}`;
+    }
+
+    async function probeModalCurrentCameraIp() {
+      const currentIp = document.getElementById('provCurrentIpInput').value;
+      const statusBanner = document.getElementById('provStatusBanner');
+      if (!statusBanner) return;
+      statusBanner.style.display = 'block';
+      statusBanner.textContent = `Probing http://${cleanCameraHost(currentIp)}/status ...`;
+      try {
+        const res = await probeCameraStatus(currentIp);
+        statusBanner.textContent = `ONLINE: ${res.device_id} on ${res.shelf_id} (RSSI ${res.rssi_dbm} dBm, IP ${res.ip_address})`;
+      } catch (err) {
+        statusBanner.textContent = `Probe failed (${err.message}). Verify the camera is powered and on the same subnet.`;
+      }
+    }
+
+    async function submitEsp32ProvisionModal(event) {
+      event.preventDefault();
+      const submitBtn = document.getElementById('provSubmitBtn');
+      const statusBanner = document.getElementById('provStatusBanner');
+      const camId = document.getElementById('provCamIdInput').value;
+      const currentIp = document.getElementById('provCurrentIpInput').value;
+      const shelfId = document.getElementById('provShelfSelect').value;
+      const angleIndex = Number(document.getElementById('provAngleSelect').value) || 1;
+      const deviceId = document.getElementById('provDeviceIdInput').value;
+      const ipOctet = Number(document.getElementById('provIpOctetInput').value) || 101;
+      const rackId = document.getElementById('provRackIdInput').value || 'RACK_01';
+      const cameraName = document.getElementById('provCameraNameInput').value || deviceId;
+
+      if (submitBtn) submitBtn.disabled = true;
+      if (statusBanner) {
+        statusBanner.style.display = 'block';
+        statusBanner.textContent = '1/3 Probing current camera IP...';
+      }
+
+      try {
+        let probedRssi = null;
+        let isOnline = false;
+        try {
+          const probe = await probeCameraStatus(currentIp);
+          probedRssi = probe.rssi_dbm;
+          isOnline = true;
+        } catch (_) {
+          // Allow saving to Supabase even if hardware is currently offline
+        }
+
+        const subnetParts = cleanCameraHost(currentIp).split('.');
+        const subnetPrefix = subnetParts.length === 4 ? `${subnetParts[0]}.${subnetParts[1]}.${subnetParts[2]}` : '192.168.0';
+        const targetIp = `${subnetPrefix}.${ipOctet}`;
+
+        if (isOnline) {
+          if (statusBanner) statusBanner.textContent = `2/3 Pushing wireless NVS config to http://${cleanCameraHost(currentIp)}/config ...`;
+          try {
+            await pushCameraConfig(currentIp, {
+              device_id: deviceId,
+              rack_id: rackId,
+              shelf_id: shelfId,
+              camera_name: cameraName,
+              ip_octet: ipOctet
+            });
+          } catch (nvsErr) {
+            console.warn('NVS push warning:', nvsErr);
+          }
+        }
+
+        if (statusBanner) statusBanner.textContent = '3/3 Saving camera node to Supabase public.esp32_cameras...';
+        const saved = await upsertCamera({
+          id: camId || undefined,
+          device_id: deviceId,
+          camera_name: cameraName,
+          rack_id: rackId,
+          shelf_id: shelfId,
+          angle_index: angleIndex,
+          ip_address: targetIp,
+          status: isOnline ? 'ONLINE' : 'OFFLINE',
+          rssi_dbm: probedRssi,
+          last_seen: new Date().toISOString()
+        });
+
+        const exists = esp32CameraNodesList.some((c) => c.device_id === saved.device_id);
+        if (exists) {
+          esp32CameraNodesList = esp32CameraNodesList.map((c) => (c.device_id === saved.device_id ? { ...c, ...saved } : c));
+        } else {
+          esp32CameraNodesList.push(saved);
+        }
+        renderEsp32CameraManager();
+        showToast(`Provisioned & saved ${saved.device_id} at ${targetIp}`, 'success');
+        closeEsp32ProvisionModal();
+      } catch (err) {
+        if (statusBanner) statusBanner.textContent = `Error: ${err.message}`;
+        showToast(`Provision failed: ${err.message}`, 'error');
+      } finally {
+        if (submitBtn) submitBtn.disabled = false;
+      }
+    }
+
+    // =========================================================================
     // REALTIME SUBSCRIPTIONS & POLLING FALLBACK
     // =========================================================================
     function setupRealtimeSubscriptions() {
@@ -2018,8 +2887,10 @@
       const savedTmUrl = localStorage.getItem('smart_storage_tm_model_url') || DEFAULT_TM_MODEL_URL;
       tmModelUrlInput.value = savedTmUrl;
     }
+    populateAssignedIpDropdowns();
     loadTeachableMachineModel();
     refreshAllData();
+    loadEsp32CameraNodes();
     setupRealtimeSubscriptions();
     checkLocalBridgeHealth();
 

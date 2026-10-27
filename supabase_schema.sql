@@ -91,11 +91,33 @@ CREATE INDEX IF NOT EXISTS idx_cctv_cameras_rack_id ON public.cctv_cameras(rack_
 CREATE INDEX IF NOT EXISTS idx_cctv_cameras_is_active ON public.cctv_cameras(is_active);
 
 -- -----------------------------------------------------------------------------
+-- Table 4: public.esp32_cameras
+-- Up to 12 ESP32-CAM hardware nodes (2 camera angles per shelf compartment)
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.esp32_cameras (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    device_id TEXT UNIQUE NOT NULL,                                         -- e.g. 'ESP32_R1_C1_CAM1'
+    camera_name TEXT NOT NULL,                                              -- e.g. 'R1-C1 Back Angle (CAM 1)'
+    rack_id TEXT NOT NULL DEFAULT 'RACK_01',
+    shelf_id TEXT NOT NULL,                                                 -- e.g. 'SHELF_R1_C1'
+    angle_index INTEGER NOT NULL DEFAULT 1 CHECK (angle_index IN (1, 2)),   -- 1 = Back Angle, 2 = Front Angle
+    ip_address TEXT NOT NULL DEFAULT '192.168.0.101',
+    status TEXT NOT NULL DEFAULT 'OFFLINE',
+    rssi_dbm INTEGER NULL,
+    last_seen TIMESTAMPTZ NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_esp32_cameras_shelf_id ON public.esp32_cameras(shelf_id);
+CREATE INDEX IF NOT EXISTS idx_esp32_cameras_device_id ON public.esp32_cameras(device_id);
+
+-- -----------------------------------------------------------------------------
 -- Row Level Security (RLS) Policies
 -- -----------------------------------------------------------------------------
 ALTER TABLE public.compartments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comparison_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cctv_cameras ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.esp32_cameras ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow public access on compartments" ON public.compartments;
 CREATE POLICY "Allow public access on compartments"
@@ -114,6 +136,13 @@ CREATE POLICY "Allow public access on comparison_logs"
 DROP POLICY IF EXISTS "Allow public access on cctv_cameras" ON public.cctv_cameras;
 CREATE POLICY "Allow public access on cctv_cameras"
     ON public.cctv_cameras
+    FOR ALL
+    USING (true)
+    WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public access on esp32_cameras" ON public.esp32_cameras;
+CREATE POLICY "Allow public access on esp32_cameras"
+    ON public.esp32_cameras
     FOR ALL
     USING (true)
     WITH CHECK (true);
@@ -158,6 +187,31 @@ ON CONFLICT (cctv_id) DO UPDATE SET
     is_active = EXCLUDED.is_active,
     status = EXCLUDED.status;
 
+-- -----------------------------------------------------------------------------
+-- Seed 12 ESP32-CAM Hardware Nodes (2 Angles per Shelf Compartment)
+-- -----------------------------------------------------------------------------
+INSERT INTO public.esp32_cameras (
+    device_id, camera_name, rack_id, shelf_id, angle_index, ip_address, status
+) VALUES
+    ('ESP32_R1_C1_CAM1', 'R1-C1 Back Angle (CAM 1)',  'RACK_01', 'SHELF_R1_C1', 1, '192.168.0.101', 'OFFLINE'),
+    ('ESP32_R1_C1_CAM2', 'R1-C1 Front Angle (CAM 2)', 'RACK_01', 'SHELF_R1_C1', 2, '192.168.0.102', 'OFFLINE'),
+    ('ESP32_R1_C2_CAM1', 'R1-C2 Back Angle (CAM 3)',  'RACK_01', 'SHELF_R1_C2', 1, '192.168.0.103', 'OFFLINE'),
+    ('ESP32_R1_C2_CAM2', 'R1-C2 Front Angle (CAM 4)', 'RACK_01', 'SHELF_R1_C2', 2, '192.168.0.104', 'OFFLINE'),
+    ('ESP32_R1_C3_CAM1', 'R1-C3 Back Angle (CAM 5)',  'RACK_01', 'SHELF_R1_C3', 1, '192.168.0.105', 'OFFLINE'),
+    ('ESP32_R1_C3_CAM2', 'R1-C3 Front Angle (CAM 6)', 'RACK_01', 'SHELF_R1_C3', 2, '192.168.0.106', 'OFFLINE'),
+    ('ESP32_R2_C1_CAM1', 'R2-C1 Back Angle (CAM 7)',  'RACK_01', 'SHELF_R2_C1', 1, '192.168.0.107', 'OFFLINE'),
+    ('ESP32_R2_C1_CAM2', 'R2-C1 Front Angle (CAM 8)', 'RACK_01', 'SHELF_R2_C1', 2, '192.168.0.108', 'OFFLINE'),
+    ('ESP32_R2_C2_CAM1', 'R2-C2 Back Angle (CAM 9)',  'RACK_01', 'SHELF_R2_C2', 1, '192.168.0.109', 'OFFLINE'),
+    ('ESP32_R2_C2_CAM2', 'R2-C2 Front Angle (CAM 10)','RACK_01', 'SHELF_R2_C2', 2, '192.168.0.110', 'OFFLINE'),
+    ('ESP32_R2_C3_CAM1', 'R2-C3 Back Angle (CAM 11)', 'RACK_01', 'SHELF_R2_C3', 1, '192.168.0.111', 'OFFLINE'),
+    ('ESP32_R2_C3_CAM2', 'R2-C3 Front Angle (CAM 12)','RACK_01', 'SHELF_R2_C3', 2, '192.168.0.112', 'OFFLINE')
+ON CONFLICT (device_id) DO UPDATE SET
+    camera_name = EXCLUDED.camera_name,
+    rack_id = EXCLUDED.rack_id,
+    shelf_id = EXCLUDED.shelf_id,
+    angle_index = EXCLUDED.angle_index,
+    ip_address = EXCLUDED.ip_address;
+
 -- ============================================================================
 -- EXPLICIT DATA API GRANTS
 -- Grants full CRUD to anon (used by sb_publishable_ key), authenticated, and service_role
@@ -166,10 +220,11 @@ ON CONFLICT (cctv_id) DO UPDATE SET
 -- 1. Schema usage
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 
--- 2. Table-level CRUD permissions for all 3 tables
+-- 2. Table-level CRUD permissions for all 4 tables
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.compartments TO anon, authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.comparison_logs TO anon, authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.cctv_cameras TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.esp32_cameras TO anon, authenticated, service_role;
 
 -- 3. Sequence permissions
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
