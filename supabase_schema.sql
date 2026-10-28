@@ -5,9 +5,6 @@
 
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
--- 1. Drop the old reference sample table so the database stays clean
-DROP TABLE IF EXISTS public.esp32_reference_samples CASCADE;
-
 -- -----------------------------------------------------------------------------
 -- Table 1: public.compartments
 -- Dual-Camera hardware telemetry, stock quantities, and 30s baseline tracking
@@ -112,12 +109,35 @@ CREATE INDEX IF NOT EXISTS idx_esp32_cameras_shelf_id ON public.esp32_cameras(sh
 CREATE INDEX IF NOT EXISTS idx_esp32_cameras_device_id ON public.esp32_cameras(device_id);
 
 -- -----------------------------------------------------------------------------
+-- Table 5: public.esp32_reference_samples
+-- Reference sample captures for ESP32-CAM scenario calibration
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS public.esp32_reference_samples (
+    sample_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    shelf_id VARCHAR(50) NOT NULL,
+    mqtt_client_id VARCHAR(100) NOT NULL,
+    rack_id VARCHAR(50) NOT NULL DEFAULT 'RACK_01',
+    sample_label TEXT NOT NULL,
+    box_count INTEGER NOT NULL DEFAULT 4 CHECK (box_count >= 0 AND box_count <= 4),
+    slot_states JSONB NULL,
+    image_url TEXT NULL,
+    flash_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    feature_signature JSONB NULL,
+    capture_latency_ms INTEGER NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (shelf_id, sample_label)
+);
+
+CREATE INDEX IF NOT EXISTS idx_esp32_reference_samples_shelf_id ON public.esp32_reference_samples(shelf_id);
+
+-- -----------------------------------------------------------------------------
 -- Row Level Security (RLS) Policies
 -- -----------------------------------------------------------------------------
 ALTER TABLE public.compartments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.comparison_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cctv_cameras ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.esp32_cameras ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.esp32_reference_samples ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS "Allow public access on compartments" ON public.compartments;
 CREATE POLICY "Allow public access on compartments"
@@ -147,16 +167,26 @@ CREATE POLICY "Allow public access on esp32_cameras"
     USING (true)
     WITH CHECK (true);
 
+DROP POLICY IF EXISTS "Allow public access on esp32_reference_samples" ON public.esp32_reference_samples;
+CREATE POLICY "Allow public access on esp32_reference_samples"
+    ON public.esp32_reference_samples
+    FOR ALL
+    USING (true)
+    WITH CHECK (true);
+
 -- -----------------------------------------------------------------------------
--- Seed Initial Compartments
+-- Seed Initial Compartments (6 Dual-Angle Shelves: SHELF_R1_C1 to SHELF_R1_C6)
 -- -----------------------------------------------------------------------------
 INSERT INTO public.compartments (
     shelf_id, rack_id, mqtt_client_id, secondary_mqtt_client_id, camera_name,
     ip_address, secondary_ip_address, current_quantity, max_capacity, status, tm_model_url
 ) VALUES
     ('SHELF_R1_C1', 'RACK_01', 'ESP32_R1_C1', 'ESP32_R1_C1_CAM2', 'ESP32 Dual Node R1-C1', '192.168.0.101', '192.168.0.102', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C2', 'RACK_01', 'ESP32_R1_C2', 'ESP32_R1_C2_CAM2', 'ESP32 Dual Node R1-C2', '192.168.0.101', '192.168.0.102', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C3', 'RACK_01', 'ESP32_R1_C3', 'ESP32_R1_C3_CAM2', 'ESP32 Dual Node R1-C3', '192.168.0.101', '192.168.0.102', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/')
+    ('SHELF_R1_C2', 'RACK_01', 'ESP32_R1_C2', 'ESP32_R1_C2_CAM2', 'ESP32 Dual Node R1-C2', '192.168.0.103', '192.168.0.104', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C3', 'RACK_01', 'ESP32_R1_C3', 'ESP32_R1_C3_CAM2', 'ESP32 Dual Node R1-C3', '192.168.0.105', '192.168.0.106', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C4', 'RACK_01', 'ESP32_R1_C4', 'ESP32_R1_C4_CAM2', 'ESP32 Dual Node R1-C4', '192.168.0.107', '192.168.0.108', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C5', 'RACK_01', 'ESP32_R1_C5', 'ESP32_R1_C5_CAM2', 'ESP32 Dual Node R1-C5', '192.168.0.109', '192.168.0.110', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C6', 'RACK_01', 'ESP32_R1_C6', 'ESP32_R1_C6_CAM2', 'ESP32 Dual Node R1-C6', '192.168.0.111', '192.168.0.112', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/')
 ON CONFLICT (shelf_id) DO UPDATE SET
     rack_id = EXCLUDED.rack_id,
     mqtt_client_id = EXCLUDED.mqtt_client_id,
@@ -175,9 +205,9 @@ ON CONFLICT (shelf_id) DO UPDATE SET
 INSERT INTO public.cctv_cameras (
     cctv_id, camera_name, rack_id, ip_address, rtsp_url, assigned_shelves, is_active, status
 ) VALUES
-    ('CCTV_01', 'Hikvision CCTV 1 (Left Angle)', 'RACK_01', '192.168.100.1', 'rtsp://admin:Password@192.168.100.1:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3"]'::jsonb, TRUE, 'ONLINE'),
-    ('CCTV_02', 'Hikvision CCTV 2 (Center Angle)', 'RACK_01', '192.168.100.2', 'rtsp://admin:Password@192.168.100.2:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3"]'::jsonb, FALSE, 'OFFLINE'),
-    ('CCTV_03', 'Hikvision CCTV 3 (Right Angle)', 'RACK_01', '192.168.100.3', 'rtsp://admin:Password@192.168.100.3:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3"]'::jsonb, FALSE, 'OFFLINE')
+    ('CCTV_01', 'Hikvision CCTV 1 (Left Angle)', 'RACK_01', '192.168.100.1', 'rtsp://admin:Password@192.168.100.1:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, TRUE, 'ONLINE'),
+    ('CCTV_02', 'Hikvision CCTV 2 (Center Angle)', 'RACK_01', '192.168.100.2', 'rtsp://admin:Password@192.168.100.2:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, FALSE, 'OFFLINE'),
+    ('CCTV_03', 'Hikvision CCTV 3 (Right Angle)', 'RACK_01', '192.168.100.3', 'rtsp://admin:Password@192.168.100.3:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, FALSE, 'OFFLINE')
 ON CONFLICT (cctv_id) DO UPDATE SET
     camera_name = EXCLUDED.camera_name,
     rack_id = EXCLUDED.rack_id,
@@ -220,11 +250,12 @@ ON CONFLICT (device_id) DO UPDATE SET
 -- 1. Schema usage
 GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 
--- 2. Table-level CRUD permissions for all 4 tables
+-- 2. Table-level CRUD permissions for all 5 tables
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.compartments TO anon, authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.comparison_logs TO anon, authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.cctv_cameras TO anon, authenticated, service_role;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.esp32_cameras TO anon, authenticated, service_role;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.esp32_reference_samples TO anon, authenticated, service_role;
 
 -- 3. Sequence permissions
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;

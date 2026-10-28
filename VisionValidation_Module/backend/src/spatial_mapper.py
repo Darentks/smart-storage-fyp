@@ -89,27 +89,17 @@ class SpatialMapper:
         self.rack_id = "RACK_01"
         self.compartments = [
             {
-                "shelf_id": "SHELF_R1_C1",
-                "mqtt_client_id": "ESP32_R1_C1",
-                "camera_name": "ESP32 Node R1-C1",
+                "shelf_id": f"SHELF_R1_C{i}",
+                "mqtt_client_id": f"ESP32_R1_C{i}",
+                "camera_name": f"ESP32 Node R1-C{i}",
                 "container_id": None,
-                "x_min": 100,
-                "y_min": 150,
-                "x_max": 300,
-                "y_max": 350,
+                "x_min": 60 + ((i - 1) % 3) * 185,
+                "y_min": 70 + ((i - 1) // 3) * 180,
+                "x_max": 220 + ((i - 1) % 3) * 185,
+                "y_max": 220 + ((i - 1) // 3) * 180,
                 "dwell_threshold_seconds": 1.2,
-            },
-            {
-                "shelf_id": "SHELF_R1_C2",
-                "mqtt_client_id": "ESP32_R1_C2",
-                "camera_name": "ESP32 Node R1-C2",
-                "container_id": None,
-                "x_min": 320,
-                "y_min": 150,
-                "x_max": 520,
-                "y_max": 350,
-                "dwell_threshold_seconds": 1.2,
-            },
+            }
+            for i in range(1, 7)
         ]
         self.save_roi_config()
 

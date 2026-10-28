@@ -356,8 +356,8 @@ class ESP32ReferenceManager:
                         time.sleep(0.1)
                         continue
                     print(f"[ReferenceValidator] Snapshot fetch failed for {clean} (attempt {attempt + 1}): {exc}")
-            # Degraded fallback to fetch_esp32_frame
-            return self.fetch_esp32_frame(esp32_ip=ip, mode=mode, timeout=timeout)
+            # Return (None, None) when hardware camera is unreachable so degraded camera guardrail triggers properly
+            return None, None
 
         frame1 = None
         url1 = None
@@ -373,7 +373,7 @@ class ESP32ReferenceManager:
         if frame1 is None and frame2 is None:
             synth = synthesize_compartment_frame(f"DUAL-CAM ({mode.upper()})", box_count=4)
             combined_url = encode_bgr_to_data_url(synth)
-            return synth, combined_url, combined_url, None
+            return synth, combined_url, None, None
 
         if frame1 is not None and frame2 is not None and _OPENCV_AVAILABLE:
             h1, w1 = frame1.shape[:2]
@@ -558,11 +558,12 @@ class ESP32ReferenceManager:
             before_bgr = synthesize_compartment_frame(f"{shelf_id} (PRE-TRIGGER)", box_count=current_quantity)
             before_url = encode_bgr_to_data_url(before_bgr)
 
-        # Step C: OpenCV Frame Delta between 30s Baseline & After Frame
+        # Step C: OpenCV Frame Delta between 30s Baseline & After Frame (strictly passive diagnostic metric)
         diff_score = self._compute_absdiff_score(before_bgr, after_bgr)
 
         # Step D: Teachable Machine Dual-Cam Classification Logic
-        # Compare tm_predicted_box_count against current_quantity (< -> ITEM_REMOVED, > -> ITEM_RETURNED, == -> NO_CHANGE)
+        # Require predicted_box_count is not None before inserting into public.comparison_logs
+        # or updating public.compartments.current_quantity.
         target_tm_count = tm_predicted_box_count if tm_predicted_box_count is not None else predicted_box_count
 
         matched_box_count: Optional[int] = None
@@ -586,26 +587,23 @@ class ESP32ReferenceManager:
             else:
                 state_delta = "NO_CHANGE"
                 delta = 0
-        else:
-            # Pure Teachable Machine mode: never allow OpenCV diff_score to guess or mutate inventory
-            # when Teachable Machine prediction is absent.
-            matched_box_count = current_quantity
-            if not matched_scenario_label:
-                matched_scenario_label = SCENARIO_MAP.get(current_quantity, f"Scenario {5 - current_quantity}: {current_quantity}/4 Boxes")
-            state_delta = "NO_CHANGE"
-            delta = 0
 
-        # Step E: If confirmed change, update rolling 30s baseline cache with after_bgr
-        if delta != 0 or shelf_id not in self.baseline_cache:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            self.baseline_cache[shelf_id] = {
-                "frame_bgr": after_bgr,
-                "data_url": after_url or "",
-                "data_url_2": url_front or "",
-                "url_back": url_back or after_url or "",
-                "url_front": url_front or "",
-                "updated_at": now_iso,
-            }
+            # Step E: If confirmed change, update rolling 30s baseline cache with after_bgr
+            if delta != 0 or shelf_id not in self.baseline_cache:
+                now_iso = datetime.now(timezone.utc).isoformat()
+                self.baseline_cache[shelf_id] = {
+                    "frame_bgr": after_bgr,
+                    "data_url": after_url or "",
+                    "data_url_2": url_front or "",
+                    "url_back": url_back or after_url or "",
+                    "url_front": url_front or "",
+                    "updated_at": now_iso,
+                }
+        else:
+            # predicted_box_count is None: do NOT mutate current_quantity or insert a comparison_log
+            matched_box_count = None
+            state_delta = "SKIPPED_NO_TM"
+            delta = 0
 
         return {
             "shelf_id": shelf_id,
@@ -619,5 +617,6 @@ class ESP32ReferenceManager:
             "scenario_label": matched_scenario_label,
             "state_delta": state_delta,
             "delta": delta,
+            "tm_validated": target_tm_count is not None,
         }
 
