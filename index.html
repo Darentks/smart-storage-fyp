@@ -1042,7 +1042,11 @@
 
     // Direct Supabase REST API helper using native browser fetch
     async function sbRest(table, method = 'GET', query = '', body = null, prefer = 'return=representation') {
-      const cleanQuery = query && !query.startsWith('?') ? '?' + query : (query || '');
+      if (query && typeof query === 'object' && body === null) {
+        body = query;
+        query = '';
+      }
+      const cleanQuery = query && !String(query).startsWith('?') ? '?' + query : (query || '');
       const url = `${SUPABASE_URL}/rest/v1/${table}${cleanQuery}`;
       const headers = {
         'apikey': SUPABASE_ANON_KEY,
@@ -1176,37 +1180,6 @@
       }
     }
 
-    function parseBoxCountFromClassLabel(className, maxCount = 4) {
-      const raw = String(className || '').trim();
-      const lower = raw.toLowerCase();
-      if (lower.includes('no box') || lower.includes('empty') || lower.includes('0_box') || lower.includes('0 box') || lower.includes('0/4')) {
-        return 0;
-      }
-      // Match explicit "X/4" or "X box" or "Back_X" / "Front_X" before any "Scenario N" prefix
-      const slashMatch = lower.match(/(\d+)\s*\/\s*4/);
-      if (slashMatch) {
-        return Math.min(maxCount, Math.max(0, parseInt(slashMatch[1], 10)));
-      }
-      const boxWordMatch = lower.match(/(\d+)\s*(?:_|-|\s)*box/);
-      if (boxWordMatch) {
-        return Math.min(maxCount, Math.max(0, parseInt(boxWordMatch[1], 10)));
-      }
-      const angleMatch = lower.match(/(?:back|front)[_\-\s]*(\d+)/);
-      if (angleMatch) {
-        return Math.min(maxCount, Math.max(0, parseInt(angleMatch[1], 10)));
-      }
-      // If label is "Scenario 1..5" without explicit box count, map Scenario 1->4, 2->3, 3->2, 4->1, 5->0
-      const scenMatch = lower.match(/scenario\s*(\d+)/);
-      if (scenMatch) {
-        const scenNum = parseInt(scenMatch[1], 10);
-        if (scenNum >= 1 && scenNum <= 5) {
-          return Math.min(maxCount, Math.max(0, 5 - scenNum));
-        }
-      }
-      const genericMatch = raw.match(/(\d+)/);
-      return genericMatch ? Math.min(maxCount, Math.max(0, parseInt(genericMatch[1], 10))) : 0;
-    }
-
     async function predictDualCamerasWithTM(backImgEl, frontImgEl) {
       if (!window.tmModel) return null;
 
@@ -1221,70 +1194,71 @@
       const backOk = isUsable(backImgEl);
       const frontOk = isUsable(frontImgEl);
 
-      if (!backOk && !frontOk) {
-        console.warn('[TM] Neither camera image is usable for prediction.');
-        return null;
+      // Require BOTH image_back (CAM1) and image_front (CAM2) to load
+      if (!backOk || !frontOk) {
+        console.warn('[TM] Dual-angle required: one or both camera frames failed to load.', { backOk, frontOk });
+        return {
+          backClass: backOk ? 'Back_Loaded' : 'Back_Offline',
+          backCount: 0,
+          backConfidence: 0,
+          frontClass: frontOk ? 'Front_Loaded' : 'Front_Offline',
+          frontCount: 0,
+          frontConfidence: 0,
+          totalBoxes: null,
+          scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
+          confidence: 0,
+          degraded: true
+        };
       }
 
-      // Detect whether the loaded TM model uses per-angle classes ("Back_*" / "Front_*") or whole-shelf classes (0..4)
-      const modelLabels = typeof window.tmModel.getClassLabels === 'function' ? window.tmModel.getClassLabels() : [];
-      const hasAnglePrefixes = modelLabels.some(lbl => {
-        const l = String(lbl || '').toLowerCase();
-        return l.startsWith('back_') || l.startsWith('front_');
-      });
-
-      // 1. Predict Back Camera
-      let bestBack = { className: 'Back_Offline', probability: 0 };
+      // 1. Predict Back Camera (strictly filter with /^back_(\d+)/i)
+      let bestBack = null;
       let backCount = 0;
-      if (backOk) {
-        try {
-          const backPreds = await window.tmModel.predict(backImgEl);
-          const backOnly = backPreds.filter(p => p.className.toLowerCase().startsWith("back_"));
-          bestBack = (backOnly.length ? backOnly : backPreds).reduce((a, b) => a.probability > b.probability ? a : b);
-          backCount = parseBoxCountFromClassLabel(bestBack.className, hasAnglePrefixes ? 2 : 4);
-        } catch (e) {
-          console.warn('[TM] Back camera predict failed:', e);
+      try {
+        const backPreds = await window.tmModel.predict(backImgEl);
+        const backOnly = backPreds.filter(p => /^back_(\d+)/i.test(String(p.className || '').trim()));
+        if (backOnly.length > 0) {
+          bestBack = backOnly.reduce((a, b) => a.probability > b.probability ? a : b);
+          const m = String(bestBack.className).trim().match(/^back_(\d+)/i);
+          backCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
+      } catch (e) {
+        console.warn('[TM] Back camera predict failed:', e);
       }
 
-      // 2. Predict Front Camera
-      let bestFront = { className: 'Front_Offline', probability: 0 };
+      // 2. Predict Front Camera (strictly filter with /^front_(\d+)/i)
+      let bestFront = null;
       let frontCount = 0;
-      if (frontOk) {
-        try {
-          const frontPreds = await window.tmModel.predict(frontImgEl);
-          const frontOnly = frontPreds.filter(p => p.className.toLowerCase().startsWith("front_"));
-          bestFront = (frontOnly.length ? frontOnly : frontPreds).reduce((a, b) => a.probability > b.probability ? a : b);
-          frontCount = parseBoxCountFromClassLabel(bestFront.className, hasAnglePrefixes ? 2 : 4);
-        } catch (e) {
-          console.warn('[TM] Front camera predict failed:', e);
+      try {
+        const frontPreds = await window.tmModel.predict(frontImgEl);
+        const frontOnly = frontPreds.filter(p => /^front_(\d+)/i.test(String(p.className || '').trim()));
+        if (frontOnly.length > 0) {
+          bestFront = frontOnly.reduce((a, b) => a.probability > b.probability ? a : b);
+          const m = String(bestFront.className).trim().match(/^front_(\d+)/i);
+          frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
+      } catch (e) {
+        console.warn('[TM] Front camera predict failed:', e);
       }
 
-      // 3. Combine Back + Front into the 5 Scenarios (4/4, 3/4, 2/4, 1/4, 0/4)
-      let totalBoxes = 0;
-      if (hasAnglePrefixes) {
-        // Per-angle model (Back: 0..2 + Front: 0..2 = 0..4)
-        totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
-      } else {
-        // Whole-shelf model (0..4 boxes directly): use higher-confidence camera prediction without double-summing
-        if (backOk && frontOk) {
-          totalBoxes = bestBack.probability >= bestFront.probability ? backCount : frontCount;
-        } else if (backOk) {
-          totalBoxes = backCount;
-        } else {
-          totalBoxes = frontCount;
-        }
+      if (!bestBack || !bestFront) {
+        return {
+          backClass: bestBack ? bestBack.className : 'Back_Unmatched',
+          backCount: 0,
+          backConfidence: bestBack ? Number((bestBack.probability * 100).toFixed(1)) : 0,
+          frontClass: bestFront ? bestFront.className : 'Front_Unmatched',
+          frontCount: 0,
+          frontConfidence: bestFront ? Number((bestFront.probability * 100).toFixed(1)) : 0,
+          totalBoxes: null,
+          scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
+          confidence: 0,
+          degraded: true
+        };
       }
 
-      let avgConfidence = 0.0;
-      if (backOk && frontOk) {
-        avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
-      } else if (backOk) {
-        avgConfidence = Number((bestBack.probability * 100).toFixed(1));
-      } else {
-        avgConfidence = Number((bestFront.probability * 100).toFixed(1));
-      }
+      // 3. Compute totalBoxes = backCount + frontCount (0..4) and map to the 5 Scenarios (4/4 down to 0/4)
+      const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
+      const avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
 
       return {
         backClass: bestBack.className,
@@ -1296,8 +1270,7 @@
         totalBoxes,
         scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/4 Boxes`,
         confidence: avgConfidence,
-        degraded: !backOk || !frontOk,
-        hasAnglePrefixes
+        degraded: false
       };
     }
 
@@ -1638,6 +1611,22 @@
         }
         return c;
       });
+      // 4. Sync Panel 4 (esp32_cameras & esp32CameraNodesList) so all panels reflect the assigned IPs
+      try {
+        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.1`, { ip_address: ip1 });
+        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.2`, { ip_address: ip2 });
+      } catch (_) {}
+      esp32CameraNodesList = (esp32CameraNodesList || []).map(cam => {
+        if (cam.shelf_id === shelfId) {
+          return {
+            ...cam,
+            ip_address: Number(cam.angle_index) === 2 ? ip2 : ip1
+          };
+        }
+        return cam;
+      });
+      renderEsp32CameraManager();
+
       userEditedCamIp = { 1: false, 2: false };
       populateAssignedIpDropdowns();
       renderCompartments(compartmentsData);
@@ -1679,41 +1668,60 @@
             previewOverlayText.textContent = `Dual View \u2022 ${shelfId} (${ip1} & ${ip2}) \u2022 ${new Date().toLocaleTimeString()} (${latencyMs}ms)`;
 
             // 2. Show CAM 1 Back & CAM 2 Front Previews
-            const backUrl = data.image_back || data.image;
-            const frontUrl = data.image_front || data.image;
+            const backUrl = data.image_back || null;
+            const frontUrl = data.image_front || null;
 
-            backPreviewImg.src = backUrl;
-            backPreviewImg.style.display = 'block';
-            backPlaceholder.style.display = 'none';
+            if (backUrl) {
+              backPreviewImg.src = backUrl;
+              backPreviewImg.style.display = 'block';
+              backPlaceholder.style.display = 'none';
+            } else {
+              backPreviewImg.removeAttribute('src');
+              backPreviewImg.style.display = 'none';
+              backPlaceholder.style.display = 'flex';
+            }
 
-            frontPreviewImg.src = frontUrl;
-            frontPreviewImg.style.display = 'block';
-            frontPlaceholder.style.display = 'none';
+            if (frontUrl) {
+              frontPreviewImg.src = frontUrl;
+              frontPreviewImg.style.display = 'block';
+              frontPlaceholder.style.display = 'none';
+            } else {
+              frontPreviewImg.removeAttribute('src');
+              frontPreviewImg.style.display = 'none';
+              frontPlaceholder.style.display = 'flex';
+            }
 
             // Wait for both images to load before running prediction
-            const loadImgPromise = (img) => new Promise(resolve => {
+            const loadImgPromise = (img, hasUrl) => new Promise(resolve => {
+              if (!hasUrl) return resolve(false);
               if (img.complete && img.naturalHeight !== 0) return resolve(true);
               img.onload = () => resolve(true);
               img.onerror = () => resolve(false);
             });
-            await Promise.all([loadImgPromise(backPreviewImg), loadImgPromise(frontPreviewImg)]);
+            await Promise.all([loadImgPromise(backPreviewImg, Boolean(backUrl)), loadImgPromise(frontPreviewImg, Boolean(frontUrl))]);
 
             // 3. Run Teachable Machine Prediction if model loaded
             if (window.tmModel) {
               try {
                 const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
                 if (tmRes) {
-                  // Update badges on individual cameras
-                  backPredBadge.style.display = 'block';
-                  backPredBadge.textContent = `${tmRes.backClass} (${tmRes.backConfidence}%)`;
+                  if (tmRes.degraded) {
+                    tmLivePredictionBanner.style.display = 'block';
+                    tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);">Validation aborted: Dual-angle required (1 camera unreachable)</span>`;
+                    showToast('Validation aborted: Dual-angle required (1 camera unreachable)', 'error');
+                  } else {
+                    // Update badges on individual cameras
+                    backPredBadge.style.display = 'block';
+                    backPredBadge.textContent = `${tmRes.backClass} (${tmRes.backConfidence}%)`;
 
-                  frontPredBadge.style.display = 'block';
-                  frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
+                    frontPredBadge.style.display = 'block';
+                    frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
 
-                  // Update Prominent Status Banner
-                  tmLivePredictionBanner.style.display = 'block';
-                  tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
-                  showToast(`Live TM Prediction: ${tmRes.scenarioLabel}`, 'success');
+                    // Update Prominent Status Banner
+                    tmLivePredictionBanner.style.display = 'block';
+                    tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
+                    showToast(`Live TM Prediction: ${tmRes.scenarioLabel}`, 'success');
+                  }
                 }
               } catch (tmErr) {
                 console.warn('[TM AI] Dual camera prediction error:', tmErr);
@@ -1800,8 +1808,13 @@
       }
 
       const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
-      if (!tmRes) {
-        showToast('Teachable Machine prediction returned no result.', 'error');
+      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null) {
+        const abortMsg = 'Validation aborted: Dual-angle required (1 camera unreachable)';
+        if (tmLivePredictionBanner) {
+          tmLivePredictionBanner.style.display = 'block';
+          tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);font-weight:700;">${abortMsg}</span>`;
+        }
+        showToast(abortMsg, 'error');
         return;
       }
 
@@ -1858,13 +1871,13 @@
         const stateDelta = delta < 0 ? 'ITEM_REMOVED' : (delta > 0 ? 'ITEM_RETURNED' : 'NO_CHANGE');
         const newQty = tmRes.totalBoxes;
         try {
-          await sbRest(`compartments?shelf_id=eq.${shelfId}`, 'PATCH', {
+          await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
             current_quantity: newQty,
             baseline_image_url: stitchedDataUrl,
             baseline_updated_at: new Date().toISOString()
           });
 
-          await sbRest('comparison_logs', 'POST', {
+          await sbRest('comparison_logs', 'POST', '', {
             shelf_id: shelfId,
             mqtt_client_id: comp.mqtt_client_id || `ESP32_${shelfId.replace('SHELF_', '')}`,
             trigger_action: 'BORROW',
@@ -1939,16 +1952,45 @@
         };
 
         const executePrediction = async (bSrc, fSrc) => {
-          if (!window.tmModel || (!bSrc && !fSrc)) return null;
+          if (!window.tmModel) return null;
+          if (!bSrc || !fSrc) {
+            return {
+              backClass: bSrc ? 'Back_Loaded' : 'Back_Offline',
+              backCount: 0,
+              backConfidence: 0,
+              frontClass: fSrc ? 'Front_Loaded' : 'Front_Offline',
+              frontCount: 0,
+              frontConfidence: 0,
+              totalBoxes: null,
+              scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
+              confidence: 0,
+              degraded: true
+            };
+          }
           const imgBack = new Image();
           const imgFront = new Image();
           imgBack.crossOrigin = "anonymous";
           imgFront.crossOrigin = "anonymous";
 
-          await Promise.all([
-            bSrc ? loadImgPromise(imgBack, bSrc) : Promise.resolve(false),
-            fSrc ? loadImgPromise(imgFront, fSrc) : Promise.resolve(false)
+          const [bLoaded, fLoaded] = await Promise.all([
+            loadImgPromise(imgBack, bSrc),
+            loadImgPromise(imgFront, fSrc)
           ]);
+
+          if (!bLoaded || !fLoaded) {
+            return {
+              backClass: bLoaded ? 'Back_Loaded' : 'Back_Offline',
+              backCount: 0,
+              backConfidence: 0,
+              frontClass: fLoaded ? 'Front_Loaded' : 'Front_Offline',
+              frontCount: 0,
+              frontConfidence: 0,
+              totalBoxes: null,
+              scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
+              confidence: 0,
+              degraded: true
+            };
+          }
 
           try {
             return await predictDualCamerasWithTM(imgBack, imgFront);
@@ -1958,31 +2000,30 @@
           }
         };
 
-        // 1. Fetch live dual-camera snapshots from local bridge
+        // 1. Fetch live dual-camera snapshots from local bridge (require BOTH image_back and image_front)
         let previewData = await fetchSnapshots();
-        let backSrc = previewData.image_back || previewData.image;
-        let frontSrc = previewData.image_front || previewData.image;
+        let backSrc = previewData.image_back || null;
+        let frontSrc = previewData.image_front || null;
         updatePreviewUI(previewData, backSrc, frontSrc);
 
         // 2. Load into Image() objects and run Teachable Machine
         let tmRes = await executePrediction(backSrc, frontSrc);
         console.log(`[DualCam TM] Initial prediction for ${shelfId}:`, tmRes);
 
-        // Guardrail 2: Low-Confidence Retry (if tmRes && tmRes.confidence < 75.0, wait 700ms and retry)
-        if (tmRes && tmRes.confidence < 75.0) {
-          console.warn(`[DualCam TM] Confidence ${tmRes.confidence}% < 75.0%. Waiting 700ms and retrying snapshot...`);
-          showToast(`Low TM confidence (${tmRes.confidence}%). Settle retry in 700ms...`, 'warning');
+        // Guardrail 2: Low-Confidence Retry (if tmRes && (tmRes.degraded || tmRes.confidence < 75.0), wait 700ms and retry)
+        if (tmRes && (tmRes.degraded || tmRes.confidence < 75.0)) {
+          console.warn(`[DualCam TM] Degraded or confidence ${tmRes.confidence}% < 75.0%. Waiting 700ms and retrying snapshot...`);
           await new Promise(r => setTimeout(r, 700));
 
           try {
             previewData = await fetchSnapshots();
-            backSrc = previewData.image_back || previewData.image;
-            frontSrc = previewData.image_front || previewData.image;
+            backSrc = previewData.image_back || null;
+            frontSrc = previewData.image_front || null;
             updatePreviewUI(previewData, backSrc, frontSrc);
 
             const retryTmRes = await executePrediction(backSrc, frontSrc);
             if (retryTmRes) {
-              console.log(`[DualCam TM] Settle retry prediction: ${retryTmRes.confidence}% (was ${tmRes.confidence}%)`);
+              console.log(`[DualCam TM] Settle retry prediction: ${retryTmRes.confidence}% (degraded=${retryTmRes.degraded})`);
               tmRes = retryTmRes;
             }
           } catch (retryErr) {
@@ -1990,21 +2031,21 @@
           }
         }
 
-        if (tmRes && tmLivePredictionBanner) {
-          tmLivePredictionBanner.style.display = 'block';
-          const degradedTag = tmRes.degraded ? ' <span style="color:var(--warning);font-size:11px;">(Degraded 1-Cam Mode)</span>' : '';
-          tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)${degradedTag}`;
+        // Strict Degraded Camera Guardrail: If either camera failed to return a valid frame (!backOk || !frontOk),
+        // mark degraded: true, abort calling POST /esp32_validate, and show toast/status.
+        if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null) {
+          const abortMsg = 'Validation aborted: Dual-angle required (1 camera unreachable)';
+          if (tmLivePredictionBanner) {
+            tmLivePredictionBanner.style.display = 'block';
+            tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);font-weight:700;">${abortMsg}</span>`;
+          }
+          showToast(abortMsg, 'error');
+          return null;
         }
 
-        // Guardrail 4b: If per-angle model is in single-camera degraded mode (1 of 2 cameras offline),
-        // do not allow a missing camera's 0 count to falsely deduct inventory in the database.
-        const currentShelfQty = (comp && typeof comp.current_quantity === 'number') ? comp.current_quantity : 4;
-        const safePredictedBoxes = (tmRes && tmRes.degraded && tmRes.hasAnglePrefixes)
-          ? currentShelfQty
-          : (tmRes ? tmRes.totalBoxes : null);
-
-        if (tmRes && tmRes.degraded && tmRes.hasAnglePrefixes) {
-          showToast(`Warning: 1 of 2 cameras offline for ${shelfId}. Holding quantity at ${currentShelfQty}/4 to prevent false deduction.`, 'warning');
+        if (tmLivePredictionBanner) {
+          tmLivePredictionBanner.style.display = 'block';
+          tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
         }
 
         // 3. Send POST /esp32_validate to Local Bridge
@@ -2014,9 +2055,9 @@
           ip: ip1,
           ip2: ip2,
           image: previewData.image,
-          predicted_box_count: safePredictedBoxes,
-          scenario_label: tmRes ? tmRes.scenarioLabel : null,
-          tm_confidence: tmRes ? tmRes.confidence : null
+          predicted_box_count: tmRes.totalBoxes,
+          scenario_label: tmRes.scenarioLabel,
+          tm_confidence: tmRes.confidence
         };
 
         const valResp = await fetch(`${getBridgeUrl()}/esp32_validate`, {
@@ -2052,6 +2093,14 @@
     // FETCH COMPARTMENTS & COMPARISON LOGS
     // =========================================================================
     const processedTriggerIds = new Set();
+    const DEFAULT_6_COMPARTMENTS = [
+      { shelf_id: 'SHELF_R1_C1', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C1', secondary_mqtt_client_id: 'ESP32_R1_C1_CAM2', camera_name: 'ESP32 Dual Node R1-C1', ip_address: '192.168.0.101', secondary_ip_address: '192.168.0.102', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
+      { shelf_id: 'SHELF_R1_C2', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C2', secondary_mqtt_client_id: 'ESP32_R1_C2_CAM2', camera_name: 'ESP32 Dual Node R1-C2', ip_address: '192.168.0.103', secondary_ip_address: '192.168.0.104', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
+      { shelf_id: 'SHELF_R1_C3', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C3', secondary_mqtt_client_id: 'ESP32_R1_C3_CAM2', camera_name: 'ESP32 Dual Node R1-C3', ip_address: '192.168.0.105', secondary_ip_address: '192.168.0.106', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
+      { shelf_id: 'SHELF_R1_C4', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C4', secondary_mqtt_client_id: 'ESP32_R1_C4_CAM2', camera_name: 'ESP32 Dual Node R1-C4', ip_address: '192.168.0.107', secondary_ip_address: '192.168.0.108', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
+      { shelf_id: 'SHELF_R1_C5', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C5', secondary_mqtt_client_id: 'ESP32_R1_C5_CAM2', camera_name: 'ESP32 Dual Node R1-C5', ip_address: '192.168.0.109', secondary_ip_address: '192.168.0.110', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
+      { shelf_id: 'SHELF_R1_C6', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C6', secondary_mqtt_client_id: 'ESP32_R1_C6_CAM2', camera_name: 'ESP32 Dual Node R1-C6', ip_address: '192.168.0.111', secondary_ip_address: '192.168.0.112', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' }
+    ];
 
     async function loadCompartments() {
       let data = null;
@@ -2093,7 +2142,9 @@
                 if (c.shelf_id) bridgeMap[c.shelf_id] = c;
               });
 
+              const seenShelves = new Set();
               compartmentsData = compartmentsData.map((c) => {
+                seenShelves.add(c.shelf_id);
                 const live = bridgeMap[c.shelf_id];
                 if (!live) return c;
                 return {
@@ -2109,6 +2160,13 @@
                   baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
                   current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
                 };
+              });
+
+              bridgeComps.forEach((bc) => {
+                if (bc.shelf_id && !seenShelves.has(bc.shelf_id)) {
+                  seenShelves.add(bc.shelf_id);
+                  compartmentsData.push(bc);
+                }
               });
             }
 
@@ -2129,14 +2187,19 @@
           // Local bridge offline; keep using Supabase data
         }
 
-        if (compartmentsData && compartmentsData.length > 0) {
-          renderCompartments(compartmentsData);
+        if (!compartmentsData || compartmentsData.length === 0) {
+          compartmentsData = [...DEFAULT_6_COMPARTMENTS];
         }
+        renderCompartments(compartmentsData);
         syncSelectedShelfTelemetry();
       } catch (err) {
         console.error('Error loading compartments:', err);
         dbStatusDot.className = 'status-dot error';
         dbStatusText.textContent = 'Cloud DB: Error';
+        if (!compartmentsData || compartmentsData.length === 0) {
+          compartmentsData = [...DEFAULT_6_COMPARTMENTS];
+          renderCompartments(compartmentsData);
+        }
         populateAssignedIpDropdowns();
       }
     }
@@ -2412,18 +2475,18 @@
     // ESP32-CAM 12-NODE HARDWARE CRUD, WIRELESS NVS & OTA SERVICE (Panel 4)
     // =========================================================================
     const DEFAULT_12_ESP32_CAMERAS = [
-      { id: 'cam-101', device_id: 'ESP32_R1_C1_CAM1', camera_name: 'R1-C1 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 1, ip_address: '192.168.0.101', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-102', device_id: 'ESP32_R1_C1_CAM2', camera_name: 'R1-C1 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 2, ip_address: '192.168.0.102', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-103', device_id: 'ESP32_R1_C2_CAM1', camera_name: 'R1-C2 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 1, ip_address: '192.168.0.103', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-107', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-108', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-109', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-110', device_id: 'ESP32_R1_C5_CAM2', camera_name: 'R1-C5 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-111', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-112', device_id: 'ESP32_R1_C6_CAM2', camera_name: 'R1-C6 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null }
+      { id: 'cam-101', device_id: 'ESP32_R1_C1_CAM1', camera_name: 'R1-C1 Back Angle (CAM 1)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 1, ip_address: '192.168.0.101', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-102', device_id: 'ESP32_R1_C1_CAM2', camera_name: 'R1-C1 Front Angle (CAM 2)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 2, ip_address: '192.168.0.102', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-103', device_id: 'ESP32_R1_C2_CAM1', camera_name: 'R1-C2 Back Angle (CAM 3)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 1, ip_address: '192.168.0.103', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 4)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 5)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 6)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-107', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 7)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-108', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 8)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-109', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 9)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-110', device_id: 'ESP32_R1_C5_CAM2', camera_name: 'R1-C5 Front Angle (CAM 10)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-111', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 11)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-112', device_id: 'ESP32_R1_C6_CAM2', camera_name: 'R1-C6 Front Angle (CAM 12)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null }
     ];
 
     let esp32CameraNodesList = [...DEFAULT_12_ESP32_CAMERAS];
@@ -2512,16 +2575,25 @@
     }
 
     async function getCameras() {
-      if (!supabaseClient) return [...DEFAULT_12_ESP32_CAMERAS];
-      const { data, error } = await supabaseClient
-        .from('esp32_cameras')
-        .select('*')
-        .order('shelf_id', { ascending: true })
-        .order('angle_index', { ascending: true });
-      if (error || !data || data.length === 0) {
-        return [...DEFAULT_12_ESP32_CAMERAS];
+      if (supabaseClient) {
+        try {
+          const { data, error } = await supabaseClient
+            .from('esp32_cameras')
+            .select('*')
+            .order('shelf_id', { ascending: true })
+            .order('angle_index', { ascending: true });
+          if (!error && data && data.length > 0) {
+            return data;
+          }
+        } catch (_) {}
       }
-      return data;
+      try {
+        const restData = await sbRest('esp32_cameras', 'GET', '?select=*&order=shelf_id.asc,angle_index.asc');
+        if (Array.isArray(restData) && restData.length > 0) {
+          return restData;
+        }
+      } catch (_) {}
+      return [...DEFAULT_12_ESP32_CAMERAS];
     }
 
     async function upsertCamera(cam) {
@@ -2539,15 +2611,23 @@
       if (cam.id && !String(cam.id).startsWith('cam-')) {
         record.id = cam.id;
       }
+      let savedRow = null;
       if (supabaseClient) {
         const { data, error } = await supabaseClient
           .from('esp32_cameras')
           .upsert(record, { onConflict: 'device_id' })
           .select()
           .single();
-        if (!error && data) return data;
+        if (!error && data) savedRow = data;
       }
-      return { ...cam, ...record };
+      // Also sync assigned IP into public.compartments so Panels 1, 2 & 4 stay in sync
+      try {
+        const compPatch = record.angle_index === 2
+          ? { secondary_ip_address: record.ip_address, secondary_mqtt_client_id: record.device_id }
+          : { ip_address: record.ip_address, mqtt_client_id: record.device_id.replace(/_CAM1$/i, '') };
+        await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(record.shelf_id)}`, compPatch);
+      } catch (_) {}
+      return savedRow || { ...cam, ...record };
     }
 
     async function deleteCamera(id) {
@@ -2715,6 +2795,16 @@
       renderEsp32CameraManager();
     }
 
+    function selectShelfForValidation(shelfId, ipAddress) {
+      if (refShelfSelect && shelfId) {
+        refShelfSelect.value = shelfId;
+        onTargetShelfChange();
+      }
+      if (ipAddress && refEspIpInput) {
+        refEspIpInput.value = cleanCameraHost(ipAddress);
+      }
+    }
+
     async function triggerSingleCameraNode(deviceId, ipAddress, shelfId) {
       esp32NodeCacheBustMap[deviceId] = Date.now();
       renderEsp32CameraManager();
@@ -2811,7 +2901,7 @@
       const shortShelf = shelfId.replace('SHELF_', '');
       document.getElementById('provDeviceIdInput').value = `ESP32_${shortShelf}_CAM${angleIndex}`;
       document.getElementById('provIpOctetInput').value = String(suggestedOctet);
-      document.getElementById('provCameraNameInput').value = `${shortShelf.replace('_', '-')} ${angleIndex === 2 ? 'Front Angle (CAM 2)' : 'Back Angle (CAM 1)'}`;
+      document.getElementById('provCameraNameInput').value = `${shortShelf.replace('_', '-')} ${angleIndex === 2 ? 'Front Angle' : 'Back Angle'} (CAM ${suggestedOctet - 100})`;
     }
 
     async function probeModalCurrentCameraIp() {
@@ -2897,7 +2987,25 @@
         } else {
           esp32CameraNodesList.push(saved);
         }
+
+        // Also notify local bridge & refresh compartments so Panel 1 & Panel 2 stay in sync
+        try {
+          const shelfCams = esp32CameraNodesList.filter((c) => c.shelf_id === shelfId);
+          const cam1Node = shelfCams.find((c) => Number(c.angle_index) === 1);
+          const cam2Node = shelfCams.find((c) => Number(c.angle_index) === 2);
+          await fetch(`${getBridgeUrl()}/esp32_assign_ips`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              shelf_id: shelfId,
+              ip_address: angleIndex === 1 ? targetIp : (cam1Node ? cam1Node.ip_address : undefined),
+              secondary_ip_address: angleIndex === 2 ? targetIp : (cam2Node ? cam2Node.ip_address : undefined)
+            })
+          });
+        } catch (_) {}
+
         renderEsp32CameraManager();
+        loadCompartments();
         showToast(`Provisioned & saved ${saved.device_id} at ${targetIp}`, 'success');
         closeEsp32ProvisionModal();
       } catch (err) {
@@ -2949,6 +3057,10 @@
       loadComparisonLogs();
     }
 
+    function pollEsp32Nodes() {
+      refreshAllData();
+    }
+
     // Initialization
     if (tmModelUrlInput) {
       const savedTmUrl = localStorage.getItem('smart_storage_tm_model_url') || DEFAULT_TM_MODEL_URL;
@@ -2961,10 +3073,22 @@
     setupRealtimeSubscriptions();
     checkLocalBridgeHealth();
 
-    // 2-second resilient polling loop (guarantees rapid CCTV trigger consumption & updates across Vercel & cloud networks)
-    setInterval(() => {
-      refreshAllData();
-    }, 2000);
+    // Prevent Background Tab Throttling for CCTV Triggers:
+    // Use an inline Web Worker interval so Chrome/Edge does not throttle /esp32_nodes polling
+    // when the dashboard tab is minimized or behind the OpenCV CCTV window.
+    (function startUnthrottledPollingWorker() {
+      try {
+        const workerCode = `setInterval(() => postMessage('tick'), 2000);`;
+        const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+        const pollWorker = new Worker(URL.createObjectURL(workerBlob));
+        pollWorker.onmessage = () => {
+          pollEsp32Nodes();
+        };
+      } catch (workerErr) {
+        console.warn('Web Worker polling fallback to setInterval:', workerErr);
+        setInterval(pollEsp32Nodes, 2000);
+      }
+    })();
   </script>
 </body>
 </html>
