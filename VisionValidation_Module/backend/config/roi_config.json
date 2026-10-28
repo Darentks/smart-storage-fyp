@@ -24,6 +24,30 @@
       "x_max": 140,
       "y_max": 241,
       "dwell_threshold_seconds": 1.2
+    },
+    {
+      "shelf_id": "SHELF_R1_C4",
+      "x_min": 180,
+      "y_min": 245,
+      "x_max": 409,
+      "y_max": 360,
+      "dwell_threshold_seconds": 1.2
+    },
+    {
+      "shelf_id": "SHELF_R1_C5",
+      "x_min": 47,
+      "y_min": 255,
+      "x_max": 140,
+      "y_max": 360,
+      "dwell_threshold_seconds": 1.2
+    },
+    {
+      "shelf_id": "SHELF_R1_C6",
+      "x_min": 420,
+      "y_min": 67,
+      "x_max": 580,
+      "y_max": 232,
+      "dwell_threshold_seconds": 1.2
     }
   ]
 }

@@ -18,6 +18,7 @@ from src.spatial_mapper import SpatialMapper
 from src.behavior_classifier import BehaviorClassifier
 from src.video_processor import VideoProcessor
 from src.mqtt_client import MQTTClientNode
+from src.config_loader import get_active_rtsp_url, mask_rtsp_url
 
 
 def on_intent_trigger(event_payload):
@@ -62,14 +63,17 @@ def main():
     mqtt_node = MQTTClientNode(rack_id=spatial_mapper.rack_id)
     mqtt_node.connect_broker()
 
-    # 5. Open Macro Camera Feed
-    # CAMERA_INDEX = 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102'
-    CAMERA_INDEX = 0
-    print(f"[+] Step 5: Ingesting video stream from camera index {CAMERA_INDEX}...")
-    video = VideoProcessor(source=CAMERA_INDEX, width=640, height=480)
+    # 5. Open Macro Camera Feed (Dynamic Supabase CCTV or Webcam 0 fallback)
+    camera_source = get_active_rtsp_url(default_source=0)
+    try:
+        camera_source = int(camera_source)
+    except (ValueError, TypeError):
+        pass
+    print(f"[+] Step 5: Ingesting video stream from camera source {mask_rtsp_url(str(camera_source))}...")
+    video = VideoProcessor(source=camera_source, width=640, height=480)
 
     if not video.is_streaming:
-        print(f"[-] ERROR: Could not open camera {CAMERA_INDEX}.")
+        print(f"[-] ERROR: Could not open camera {mask_rtsp_url(str(camera_source))}.")
         print("    -> Check if another app is using the webcam.")
         print("    -> Run 'python calibrate_roi.py' or check device permissions.")
         return

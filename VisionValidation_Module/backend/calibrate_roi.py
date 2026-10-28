@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.spatial_mapper import SpatialMapper
 from src.video_processor import VideoProcessor
 from src.config_loader import get_active_rtsp_url
+from src.mqtt_client import MQTTClientNode
 
 # State variables
 spatial_mapper: Optional[SpatialMapper] = None
@@ -252,6 +253,13 @@ def main():
     config_path = os.path.join(os.path.dirname(__file__), "config", "roi_config.json")
     spatial_mapper = SpatialMapper(config_path)
 
+    mqtt_notifier = MQTTClientNode(
+        rack_id=spatial_mapper.rack_id,
+        client_id_prefix="ROICalibrator",
+        sync_supabase=False,
+    )
+    mqtt_notifier.connect_broker(timeout=0.5)
+
     # Auto-select first compartment if available
     if len(spatial_mapper.compartments) > 0:
         selected_idx = 0
@@ -376,6 +384,7 @@ def main():
             spawn_center_compartment(frame_w=w, frame_h=h)
         elif key in [ord('s'), ord('S'), 13]:  # 'S' or ENTER: Save
             spatial_mapper.save_roi_config()
+            mqtt_notifier.notify_roi_reload(reason="ROI_CALIBRATED")
             set_status("SAVED TO config/roi_config.json!", (0, 255, 0), duration=6.0)
         elif key in [ord('r'), ord('R')]:  # Reload
             spatial_mapper.load_roi_config()
@@ -405,6 +414,7 @@ def main():
                     set_status(f"Shrunk size of {c['shelf_id']}. Press [S] to save.")
 
     video.release_stream()
+    mqtt_notifier.disconnect()
     cv2.destroyAllWindows()
 
 

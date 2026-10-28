@@ -139,14 +139,23 @@ class CompartmentTracker:
         if len(self.trajectory_history) < 5:
             return "BORROW"
 
-        # Compute vertical & horizontal movement vectors
+        # Compute vertical & horizontal movement vectors across trajectory
         start_pt = self.trajectory_history[0]
         end_pt = self.trajectory_history[-1]
         dy = end_pt[1] - start_pt[1]
         dx = end_pt[0] - start_pt[0]
 
-        # Inward reaching motion often enters from outer periphery
-        # For multi-tiered racks, downward reach into bin indicates item placement or extraction
+        # Compare entry phase vs late dwell phase vertical position
+        mid_idx = len(self.trajectory_history) // 2
+        first_half_y = sum(pt[1] for pt in list(self.trajectory_history)[:mid_idx]) / max(1, mid_idx)
+        second_half_y = sum(pt[1] for pt in list(self.trajectory_history)[mid_idx:]) / max(1, len(self.trajectory_history) - mid_idx)
+        net_vertical_shift = second_half_y - first_half_y
+
+        # Downward placement motion into the shelf bin (positive y in image coordinates)
+        # with sustained downward settling indicates RETURN; upward/outward extraction indicates BORROW
+        if dy > 15.0 and net_vertical_shift > 8.0 and abs(dy) >= abs(dx) * 0.5:
+            return "RETURN"
+
         return "BORROW"
 
     def get_status_info(self):

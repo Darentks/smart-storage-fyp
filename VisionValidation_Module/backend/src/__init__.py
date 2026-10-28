@@ -7,7 +7,6 @@ from .spatial_mapper import SpatialMapper
 from .behavior_classifier import BehaviorClassifier
 from .video_processor import VideoProcessor
 from .mqtt_client import MQTTClientNode
-from .opencv_comparator import OpenCVComparator
 from .reference_validator import ESP32ReferenceManager
 from .config_loader import (
     get_supabase_client,
@@ -38,7 +37,6 @@ __all__ = [
     "VideoProcessor",
     "VisionValidationEngine",
     "MQTTClientNode",
-    "OpenCVComparator",
     "ESP32ReferenceManager",
     "get_supabase_client",
     "get_active_rtsp_url",

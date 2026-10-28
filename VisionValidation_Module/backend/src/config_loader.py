@@ -261,28 +261,30 @@ def build_hikvision_rtsp_url(
 
 
 def get_active_camera_record() -> Optional[Dict[str, Any]]:
-    """Queries the first active CCTV camera from Supabase table 'cameras'."""
+    """Queries the first active CCTV camera from Supabase table 'cctv_cameras' (or legacy 'cameras')."""
     client = get_supabase_client()
-    if client is not None:
-        try:
-            response = (
-                client.table("cameras")
-                .select("*")
-                .eq("is_active", True)
-                .order("created_at", desc=False)
-                .limit(1)
-                .execute()
-            )
-            if response.data and len(response.data) > 0:
-                return response.data[0]
-        except Exception as exc:
-            print(f"[ConfigLoader] SDK query on 'cameras' failed ({exc}), falling back to SupabaseRestFallback.")
+    for table_name in ("cctv_cameras", "cameras"):
+        if client is not None:
+            try:
+                response = (
+                    client.table(table_name)
+                    .select("*")
+                    .eq("is_active", True)
+                    .order("created_at", desc=False)
+                    .limit(1)
+                    .execute()
+                )
+                if response.data and len(response.data) > 0:
+                    return response.data[0]
+            except Exception as exc:
+                print(f"[ConfigLoader] SDK query on '{table_name}' failed ({exc}), falling back to SupabaseRestFallback.")
 
-    # REST Fallback
-    fallback = SupabaseRestFallback()
-    records = fallback.select("cameras", "?select=*&is_active=eq.true&order=created_at.asc&limit=1")
-    if records:
-        return records[0]
+        # REST Fallback
+        fallback = SupabaseRestFallback()
+        records = fallback.select(table_name, "?select=*&is_active=eq.true&order=created_at.asc&limit=1")
+        if records:
+            return records[0]
+
     return None
 
 
@@ -293,7 +295,7 @@ def get_active_rtsp_url(default_source: Union[int, str] = 0) -> Union[int, str]:
     camera = get_active_camera_record()
     if camera and camera.get("rtsp_url"):
         rtsp_url = str(camera["rtsp_url"]).strip()
-        cam_name = camera.get("name", "Active Camera")
+        cam_name = camera.get("camera_name") or camera.get("name") or "Active Camera"
         masked = mask_rtsp_url(rtsp_url)
         print(f"[ConfigLoader] Successfully fetched active camera '{cam_name}' from Supabase: {masked}")
         return rtsp_url
@@ -501,6 +503,12 @@ def apply_inventory_delta_in_supabase(
     diff_score = comparison_result.get("diff_score")
     similarity_score = comparison_result.get("similarity_score")
     matched_box_count = comparison_result.get("matched_box_count")
+    if matched_box_count is None:
+        print(
+            f"[ConfigLoader] Skipping comparison_logs insert and inventory update for {shelf_id}: "
+            f"predicted_box_count is None (Teachable Machine prediction required)."
+        )
+        return None
     before_image_url = comparison_result.get("before_image_url") or comparison_result.get("before_image")
     after_image_url = comparison_result.get("after_image_url") or comparison_result.get("after_image")
     action_clean = trigger_action.upper() if trigger_action.upper() in ["BORROW", "RETURN"] else "BORROW"
