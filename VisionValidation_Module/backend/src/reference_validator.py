@@ -103,6 +103,42 @@ def decode_data_url_to_bgr(data_url: str) -> Optional[Any]:
         return None
 
 
+def enhance_low_light_frame(frame_bgr: Any, boost_mode: str = "auto") -> Any:
+    """
+    Automatic low-light shadow enhancement for ESP32-CAM images.
+    Applies CLAHE on the L-channel and adaptive gamma correction to lift dark shadows.
+    """
+    if not _OPENCV_AVAILABLE or frame_bgr is None or boost_mode == "off":
+        return frame_bgr
+    try:
+        lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        mean_l = float(np.mean(l))
+
+        if boost_mode == "auto" and mean_l >= 115.0:
+            return frame_bgr
+
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        l_clahe = clahe.apply(l)
+        enhanced = cv2.cvtColor(cv2.merge((l_clahe, a, b)), cv2.COLOR_LAB2BGR)
+
+        if mean_l < 55:
+            gamma = 0.42
+        elif mean_l < 85:
+            gamma = 0.55
+        elif boost_mode != "high":
+            gamma = 0.72
+        else:
+            gamma = 0.45
+
+        lut = np.array([((i / 255.0) ** gamma) * 255 for i in range(256)]).astype("uint8")
+        enhanced = cv2.LUT(enhanced, lut)
+        return enhanced
+    except Exception as exc:
+        print(f"[ReferenceValidator] Low-light frame enhancement failed: {exc}")
+        return frame_bgr
+
+
 def synthesize_compartment_frame(label: str = "ESP32-CAM", box_count: int = 4) -> Any:
     """Synthesizes an offline placeholder frame for testing when hardware is disconnected."""
     if not _OPENCV_AVAILABLE:
@@ -276,6 +312,7 @@ class ESP32ReferenceManager:
         self.baseline_cache: Dict[str, Dict[str, Any]] = {}
         # Guardrail 1: 30-Second Baseline Freeze Lock timestamp per shelf_id
         self.baseline_freeze_until: Dict[str, float] = {}
+        self.vision_boost_mode: str = "auto"
 
     def freeze_baseline(self, shelf_id: str, duration_sec: float = 10.0) -> None:
         """Sets freeze lock on shelf baseline so 30s poller won't overwrite during active user hand interaction."""
@@ -287,6 +324,7 @@ class ESP32ReferenceManager:
         mode: str = "live",
         timeout: float = 3.0,
         box_count_fallback: int = 4,
+        flash: Optional[int] = None,
     ) -> Tuple[Any, str]:
         """
         Fetches an image from http://{esp32_ip}/capture?mode={mode}.
@@ -294,7 +332,8 @@ class ESP32ReferenceManager:
         """
         if esp32_ip and _OPENCV_AVAILABLE:
             clean_ip = esp32_ip.replace("http://", "").replace("/", "").strip()
-            url = f"http://{clean_ip}/capture?mode={mode}&flash=1&t={int(time.time() * 1000)}"
+            flash_val = flash if flash is not None else 0
+            url = f"http://{clean_ip}/capture?mode={mode}&flash={flash_val}&t={int(time.time() * 1000)}"
             try:
                 req = urllib.request.Request(
                     url,
@@ -308,6 +347,7 @@ class ESP32ReferenceManager:
                     arr = np.asarray(bytearray(raw_bytes), dtype=np.uint8)
                     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                     if frame is not None:
+                        frame = enhance_low_light_frame(frame, boost_mode=self.vision_boost_mode)
                         data_url = encode_bgr_to_data_url(frame)
                         return frame, data_url
             except Exception:
@@ -328,16 +368,18 @@ class ESP32ReferenceManager:
         esp32_ip2: Optional[str] = None,
         mode: str = "live",
         timeout: float = 3.5,
+        flash: Optional[int] = None,
     ) -> Tuple[Any, str, Optional[str], Optional[str]]:
         """
-        Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=1,
+        Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=0,
         retrying failed HTTP requests once (timeout=2.0).
         Returns (combined_bgr, combined_data_url, url1, url2).
         Stitches the two images side-by-side horizontally for logging & comparison.
         """
         def _fetch_single_with_retry(ip: str) -> Tuple[Optional[Any], Optional[str]]:
             clean = ip.replace("http://", "").replace("/", "").strip()
-            f_url = f"http://{clean}/capture?mode={mode}&flash=1&t={int(time.time() * 1000)}"
+            flash_val = flash if flash is not None else 0
+            f_url = f"http://{clean}/capture?mode={mode}&flash={flash_val}&t={int(time.time() * 1000)}"
             for attempt in range(2):
                 req_timeout = timeout if attempt == 0 else 2.0
                 try:
@@ -350,6 +392,7 @@ class ESP32ReferenceManager:
                         arr = np.asarray(bytearray(raw), dtype=np.uint8)
                         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR) if _OPENCV_AVAILABLE else None
                         if frame is not None:
+                            frame = enhance_low_light_frame(frame, boost_mode=self.vision_boost_mode)
                             return frame, encode_bgr_to_data_url(frame)
                 except Exception as exc:
                     if attempt == 0:

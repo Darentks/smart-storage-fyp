@@ -858,6 +858,15 @@
               <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102" value="192.168.0.102" oninput="markIpInputDirty(2)" />
             </div>
 
+            <div class="form-group" style="margin-bottom: 12px;">
+              <label for="visionBoostSelect">&#128161; Low-Light Vision Boost</label>
+              <select id="visionBoostSelect" class="form-control">
+                <option value="auto" selected>&#128161; Auto Low-Light Boost (CLAHE + Shadow Gamma)</option>
+                <option value="high">&#128261; Maximum Brightness Boost (Very Dark Shelf)</option>
+                <option value="off">&#128247; Raw Sensor Image (No Brightness Boost)</option>
+              </select>
+            </div>
+
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
               <button type="button" class="btn-action" id="scanCamIpsBtn" style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
                 &#128269; Scan Online Camera IPs
@@ -1180,6 +1189,65 @@
       }
     }
 
+    // Low-light canvas enhancement fallback (CLAHE approximation + shadow gamma correction)
+    function enhanceCanvasLowLight(sourceEl, boostMode = 'auto') {
+      if (!sourceEl || boostMode === 'off') return sourceEl;
+      try {
+        const w = sourceEl.naturalWidth || sourceEl.videoWidth || sourceEl.width || 640;
+        const h = sourceEl.naturalHeight || sourceEl.videoHeight || sourceEl.height || 480;
+        if (!w || !h) return sourceEl;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(sourceEl, 0, 0, w, h);
+
+        const imgData = ctx.getImageData(0, 0, w, h);
+        const data = imgData.data;
+
+        // Sample mean luminance (Y ~ 0.299R + 0.587G + 0.114B)
+        let totalL = 0;
+        const sampleStep = 16;
+        let sampleCount = 0;
+        for (let i = 0; i < data.length; i += sampleStep) {
+          totalL += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+          sampleCount++;
+        }
+        const meanL = sampleCount > 0 ? (totalL / sampleCount) : 128;
+
+        if (boostMode === 'auto' && meanL >= 115.0) {
+          return sourceEl;
+        }
+
+        let gamma = 0.72;
+        if (meanL < 55) {
+          gamma = 0.42;
+        } else if (meanL < 85) {
+          gamma = 0.55;
+        } else if (boostMode === 'high') {
+          gamma = 0.45;
+        }
+
+        const lut = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) {
+          lut[i] = Math.min(255, Math.max(0, Math.round(Math.pow(i / 255.0, gamma) * 255)));
+        }
+
+        for (let i = 0; i < data.length; i += 4) {
+          data[i]     = lut[data[i]];
+          data[i + 1] = lut[data[i + 1]];
+          data[i + 2] = lut[data[i + 2]];
+        }
+
+        ctx.putImageData(imgData, 0, 0);
+        return canvas;
+      } catch (err) {
+        console.warn('[Enhance] Canvas low-light boost fallback error:', err);
+        return sourceEl;
+      }
+    }
+
     async function predictDualCamerasWithTM(backImgEl, frontImgEl) {
       if (!window.tmModel) return null;
 
@@ -1211,14 +1279,23 @@
         };
       }
 
+      // Check boost mode and apply canvas brightness/gamma enhancer fallback if enabled
+      const boostSelect = document.getElementById('visionBoostSelect');
+      const boostMode = boostSelect ? boostSelect.value : 'auto';
+      const backTarget = (boostMode !== 'off') ? enhanceCanvasLowLight(backImgEl, boostMode) : backImgEl;
+      const frontTarget = (boostMode !== 'off') ? enhanceCanvasLowLight(frontImgEl, boostMode) : frontImgEl;
+
       // 1. Predict Back Camera (strictly filter with /^back_(\d+)/i)
       let bestBack = null;
       let backCount = 0;
+      let backNormProb = 0;
       try {
-        const backPreds = await window.tmModel.predict(backImgEl);
+        const backPreds = await window.tmModel.predict(backTarget);
         const backOnly = backPreds.filter(p => /^back_(\d+)/i.test(String(p.className || '').trim()));
         if (backOnly.length > 0) {
           bestBack = backOnly.reduce((a, b) => a.probability > b.probability ? a : b);
+          const backSum = backOnly.reduce((s, p) => s + p.probability, 0) || 1;
+          backNormProb = bestBack.probability / backSum;
           const m = String(bestBack.className).trim().match(/^back_(\d+)/i);
           backCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
@@ -1229,11 +1306,14 @@
       // 2. Predict Front Camera (strictly filter with /^front_(\d+)/i)
       let bestFront = null;
       let frontCount = 0;
+      let frontNormProb = 0;
       try {
-        const frontPreds = await window.tmModel.predict(frontImgEl);
+        const frontPreds = await window.tmModel.predict(frontTarget);
         const frontOnly = frontPreds.filter(p => /^front_(\d+)/i.test(String(p.className || '').trim()));
         if (frontOnly.length > 0) {
           bestFront = frontOnly.reduce((a, b) => a.probability > b.probability ? a : b);
+          const frontSum = frontOnly.reduce((s, p) => s + p.probability, 0) || 1;
+          frontNormProb = bestFront.probability / frontSum;
           const m = String(bestFront.className).trim().match(/^front_(\d+)/i);
           frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
@@ -1245,10 +1325,10 @@
         return {
           backClass: bestBack ? bestBack.className : 'Back_Unmatched',
           backCount: 0,
-          backConfidence: bestBack ? Number((bestBack.probability * 100).toFixed(1)) : 0,
+          backConfidence: bestBack ? Number((backNormProb * 100).toFixed(1)) : 0,
           frontClass: bestFront ? bestFront.className : 'Front_Unmatched',
           frontCount: 0,
-          frontConfidence: bestFront ? Number((bestFront.probability * 100).toFixed(1)) : 0,
+          frontConfidence: bestFront ? Number((frontNormProb * 100).toFixed(1)) : 0,
           totalBoxes: null,
           scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
           confidence: 0,
@@ -1258,15 +1338,15 @@
 
       // 3. Compute totalBoxes = backCount + frontCount (0..4) and map to the 5 Scenarios (4/4 down to 0/4)
       const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
-      const avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
+      const avgConfidence = Number((((backNormProb + frontNormProb) / 2) * 100).toFixed(1));
 
       return {
         backClass: bestBack.className,
         backCount,
-        backConfidence: Number((bestBack.probability * 100).toFixed(1)),
+        backConfidence: Number((backNormProb * 100).toFixed(1)),
         frontClass: bestFront.className,
         frontCount,
-        frontConfidence: Number((bestFront.probability * 100).toFixed(1)),
+        frontConfidence: Number((frontNormProb * 100).toFixed(1)),
         totalBoxes,
         scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/4 Boxes`,
         confidence: avgConfidence,
@@ -1647,8 +1727,10 @@
       const shelfId = refShelfSelect.value;
       const ip1 = refEspIpInput.value.trim();
       const ip2 = refEspIp2Input.value.trim();
+      const boostSelect = document.getElementById('visionBoostSelect');
+      const boostVal = boostSelect ? boostSelect.value : 'auto';
       const t0 = performance.now();
-      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
+      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boostVal)}&_t=${Date.now()}`;
 
       previewOverlayText.textContent = `Fetching live dual-angle snapshot (${ip1} + ${ip2})...`;
       showToast(`Fetching live dual preview from ${ip1} & ${ip2}...`, 'info');
@@ -1789,6 +1871,20 @@
         loadImgPromise(frontPreviewImg, frontSrc)
       ]);
 
+      // Apply client-side low-light boost to uploaded offline test photos if enabled
+      const boostSelect = document.getElementById('visionBoostSelect');
+      const boostMode = boostSelect ? boostSelect.value : 'auto';
+      if (boostMode !== 'off') {
+        const enhBack = enhanceCanvasLowLight(backPreviewImg, boostMode);
+        const enhFront = enhanceCanvasLowLight(frontPreviewImg, boostMode);
+        if (enhBack instanceof HTMLCanvasElement) {
+          backPreviewImg.src = enhBack.toDataURL('image/jpeg', 0.9);
+        }
+        if (enhFront instanceof HTMLCanvasElement) {
+          frontPreviewImg.src = enhFront.toDataURL('image/jpeg', 0.9);
+        }
+      }
+
       // 2. Draw side-by-side onto canvas for combined view
       const stitchedDataUrl = stitchTwoImages(backPreviewImg, frontPreviewImg);
       livePreviewImg.src = stitchedDataUrl;
@@ -1843,7 +1939,8 @@
         baseline_box_count: beforeBoxes,
         predicted_box_count: tmRes.totalBoxes,
         scenario_label: tmRes.scenarioLabel,
-        tm_confidence: tmRes.confidence
+        tm_confidence: tmRes.confidence,
+        boost: boostMode
       };
 
       let bridgeSuccess = false;
@@ -1927,7 +2024,9 @@
         });
 
         const fetchSnapshots = async () => {
-          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&_t=${Date.now()}`;
+          const boostSelect = document.getElementById('visionBoostSelect');
+          const boostVal = boostSelect ? boostSelect.value : 'auto';
+          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boostVal)}&_t=${Date.now()}`;
           const prevResp = await fetch(previewUrl, { cache: 'no-store' });
           if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
           return await prevResp.json();
@@ -2049,6 +2148,8 @@
         }
 
         // 3. Send POST /esp32_validate to Local Bridge
+        const boostSelect = document.getElementById('visionBoostSelect');
+        const boostVal = boostSelect ? boostSelect.value : 'auto';
         const valPayload = {
           shelf_id: shelfId,
           expected_action: action,
@@ -2057,7 +2158,8 @@
           image: previewData.image,
           predicted_box_count: tmRes.totalBoxes,
           scenario_label: tmRes.scenarioLabel,
-          tm_confidence: tmRes.confidence
+          tm_confidence: tmRes.confidence,
+          boost: boostVal
         };
 
         const valResp = await fetch(`${getBridgeUrl()}/esp32_validate`, {

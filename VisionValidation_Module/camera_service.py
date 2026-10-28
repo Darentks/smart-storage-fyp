@@ -669,6 +669,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             esp32_ip = query.get("ip", [None])[0]
             esp32_ip2 = query.get("ip2", [None])[0]
             shelf_id = query.get("shelf_id", ["SHELF_R1_C1"])[0]
+            boost = query.get("boost", ["auto"])[0]
+            if boost in ("auto", "high", "off"):
+                esp32_ref_manager.vision_boost_mode = boost
+            else:
+                esp32_ref_manager.vision_boost_mode = "auto"
 
             clean_ip1 = str(esp32_ip).replace("http://", "").replace("/", "").strip() if (esp32_ip and str(esp32_ip).strip()) else None
             clean_ip2 = str(esp32_ip2).replace("http://", "").replace("/", "").strip() if (esp32_ip2 and str(esp32_ip2).strip()) else None
@@ -957,6 +962,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # VALIDATE: Run hybrid 30s baseline + reference validation and apply Supabase delta
         if path == "/esp32_validate":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
+            boost = body.get("boost") or "auto"
+            if boost in ("auto", "high", "off"):
+                esp32_ref_manager.vision_boost_mode = boost
             # Guardrail 1: Freeze 30s baseline for 10s during interaction
             esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
 
