@@ -18,6 +18,108 @@ const SHELF_OPTIONS = [
   'SHELF_R1_C6',
 ];
 
+const SCENARIO_LABELS = {
+  4: 'Scenario 1: 4/4 Boxes Present',
+  3: 'Scenario 2: 3/4 Boxes Present',
+  2: 'Scenario 3: 2/4 Boxes Present',
+  1: 'Scenario 4: 1/4 Box Present',
+  0: 'Scenario 5: 0/4 No Box Present',
+};
+
+/**
+ * Strict 6-Class Dual-ESP32 Teachable Machine classifier with Degraded Camera Guardrail.
+ * Requires BOTH image_back (CAM1) and image_front (CAM2) to load (backOk && frontOk).
+ * Filters backPreds strictly with /^back_(\d+)/i and frontPreds strictly with /^front_(\d+)/i.
+ */
+export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = typeof window !== 'undefined' ? window.tmModel : null) {
+  if (!tmModel) return null;
+
+  const isUsable = (img) => {
+    if (!img) return false;
+    if (typeof HTMLImageElement !== 'undefined' && img instanceof HTMLImageElement) {
+      return img.complete && img.naturalWidth > 0 && Boolean(img.src) && !img.src.endsWith('/null') && !img.src.endsWith('/undefined');
+    }
+    return Boolean(img);
+  };
+
+  const backOk = isUsable(backImgEl);
+  const frontOk = isUsable(frontImgEl);
+
+  if (!backOk || !frontOk) {
+    return {
+      backClass: backOk ? 'Back_Loaded' : 'Back_Offline',
+      backCount: 0,
+      backConfidence: 0,
+      frontClass: frontOk ? 'Front_Loaded' : 'Front_Offline',
+      frontCount: 0,
+      frontConfidence: 0,
+      totalBoxes: null,
+      scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
+      confidence: 0,
+      degraded: true,
+    };
+  }
+
+  let bestBack = null;
+  let backCount = 0;
+  try {
+    const backPreds = await tmModel.predict(backImgEl);
+    const backOnly = backPreds.filter((p) => /^back_(\d+)/i.test(String(p.className || '').trim()));
+    if (backOnly.length > 0) {
+      bestBack = backOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
+      const m = String(bestBack.className).trim().match(/^back_(\d+)/i);
+      backCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
+    }
+  } catch (e) {
+    console.warn('[TM] Back camera predict failed:', e);
+  }
+
+  let bestFront = null;
+  let frontCount = 0;
+  try {
+    const frontPreds = await tmModel.predict(frontImgEl);
+    const frontOnly = frontPreds.filter((p) => /^front_(\d+)/i.test(String(p.className || '').trim()));
+    if (frontOnly.length > 0) {
+      bestFront = frontOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
+      const m = String(bestFront.className).trim().match(/^front_(\d+)/i);
+      frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
+    }
+  } catch (e) {
+    console.warn('[TM] Front camera predict failed:', e);
+  }
+
+  if (!bestBack || !bestFront) {
+    return {
+      backClass: bestBack ? bestBack.className : 'Back_Unmatched',
+      backCount: 0,
+      backConfidence: bestBack ? Number((bestBack.probability * 100).toFixed(1)) : 0,
+      frontClass: bestFront ? bestFront.className : 'Front_Unmatched',
+      frontCount: 0,
+      frontConfidence: bestFront ? Number((bestFront.probability * 100).toFixed(1)) : 0,
+      totalBoxes: null,
+      scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
+      confidence: 0,
+      degraded: true,
+    };
+  }
+
+  const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
+  const avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
+
+  return {
+    backClass: bestBack.className,
+    backCount,
+    backConfidence: Number((bestBack.probability * 100).toFixed(1)),
+    frontClass: bestFront.className,
+    frontCount,
+    frontConfidence: Number((bestFront.probability * 100).toFixed(1)),
+    totalBoxes,
+    scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/4 Boxes`,
+    confidence: avgConfidence,
+    degraded: false,
+  };
+}
+
 export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008', onNotify }) {
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -119,6 +221,15 @@ export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008'
     const mode = snapshotModes[cam.device_id] || 'live';
     const snapUrl = captureLiveSnapshotUrl(cam.ip_address, mode);
     setSnapshotUrls((prev) => ({ ...prev, [cam.device_id]: snapUrl }));
+
+    // Require BOTH Angle 1 (Back) and Angle 2 (Front) cameras to be configured & online for dual-angle validation
+    const shelfCams = groupedByShelf[cam.shelf_id] || [];
+    const cam1 = shelfCams.find((c) => Number(c.angle_index) === 1);
+    const cam2 = shelfCams.find((c) => Number(c.angle_index) === 2);
+    if (!cam1 || !cam2 || cam1.status === 'OFFLINE' || cam2.status === 'OFFLINE') {
+      notify('Validation aborted: Dual-angle required (1 camera unreachable)', 'error');
+      return;
+    }
 
     try {
       await fetch(`${bridgeUrl.replace(/\/$/, '')}/esp32_trigger`, {
@@ -263,6 +374,22 @@ export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008'
         }
         return [...prev, saved];
       });
+
+      // Notify local bridge so Panel 1 & Panel 2 stay in sync
+      try {
+        const shelfCams = cameras.filter((c) => c.shelf_id === formState.shelf_id);
+        const cam1Node = shelfCams.find((c) => Number(c.angle_index) === 1);
+        const cam2Node = shelfCams.find((c) => Number(c.angle_index) === 2);
+        await fetch(`${bridgeUrl.replace(/\/$/, '')}/esp32_assign_ips`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shelf_id: formState.shelf_id,
+            ip_address: Number(formState.angle_index) === 1 ? targetIp : (cam1Node ? cam1Node.ip_address : undefined),
+            secondary_ip_address: Number(formState.angle_index) === 2 ? targetIp : (cam2Node ? cam2Node.ip_address : undefined),
+          }),
+        });
+      } catch {}
 
       setModalOpen(false);
       notify(`Provisioned & saved ${saved.device_id} at ${saved.ip_address}`, 'success');

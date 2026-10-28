@@ -81,7 +81,10 @@ spatial_mapper = SpatialMapper(ROI_CONFIG_PATH)
 esp32_ref_manager = ESP32ReferenceManager()
 
 ACTIVE_ESP32_IPS: Dict[str, Any] = {
-    "SHELF_R1_C1": os.getenv("ESP32_CAM_IP", "192.168.0.101"),
+    "SHELF_R1_C1": {
+        "ip1": os.getenv("ESP32_CAM_IP", "192.168.0.101"),
+        "ip2": os.getenv("ESP32_CAM_IP2", "192.168.0.102"),
+    },
 }
 
 # Buffer of pending CCTV intent confirmation triggers to be consumed by the UI Teachable Machine engine
@@ -113,9 +116,11 @@ def get_merged_compartments_and_nodes():
 
     merged = []
     seen_mqtt_ids = set()
+    seen_shelf_ids = set()
 
     for comp in local_comps:
         shelf_id = comp["shelf_id"]
+        seen_shelf_ids.add(shelf_id)
         mqtt_id = comp.get("mqtt_client_id") or shelf_id.replace("SHELF_", "ESP32_")
         seen_mqtt_ids.add(mqtt_id)
         seen_mqtt_ids.add(f"{mqtt_id}_CAM1")
@@ -129,8 +134,15 @@ def get_merged_compartments_and_nodes():
         cached_baseline = esp32_ref_manager.baseline_cache.get(shelf_id, {})
 
         active_override = ACTIVE_ESP32_IPS.get(shelf_id)
-        override_ip1 = active_override.get("ip1") if isinstance(active_override, dict) else None
-        override_ip2 = active_override.get("ip2") if isinstance(active_override, dict) else None
+        if isinstance(active_override, dict):
+            override_ip1 = active_override.get("ip1")
+            override_ip2 = active_override.get("ip2")
+        elif isinstance(active_override, str) and active_override.strip():
+            override_ip1 = active_override.strip()
+            override_ip2 = None
+        else:
+            override_ip1 = None
+            override_ip2 = None
 
         status = "ONLINE" if (live_row or live_cam2_row) else db_row.get("status", "OFFLINE")
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
@@ -160,12 +172,68 @@ def get_merged_compartments_and_nodes():
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
-            "rssi_dbm": live_row.get("rssi_dbm", db_row.get("rssi_dbm")),
-            "free_heap_bytes": live_row.get("free_heap_bytes", db_row.get("free_heap_bytes")),
+            "rssi_dbm": live_row.get("rssi_dbm", live_cam2_row.get("rssi_dbm", db_row.get("rssi_dbm"))),
+            "free_heap_bytes": live_row.get("free_heap_bytes", live_cam2_row.get("free_heap_bytes", db_row.get("free_heap_bytes"))),
             "mac_address": live_row.get("mac_address", db_row.get("mac_address")),
             "firmware_version": live_row.get("firmware_version", db_row.get("firmware_version")),
             "bus_vcc": live_row.get("bus_vcc", db_row.get("bus_vcc")),
-            "last_seen_at": live_row.get("last_seen_at", db_row.get("last_seen_at")),
+            "last_seen_at": live_row.get("last_seen_at", live_cam2_row.get("last_seen_at", db_row.get("last_seen_at"))),
+        })
+
+    # Include any compartments from Supabase public.compartments not yet present in local roi_config.json
+    for db_row in db_rows:
+        shelf_id = db_row.get("shelf_id")
+        if not shelf_id or shelf_id in seen_shelf_ids:
+            continue
+        seen_shelf_ids.add(shelf_id)
+        mqtt_id = db_row.get("mqtt_client_id") or shelf_id.replace("SHELF_", "ESP32_")
+        cam2_mqtt_id = db_row.get("secondary_mqtt_client_id") or f"{mqtt_id}_CAM2"
+        seen_mqtt_ids.add(mqtt_id)
+        seen_mqtt_ids.add(f"{mqtt_id}_CAM1")
+        seen_mqtt_ids.add(cam2_mqtt_id)
+
+        live_row = live_mqtt.get(mqtt_id) or live_mqtt.get(f"{mqtt_id}_CAM1") or {}
+        live_cam2_row = live_mqtt.get(cam2_mqtt_id) or {}
+        cached_baseline = esp32_ref_manager.baseline_cache.get(shelf_id, {})
+
+        active_override = ACTIVE_ESP32_IPS.get(shelf_id)
+        override_ip1 = active_override.get("ip1") if isinstance(active_override, dict) else (active_override if isinstance(active_override, str) else None)
+        override_ip2 = active_override.get("ip2") if isinstance(active_override, dict) else None
+
+        status = "ONLINE" if (live_row or live_cam2_row) else db_row.get("status", "OFFLINE")
+        baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
+        baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
+        baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
+        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.101"
+        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or "192.168.0.102"
+
+        merged.append({
+            "camera_id": db_row.get("camera_id"),
+            "shelf_id": shelf_id,
+            "rack_id": db_row.get("rack_id") or spatial_mapper.rack_id,
+            "mqtt_client_id": mqtt_id,
+            "secondary_mqtt_client_id": cam2_mqtt_id,
+            "camera_name": db_row.get("camera_name") or f"ESP32 Node ({shelf_id})",
+            "container_id": db_row.get("container_id"),
+            "ip_address": ip_addr,
+            "secondary_ip_address": sec_ip_addr,
+            "x_min": db_row.get("roi_x_min", 100),
+            "y_min": db_row.get("roi_y_min", 150),
+            "x_max": db_row.get("roi_x_max", 300),
+            "y_max": db_row.get("roi_y_max", 350),
+            "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
+            "status": status,
+            "current_quantity": db_row.get("current_quantity", 4),
+            "max_capacity": db_row.get("max_capacity", 4),
+            "baseline_image_url": baseline_url,
+            "baseline_image_2_url": baseline_2_url,
+            "baseline_updated_at": baseline_updated,
+            "rssi_dbm": live_row.get("rssi_dbm", live_cam2_row.get("rssi_dbm", db_row.get("rssi_dbm"))),
+            "free_heap_bytes": live_row.get("free_heap_bytes", live_cam2_row.get("free_heap_bytes", db_row.get("free_heap_bytes"))),
+            "mac_address": live_row.get("mac_address", db_row.get("mac_address")),
+            "firmware_version": live_row.get("firmware_version", db_row.get("firmware_version")),
+            "bus_vcc": live_row.get("bus_vcc", db_row.get("bus_vcc")),
+            "last_seen_at": live_row.get("last_seen_at", live_cam2_row.get("last_seen_at", db_row.get("last_seen_at"))),
         })
 
     for mqtt_id, live_row in live_mqtt.items():
@@ -495,19 +563,14 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(parsed.query)
 
         if path in ["/dashboard", "/ui"]:
-            html_candidates = [
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "index.html")),
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "camera_manager.html")),
-            ]
+            index_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "index.html"))
             html_content = None
-            for p in html_candidates:
-                if os.path.isfile(p):
-                    try:
-                        with open(p, "r", encoding="utf-8") as f:
-                            html_content = f.read()
-                            break
-                    except Exception:
-                        pass
+            if os.path.isfile(index_path):
+                try:
+                    with open(index_path, "r", encoding="utf-8") as f:
+                        html_content = f.read()
+                except Exception:
+                    pass
 
             if html_content is not None:
                 content_bytes = html_content.encode("utf-8")
@@ -519,8 +582,35 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 self.wfile.write(content_bytes)
                 return
             else:
-                self._send_json(404, {"error": "Dashboard HTML file not found"})
+                self._send_json(404, {"error": "Dashboard index.html file not found"})
                 return
+
+        # Serve offline local Teachable Machine model assets (/models/tm_0cQO4TjOm/*)
+        if path.startswith("/models/"):
+            rel_path = os.path.normpath(path.lstrip("/"))
+            if not rel_path.startswith(".."):
+                model_candidates = [
+                    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", rel_path)),
+                    os.path.abspath(os.path.join(os.path.dirname(__file__), rel_path)),
+                ]
+                # If requested TM asset is not yet cached locally, attempt on-demand download
+                if not any(os.path.isfile(mp) for mp in model_candidates):
+                    ensure_local_tm_model_cached()
+                for mp in model_candidates:
+                    if os.path.isfile(mp):
+                        try:
+                            with open(mp, "rb") as mf:
+                                data_bytes = mf.read()
+                            ctype = "application/json" if mp.endswith(".json") else "application/octet-stream"
+                            self.send_response(200)
+                            self.send_header("Content-Type", ctype)
+                            self.send_header("Content-Length", str(len(data_bytes)))
+                            self._send_cors_headers()
+                            self.end_headers()
+                            self.wfile.write(data_bytes)
+                            return
+                        except Exception:
+                            pass
 
         if path in ["/", "/status", "/health"]:
             self._send_json(200, {
@@ -756,18 +846,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
             source = str(body.get("source", "MANUAL")).upper()
 
-            # Record CCTV trigger for UI browser Teachable Machine processing (keep up to 20)
-            trigger_id = f"trig_{shelf_id}_{int(time.time() * 1000)}"
-            PENDING_CCTV_TRIGGERS.append({
-                "trigger_id": trigger_id,
-                "shelf_id": shelf_id,
-                "expected_action": expected_action,
-                "source": source,
-                "timestamp": time.time(),
-            })
-            if len(PENDING_CCTV_TRIGGERS) > 20:
-                del PENDING_CCTV_TRIGGERS[:-20]
-
             if command == "CAPTURE_REFERENCE":
                 box_count = int(body.get("box_count", 4))
                 sample_label = body.get("sample_label")
@@ -778,6 +856,18 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     rack_id=rack_id,
                 )
             else:
+                # Record CCTV / State trigger for UI browser Teachable Machine processing (keep up to 20)
+                trigger_id = f"trig_{shelf_id}_{int(time.time() * 1000)}"
+                PENDING_CCTV_TRIGGERS.append({
+                    "trigger_id": trigger_id,
+                    "shelf_id": shelf_id,
+                    "expected_action": expected_action,
+                    "source": source,
+                    "timestamp": time.time(),
+                })
+                if len(PENDING_CCTV_TRIGGERS) > 20:
+                    del PENDING_CCTV_TRIGGERS[:-20]
+
                 dispatched = mqtt_bridge.publish_trigger(
                     shelf_id=shelf_id,
                     expected_action=expected_action,
@@ -798,7 +888,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             esp32_ip = body.get("ip_address") or body.get("ip")
             if esp32_ip and str(esp32_ip).strip():
                 clean_ip = str(esp32_ip).replace("http://", "").replace("/", "").strip()
-                ACTIVE_ESP32_IPS[shelf_id] = clean_ip
+                prev_entry = ACTIVE_ESP32_IPS.get(shelf_id)
+                prev_ip2 = prev_entry.get("ip2") if isinstance(prev_entry, dict) else "192.168.0.102"
+                ACTIVE_ESP32_IPS[shelf_id] = {"ip1": clean_ip, "ip2": prev_ip2}
 
             box_count = int(body.get("box_count", 4))
             sample_label = str(body.get("sample_label") or f"{shelf_id} - {box_count} Boxes Ref").strip()
@@ -907,13 +999,18 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 tm_confidence=float(tm_confidence) if tm_confidence is not None else None,
             )
 
-            # Apply delta into public.compartments & comparison_logs
-            log_entry = apply_inventory_delta_in_supabase(
-                shelf_id=shelf_id,
-                mqtt_client_id=mqtt_client_id,
-                trigger_action=expected_action,
-                comparison_result=comp_res,
-            )
+            # Require predicted_box_count is not None before updating public.compartments or public.comparison_logs
+            log_entry = None
+            if predicted_box_count is not None:
+                # Clear consumed pending triggers for this shelf so browser refreshes do not re-run old triggers
+                PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
+
+                log_entry = apply_inventory_delta_in_supabase(
+                    shelf_id=shelf_id,
+                    mqtt_client_id=mqtt_client_id,
+                    trigger_action=expected_action,
+                    comparison_result=comp_res,
+                )
 
             self._send_json(200, {
                 "status": "success",
@@ -993,9 +1090,23 @@ def esp32_http_baseline_poller():
     time.sleep(2.0)  # Brief warm-up before first cycle
     while True:
         try:
-            # Ensure default for SHELF_R1_C1
+            # Ensure default for SHELF_R1_C1 and populate configured shelves from Supabase
             default_ip = os.getenv("ESP32_CAM_IP", "192.168.0.101")
-            ACTIVE_ESP32_IPS.setdefault("SHELF_R1_C1", default_ip)
+            default_ip2 = os.getenv("ESP32_CAM_IP2", "192.168.0.102")
+            ACTIVE_ESP32_IPS.setdefault("SHELF_R1_C1", {"ip1": default_ip, "ip2": default_ip2})
+
+            db_compartments = []
+            try:
+                db_compartments = list_esp32_cameras()
+                for comp_row in db_compartments:
+                    s_id = comp_row.get("shelf_id")
+                    if s_id and s_id not in ACTIVE_ESP32_IPS:
+                        ACTIVE_ESP32_IPS[s_id] = {
+                            "ip1": comp_row.get("ip_address") or "192.168.0.101",
+                            "ip2": comp_row.get("secondary_ip_address") or "192.168.0.102",
+                        }
+            except Exception:
+                pass
 
             for shelf_id, ip_entry in list(ACTIVE_ESP32_IPS.items()):
                 if isinstance(ip_entry, dict):
@@ -1013,10 +1124,10 @@ def esp32_http_baseline_poller():
                 rssi_dbm = None
                 online = False
 
-                # 1. Quick probe to http://<ip>/status (2s timeout)
+                # 1. Quick probe to http://<ip>/status (1.5s timeout)
                 try:
                     req = urllib.request.Request(status_url, headers={"User-Agent": "SmartStoragePoller/1.0"})
-                    with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    with urllib.request.urlopen(req, timeout=1.5) as resp:
                         if resp.status == 200:
                             online = True
                             raw = resp.read().decode("utf-8")
@@ -1032,25 +1143,62 @@ def esp32_http_baseline_poller():
                 now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 sec_ip = str(raw_ip2).replace("http://", "").replace("/", "").strip() if raw_ip2 else None
                 if not sec_ip:
-                    try:
-                        for comp_row in list_esp32_cameras():
-                            if comp_row.get("shelf_id") == shelf_id:
-                                sec_ip = comp_row.get("secondary_ip_address") or "192.168.0.102"
-                                break
-                    except Exception:
+                    for comp_row in db_compartments:
+                        if comp_row.get("shelf_id") == shelf_id:
+                            sec_ip = comp_row.get("secondary_ip_address") or "192.168.0.102"
+                            break
+                    if not sec_ip:
                         sec_ip = "192.168.0.102"
 
                 if online:
+                    dev_id1 = f"ESP32_{shelf_id.replace('SHELF_', '')}"
                     node_health = {
-                        "device_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
+                        "device_id": dev_id1,
+                        "mqtt_client_id": dev_id1,
                         "shelf_id": shelf_id,
                         "ip_address": clean_ip,
                         "rssi_dbm": rssi_dbm,
                         "status": "ONLINE",
+                        "angle": "BACK",
                         "last_seen_at": now_iso,
                     }
+                    mqtt_bridge.edge_nodes[dev_id1] = node_health
                     update_esp32_health_in_supabase(node_health)
 
+                # Also probe secondary camera (CAM 2 Front Angle)
+                online_cam2 = False
+                rssi_cam2 = None
+                if sec_ip:
+                    try:
+                        req2 = urllib.request.Request(f"http://{sec_ip}/status", headers={"User-Agent": "SmartStoragePoller/1.0"})
+                        with urllib.request.urlopen(req2, timeout=1.5) as resp2:
+                            if resp2.status == 200:
+                                online_cam2 = True
+                                raw2 = resp2.read().decode("utf-8")
+                                try:
+                                    s_data2 = json.loads(raw2)
+                                    rssi_cam2 = s_data2.get("rssi_dbm") or s_data2.get("rssi")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        online_cam2 = False
+
+                if online_cam2:
+                    dev_id2 = f"ESP32_{shelf_id.replace('SHELF_', '')}_CAM2"
+                    node_health2 = {
+                        "device_id": dev_id2,
+                        "mqtt_client_id": dev_id2,
+                        "shelf_id": shelf_id,
+                        "ip_address": sec_ip,
+                        "rssi_dbm": rssi_cam2,
+                        "status": "ONLINE",
+                        "angle": "FRONT",
+                        "last_seen_at": now_iso,
+                    }
+                    mqtt_bridge.edge_nodes[dev_id2] = node_health2
+                    update_esp32_health_in_supabase(node_health2)
+
+                if online or online_cam2:
                     # Update 30s baseline cache and Supabase compartments row (dual-angle stitched)
                     esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip, esp32_ip2=sec_ip)
                 else:
@@ -1065,7 +1213,40 @@ def esp32_http_baseline_poller():
         time.sleep(30.0)
 
 
+def ensure_local_tm_model_cached(model_id: str = "0cQO4TjOm") -> None:
+    """
+    Downloads and caches Teachable Machine model files (model.json, metadata.json, weights.bin)
+    into models/tm_<model_id>/ so Guardrail 3's offline local fallback works when lab Wi-Fi has no internet.
+    """
+    base_url = f"https://teachablemachine.withgoogle.com/models/{model_id}/"
+    target_dirs = [
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", f"tm_{model_id}")),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "models", f"tm_{model_id}")),
+    ]
+    for d in target_dirs:
+        os.makedirs(d, exist_ok=True)
+
+    for fname in ("model.json", "metadata.json", "weights.bin"):
+        if all(os.path.isfile(os.path.join(d, fname)) and os.path.getsize(os.path.join(d, fname)) > 0 for d in target_dirs):
+            continue
+        try:
+            req = urllib.request.Request(
+                base_url + fname,
+                headers={"User-Agent": "SmartStorageVision/1.0"},
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                raw_bytes = resp.read()
+                if raw_bytes:
+                    for d in target_dirs:
+                        with open(os.path.join(d, fname), "wb") as out_f:
+                            out_f.write(raw_bytes)
+        except Exception:
+            # Offline or unreachable; skip silently
+            pass
+
+
 def run_service(host="0.0.0.0", port=8008):
+    threading.Thread(target=ensure_local_tm_model_cached, daemon=True, name="TMModelCacheWorker").start()
     mqtt_bridge.connect_broker(timeout=1.5)
 
     # Start background 30s HTTP baseline poller daemon thread

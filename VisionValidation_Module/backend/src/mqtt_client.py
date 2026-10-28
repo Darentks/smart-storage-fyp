@@ -177,7 +177,27 @@ class MQTTClientNode:
                     "last_seen_at": now_iso,
                 }
                 update_esp32_health_in_supabase(node_health)
-                self.esp32_validator.update_30s_baseline(shelf_id=shelf_id, esp32_ip=ip_address)
+
+                # Resolve both CAM 1 (Back) and CAM 2 (Front) IPs so dual-camera baseline stitching is preserved
+                is_cam2 = str(device_id).upper().endswith("_CAM2")
+                base_mqtt_id = f"ESP32_{str(shelf_id).replace('SHELF_', '')}"
+                cam1_node = self.edge_nodes.get(base_mqtt_id) or self.edge_nodes.get(f"{base_mqtt_id}_CAM1") or {}
+                cam2_node = self.edge_nodes.get(f"{base_mqtt_id}_CAM2") or {}
+
+                ip1 = cam1_node.get("ip_address") if is_cam2 else (ip_address or cam1_node.get("ip_address"))
+                ip2 = (ip_address or cam2_node.get("ip_address")) if is_cam2 else cam2_node.get("ip_address")
+
+                if not ip1 or not ip2:
+                    try:
+                        for comp_row in list_esp32_cameras():
+                            if comp_row.get("shelf_id") == shelf_id:
+                                ip1 = ip1 or comp_row.get("ip_address")
+                                ip2 = ip2 or comp_row.get("secondary_ip_address")
+                                break
+                    except Exception:
+                        pass
+
+                self.esp32_validator.update_30s_baseline(shelf_id=shelf_id, esp32_ip=ip1, esp32_ip2=ip2)
 
         # 3. ESP32 Snapshot Verification / Capture Response
         elif topic.endswith("/response"):
@@ -188,15 +208,19 @@ class MQTTClientNode:
 
             node_entry = self.edge_nodes.get(device_id, {}) if device_id else {}
             ip_address = payload.get("ip_address") or node_entry.get("ip_address")
-            expected_action = payload.get("expected_action") or "BORROW"
             payload["received_at"] = now_iso
 
             if device_id:
                 if device_id not in self.edge_nodes:
                     self.edge_nodes[device_id] = {}
                 self.edge_nodes[device_id]["last_seen_at"] = now_iso
+                self.edge_nodes[device_id]["status"] = "ONLINE"
+                if shelf_id:
+                    self.edge_nodes[device_id]["shelf_id"] = shelf_id
                 if ip_address:
                     self.edge_nodes[device_id]["ip_address"] = ip_address
+                if "rssi_dbm" in payload:
+                    self.edge_nodes[device_id]["rssi_dbm"] = payload.get("rssi_dbm")
                 if "bus_vcc" in payload:
                     self.edge_nodes[device_id]["bus_vcc"] = payload.get("bus_vcc")
 
@@ -205,74 +229,22 @@ class MQTTClientNode:
                 print(f"[MQTT Reference Capture] Received reference sample telemetry for {device_id} ({shelf_id}).")
                 return
 
-            # Guardrail: Only execute inventory validation & database deduction when a Teachable Machine
-            # predicted_box_count is explicitly provided (or via POST /esp32_validate from the dashboard).
-            # Raw hardware MQTT /response ACKs do not carry TM predictions and must not overwrite DB state
-            # with an OpenCV heuristic guess before Teachable Machine finishes.
-            tm_count = payload.get("predicted_box_count")
-            if tm_count is None:
-                tm_count = payload.get("tm_predicted_box_count")
-
-            if tm_count is None:
-                print(
-                    f"[MQTT Response ACK] Hardware capture acknowledged by {device_id} ({shelf_id}). "
-                    f"Deferring inventory decision to Google Teachable Machine (/esp32_validate)."
-                )
-                if self.on_verification_response:
-                    self.on_verification_response({
-                        "device_id": device_id,
-                        "shelf_id": shelf_id,
-                        "state_delta": "AWAITING_TM",
-                        "status_code": payload.get("status_code", 200),
-                    })
-                return
-
-            # Otherwise: VALIDATION capture with explicit Teachable Machine prediction
-            # 1. Read current compartment quantity from list_esp32_cameras() for shelf_id (default 4)
-            curr_qty = 4
-            try:
-                compartments = list_esp32_cameras()
-                for comp in compartments:
-                    if comp.get("shelf_id") == shelf_id:
-                        curr_qty = int(comp.get("current_quantity", 4))
-                        break
-            except Exception as exc:
-                print(f"[MQTT] Warning fetching current compartment quantity for {shelf_id}: {exc}")
-
-            # 2. Call compare_with_30s_baseline_and_references
-            comp_res = self.esp32_validator.compare_with_30s_baseline_and_references(
-                mqtt_client_id=device_id or f"ESP32_{shelf_id}",
-                shelf_id=shelf_id or "SHELF_R1_C1",
-                expected_action=expected_action,
-                current_quantity=curr_qty,
-                esp32_ip=ip_address,
-                after_data_url=payload.get("image_url"),
-                predicted_box_count=int(tm_count),
-                scenario_label=payload.get("scenario_label"),
-                tm_confidence=payload.get("tm_confidence"),
-            )
-
-            # 3. Call apply_inventory_delta_in_supabase if sync enabled
-            if self.sync_supabase and shelf_id:
-                apply_inventory_delta_in_supabase(
-                    shelf_id=shelf_id,
-                    mqtt_client_id=device_id or f"ESP32_{shelf_id}",
-                    trigger_action=expected_action,
-                    comparison_result=comp_res,
-                )
-
-            # 4. Append the result to recent_responses and invoke callback
-            self.recent_responses.append(comp_res)
-            if len(self.recent_responses) > 50:
-                self.recent_responses.pop(0)
-
+            # Only log hardware readiness and update node status on iotlab/storage/+/response.
+            # Do NOT call compare_with_30s_baseline_and_references() from the MQTT callback so
+            # we never write premature NO_CHANGE logs before the browser finishes TM inference.
             print(
-                f"[MQTT Verification Response] Shelf: {shelf_id} | Device: {device_id} | "
-                f"Delta: {comp_res.get('state_delta')} ({comp_res.get('delta')}) | Diff: {comp_res.get('diff_score')}%"
+                f"[MQTT Hardware Ready] Node={device_id} | Shelf={shelf_id} | IP={ip_address} | "
+                f"Capture ready; awaiting browser 6-Class Teachable Machine validation (/esp32_validate)."
             )
-
             if self.on_verification_response:
-                self.on_verification_response(comp_res)
+                self.on_verification_response({
+                    "device_id": device_id,
+                    "shelf_id": shelf_id,
+                    "ip_address": ip_address,
+                    "state_delta": "HARDWARE_READY",
+                    "status_code": payload.get("status_code", 200),
+                })
+            return
 
         # 4. Real-time ROI Configuration Reload Signal
         elif topic == "iotlab/storage/system/reload_roi":
