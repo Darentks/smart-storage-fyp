@@ -332,7 +332,7 @@ class ESP32ReferenceManager:
         """
         if esp32_ip and _OPENCV_AVAILABLE:
             clean_ip = esp32_ip.replace("http://", "").replace("/", "").strip()
-            flash_val = flash if flash is not None else 0
+            flash_val = flash if flash is not None else 1
             url = f"http://{clean_ip}/capture?mode={mode}&flash={flash_val}&t={int(time.time() * 1000)}"
             try:
                 req = urllib.request.Request(
@@ -378,7 +378,7 @@ class ESP32ReferenceManager:
         """
         def _fetch_single_with_retry(ip: str) -> Tuple[Optional[Any], Optional[str]]:
             clean = ip.replace("http://", "").replace("/", "").strip()
-            flash_val = flash if flash is not None else 0
+            flash_val = flash if flash is not None else 1
             f_url = f"http://{clean}/capture?mode={mode}&flash={flash_val}&t={int(time.time() * 1000)}"
             for attempt in range(2):
                 req_timeout = timeout if attempt == 0 else 2.0
