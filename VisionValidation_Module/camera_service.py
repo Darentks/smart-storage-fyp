@@ -89,6 +89,7 @@ ACTIVE_ESP32_IPS: Dict[str, Any] = {
 
 # Buffer of pending CCTV intent confirmation triggers to be consumed by the UI Teachable Machine engine
 PENDING_CCTV_TRIGGERS: list = []
+LAST_TM_BASE_URL: str = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/"
 
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -583,6 +584,72 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 return
             else:
                 self._send_json(404, {"error": "Dashboard index.html file not found"})
+                return
+
+        # Teachable Machine Cache-Busting Proxy (/tm_proxy/<timestamp>/<filename>)
+        if path.startswith("/tm_proxy/"):
+            filename = path.split("/")[-1]
+            global LAST_TM_BASE_URL
+            base_url = query.get("base", [LAST_TM_BASE_URL])[0]
+            if not base_url.endswith("/"):
+                base_url += "/"
+            if "base" in query:
+                LAST_TM_BASE_URL = base_url
+
+            clean_filename = filename.split("?")[0]
+            target_url = f"{base_url}{clean_filename}?t={int(time.time() * 1000)}"
+            data_bytes = None
+
+            try:
+                req = urllib.request.Request(
+                    target_url,
+                    headers={
+                        "User-Agent": "SmartStorageVision/1.0",
+                        "Cache-Control": "no-cache, no-store",
+                        "Pragma": "no-cache",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=7.0) as resp:
+                    data_bytes = resp.read()
+            except Exception as net_err:
+                print(f"[TM Proxy] Remote fetch failed for {target_url}: {net_err}")
+
+            target_dirs = [
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "tm_0cQO4TjOm")),
+                os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "tm_0cQO4TjOm")),
+            ]
+            if data_bytes:
+                for d in target_dirs:
+                    try:
+                        os.makedirs(d, exist_ok=True)
+                        with open(os.path.join(d, clean_filename), "wb") as out_f:
+                            out_f.write(data_bytes)
+                    except Exception:
+                        pass
+            else:
+                for d in target_dirs:
+                    local_f = os.path.join(d, clean_filename)
+                    if os.path.isfile(local_f):
+                        try:
+                            with open(local_f, "rb") as lf:
+                                data_bytes = lf.read()
+                            break
+                        except Exception:
+                            pass
+
+            if data_bytes is not None:
+                ctype = "application/json" if clean_filename.endswith(".json") else "application/octet-stream"
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data_bytes)))
+                self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+                self.send_header("Pragma", "no-cache")
+                self._send_cors_headers()
+                self.end_headers()
+                self.wfile.write(data_bytes)
+                return
+            else:
+                self._send_json(502, {"error": f"Failed to fetch Teachable Machine asset {clean_filename}"})
                 return
 
         # Serve offline local Teachable Machine model assets (/models/tm_0cQO4TjOm/*)
