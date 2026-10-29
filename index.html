@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -259,11 +260,35 @@
       letter-spacing: 0.2px;
     }
 
-    .badge-online { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
-    .badge-offline { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger); }
-    .badge-removed { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning); }
-    .badge-returned { background: var(--success-bg); color: var(--success); border: 1px solid var(--success); }
-    .badge-nochange { background: var(--surface-card); color: var(--text-muted); border: 1px solid var(--border); }
+    .badge-online {
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid var(--success);
+    }
+
+    .badge-offline {
+      background: var(--danger-bg);
+      color: var(--danger);
+      border: 1px solid var(--danger);
+    }
+
+    .badge-removed {
+      background: var(--warning-bg);
+      color: var(--warning);
+      border: 1px solid var(--warning);
+    }
+
+    .badge-returned {
+      background: var(--success-bg);
+      color: var(--success);
+      border: 1px solid var(--success);
+    }
+
+    .badge-nochange {
+      background: var(--surface-card);
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
 
     .pulse-dot {
       width: 6px;
@@ -274,8 +299,17 @@
     }
 
     @keyframes pulse {
-      0%, 100% { opacity: 1; transform: scale(1); }
-      50% { opacity: 0.4; transform: scale(1.3); }
+
+      0%,
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+
+      50% {
+        opacity: 0.4;
+        transform: scale(1.3);
+      }
     }
 
     /* Panel 1: Compartment Inventory Grid */
@@ -697,16 +731,32 @@
       animation: slideIn 0.3s ease;
     }
 
-    #toast.success { border-color: var(--success); }
-    #toast.error { border-color: var(--danger); }
-    #toast.info { border-color: var(--primary); }
+    #toast.success {
+      border-color: var(--success);
+    }
+
+    #toast.error {
+      border-color: var(--danger);
+    }
+
+    #toast.info {
+      border-color: var(--primary);
+    }
 
     @keyframes slideIn {
-      from { transform: translateY(20px); opacity: 0; }
-      to { transform: translateY(0); opacity: 1; }
+      from {
+        transform: translateY(20px);
+        opacity: 0;
+      }
+
+      to {
+        transform: translateY(0);
+        opacity: 1;
+      }
     }
   </style>
 </head>
+
 <body>
 
   <div class="container">
@@ -742,13 +792,19 @@
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">TM Model URL:</label>
-        <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control" placeholder="https://teachablemachine.withgoogle.com/models/.../" />
-        <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302; Load TM Model</button>
+        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">TM Model
+          URL:</label>
+        <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control"
+          placeholder="https://teachablemachine.withgoogle.com/models/.../" />
+        <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302;
+          Load TM Model</button>
       </div>
       <div style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
-        <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);" onclick="document.getElementById('esp32CameraManagerPanel').scrollIntoView({ behavior: 'smooth' })">&#128225; 12-Node &amp; OTA Manager</button>
-        <button type="button" class="btn-action" onclick="launchLocalCalibrator()">&#9881; Launch Desktop Calibrator</button>
+        <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);"
+          onclick="document.getElementById('esp32CameraManagerPanel').scrollIntoView({ behavior: 'smooth' })">&#128225;
+          12-Node &amp; OTA Manager</button>
+        <button type="button" class="btn-action" onclick="launchLocalCalibrator()">&#9881; Launch Desktop
+          Calibrator</button>
         <button type="button" class="btn-action" onclick="refreshAllData()">&circlearrowright; Refresh All</button>
       </div>
     </div>
@@ -758,7 +814,8 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">&#128230; Panel 1 &bull; Shelf Compartments, Live Inventory &amp; 30s Baselines</h2>
-          <p class="panel-desc">Real-time stock level, latest 30-second resting baseline snapshot, and hardware telemetry from <code>public.compartments</code>.</p>
+          <p class="panel-desc">Real-time stock level, latest 30-second resting baseline snapshot, and hardware
+            telemetry from <code>public.compartments</code>.</p>
         </div>
         <span class="badge badge-online" id="liveBadge"><span class="pulse-dot"></span>Live Sync Active</span>
       </div>
@@ -774,8 +831,10 @@
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">&#128247; Panel 2 &bull; Dual ESP32-CAM (<code>CAM1 Back</code> + <code>CAM2 Front</code>) &amp; Google Teachable Machine (5-Scenario) Live Validator</h2>
-          <p class="panel-desc">Real-time dual-camera perspective (CAM 1 Back + CAM 2 Front) &amp; client-side Google Teachable Machine AI classification into 5 physical inventory scenarios.</p>
+          <h2 class="panel-title">&#128247; Panel 2 &bull; Dual ESP32-CAM (<code>CAM1 Back</code> +
+            <code>CAM2 Front</code>) &amp; Google Teachable Machine (5-Scenario) Live Validator</h2>
+          <p class="panel-desc">Real-time dual-camera perspective (CAM 1 Back + CAM 2 Front) &amp; client-side Google
+            Teachable Machine AI classification into 5 physical inventory scenarios.</p>
         </div>
         <div style="display: flex; gap: 8px; align-items: center;">
           <span class="badge badge-online" id="tmStatusBadge"><span class="pulse-dot"></span>TM AI Model Active</span>
@@ -803,27 +862,33 @@
               <div id="frontPlaceholder" class="snapshot-placeholder">
                 <span>Waiting for Cam 2...</span>
               </div>
-              <img id="frontPreviewImg" src="" crossOrigin="anonymous" alt="CAM 2 Front Preview" style="display:none;" />
+              <img id="frontPreviewImg" src="" crossOrigin="anonymous" alt="CAM 2 Front Preview"
+                style="display:none;" />
               <span id="frontPredBadge" class="cam-pred-badge" style="display:none;">Front: Ready</span>
             </div>
           </div>
 
           <!-- Stitched Combined [BACK CAM | FRONT CAM] View -->
-          <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 14px;">
+          <div
+            style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 14px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 13px; font-weight: 700; color: var(--text-muted);">&#127916; Combined Stitched Feed [BACK CAM | FRONT CAM]</span>
-              <span id="previewOverlayText" style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span>
+              <span style="font-size: 13px; font-weight: 700; color: var(--text-muted);">&#127916; Combined Stitched
+                Feed [BACK CAM | FRONT CAM]</span>
+              <span id="previewOverlayText"
+                style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span>
             </div>
             <div class="preview-canvas-box" id="previewContainer" style="max-height: 240px;">
               <div id="previewPlaceholder" class="snapshot-placeholder">
                 <span>&#128249; No snapshot yet. Click "Preview Both Angles" or upload test photos.</span>
               </div>
-              <img id="livePreviewImg" src="" crossOrigin="anonymous" alt="Combined Stitched View" style="display:none;" />
+              <img id="livePreviewImg" src="" crossOrigin="anonymous" alt="Combined Stitched View"
+                style="display:none;" />
             </div>
           </div>
 
           <!-- Prominent status banner -->
-          <div id="tmLivePredictionBanner" style="display: block; background: #0b1528; border: 1px solid var(--primary); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: var(--font-mono); color: var(--primary); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.1);">
+          <div id="tmLivePredictionBanner"
+            style="display: block; background: #0b1528; border: 1px solid var(--primary); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: var(--font-mono); color: var(--primary); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.1);">
             Teachable Machine (0cQO4TjOm): Waiting for preview...
           </div>
         </div>
@@ -831,8 +896,10 @@
         <!-- Right Column (Dual Camera Controls & Offline Home Photo Tester) -->
         <div class="tester-controls-col" style="display: flex; flex-direction: column; gap: 14px;">
           <!-- Dual Camera Controls Card -->
-          <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
-            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-primary);">&#9881; Target Shelf &amp; ESP32-CAM Setup</h3>
+          <div
+            style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
+            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-primary);">&#9881;
+              Target Shelf &amp; ESP32-CAM Setup</h3>
 
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refShelfSelect">Target Shelf Compartment</label>
@@ -848,14 +915,18 @@
 
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refEspIpInput">ESP32-CAM 1 Back Angle IP</label>
-              <select id="cam1IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;" onchange="onSelectAssignedCameraIp(1, this.value)"></select>
-              <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" oninput="markIpInputDirty(1)" />
+              <select id="cam1IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
+                onchange="onSelectAssignedCameraIp(1, this.value)"></select>
+              <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101"
+                value="192.168.0.101" oninput="markIpInputDirty(1)" />
             </div>
 
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refEspIp2Input">ESP32-CAM 2 Front Angle IP</label>
-              <select id="cam2IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;" onchange="onSelectAssignedCameraIp(2, this.value)"></select>
-              <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102" value="192.168.0.102" oninput="markIpInputDirty(2)" />
+              <select id="cam2IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
+                onchange="onSelectAssignedCameraIp(2, this.value)"></select>
+              <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102"
+                value="192.168.0.102" oninput="markIpInputDirty(2)" />
             </div>
 
             <div class="form-group" style="margin-bottom: 12px;">
@@ -868,45 +939,58 @@
             </div>
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
-              <button type="button" class="btn-action" id="scanCamIpsBtn" style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
+              <button type="button" class="btn-action" id="scanCamIpsBtn"
+                style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
                 &#128269; Scan Online Camera IPs
               </button>
-              <button type="button" class="btn-action" id="saveCamIpsBtn" style="height: 36px; justify-content: center; font-size: 11px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);" onclick="saveAssignedShelfIps()">
+              <button type="button" class="btn-action" id="saveCamIpsBtn"
+                style="height: 36px; justify-content: center; font-size: 11px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);"
+                onclick="saveAssignedShelfIps()">
                 &#128190; Save Assigned IPs to Shelf
               </button>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 10px;">
-              <button type="button" class="btn-primary" style="height: 40px; justify-content: center;" onclick="fetchLiveAnglePreview()">
+              <button type="button" class="btn-primary" style="height: 40px; justify-content: center;"
+                onclick="fetchLiveAnglePreview()">
                 &#128065; Preview Both Angles &amp; Run Teachable Machine
               </button>
-              <button type="button" class="btn-action" style="height: 40px; justify-content: center; background: rgba(56, 189, 248, 0.1); border-color: var(--primary); color: var(--primary);" onclick="runFullDualCamValidation(refShelfSelect.value, 'BORROW')">
+              <button type="button" class="btn-action"
+                style="height: 40px; justify-content: center; background: rgba(56, 189, 248, 0.1); border-color: var(--primary); color: var(--primary);"
+                onclick="runFullDualCamValidation(refShelfSelect.value, 'BORROW')">
                 &#9889; Run Full Validation &amp; Update Supabase DB
               </button>
             </div>
           </div>
 
           <!-- Offline Home Test Box (For Testing Without Physical ESP32-CAMs) -->
-          <div style="background: rgba(14, 165, 233, 0.05); border: 1px dashed var(--primary); border-radius: 10px; padding: 16px;">
+          <div
+            style="background: rgba(14, 165, 233, 0.05); border: 1px dashed var(--primary); border-radius: 10px; padding: 16px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <h3 style="font-size: 13px; font-weight: 700; color: var(--primary); margin: 0;">&#127968; Offline Home Photo Tester</h3>
+              <h3 style="font-size: 13px; font-weight: 700; color: var(--primary); margin: 0;">&#127968; Offline Home
+                Photo Tester</h3>
               <span id="homeTestModeBadge" class="badge badge-offline" style="font-size: 10px;">Hardware Stream</span>
             </div>
             <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
-              Test Teachable Machine classification and trigger +1 / -1 Supabase inventory updates without physical ESP32-CAMs connected.
+              Test Teachable Machine classification and trigger +1 / -1 Supabase inventory updates without physical
+              ESP32-CAMs connected.
             </p>
 
             <div class="form-group" style="margin-bottom: 10px;">
               <label for="testBackFileInput" style="font-size: 11px;">Upload CAM 1 Back Photo:</label>
-              <input type="file" id="testBackFileInput" accept="image/*" class="form-control" style="font-size: 12px; padding: 6px 10px;" />
+              <input type="file" id="testBackFileInput" accept="image/*" class="form-control"
+                style="font-size: 12px; padding: 6px 10px;" />
             </div>
 
             <div class="form-group" style="margin-bottom: 14px;">
               <label for="testFrontFileInput" style="font-size: 11px;">Upload CAM 2 Front Photo:</label>
-              <input type="file" id="testFrontFileInput" accept="image/*" class="form-control" style="font-size: 12px; padding: 6px 10px;" />
+              <input type="file" id="testFrontFileInput" accept="image/*" class="form-control"
+                style="font-size: 12px; padding: 6px 10px;" />
             </div>
 
-            <button type="button" class="btn-action" style="width: 100%; height: 38px; justify-content: center; font-weight: 700;" onclick="runOfflinePhotoTest()">
+            <button type="button" class="btn-action"
+              style="width: 100%; height: 38px; justify-content: center; font-weight: 700;"
+              onclick="runOfflinePhotoTest()">
               &#127968; Test Teachable Machine with Uploaded Photos
             </button>
           </div>
@@ -916,16 +1000,21 @@
 
     <!-- Panel 3: OpenCV Before vs. After Comparison Log -->
     <section class="panel">
-      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+      <div class="panel-header"
+        style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div>
-          <h2 class="panel-title">&#128248; Panel 3 &bull; OpenCV Before (30s Baseline) vs. After (Post-Trigger) Comparison Logs</h2>
-          <p class="panel-desc">Every physical inventory interaction verification recorded in <code>public.comparison_logs</code>.</p>
+          <h2 class="panel-title">&#128248; Panel 3 &bull; OpenCV Before (30s Baseline) vs. After (Post-Trigger)
+            Comparison Logs</h2>
+          <p class="panel-desc">Every physical inventory interaction verification recorded in
+            <code>public.comparison_logs</code>.</p>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
-          <button type="button" class="btn btn-secondary" onclick="exportComparisonLogsCsv()" style="font-size: 12px; padding: 6px 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid var(--primary); color: var(--primary); cursor: pointer; border-radius: 6px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;">
+          <button type="button" class="btn btn-secondary" onclick="exportComparisonLogsCsv()"
+            style="font-size: 12px; padding: 6px 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid var(--primary); color: var(--primary); cursor: pointer; border-radius: 6px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px;">
             &#11015; Export CSV for Thesis
           </button>
-          <span id="logCountBadge" style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">0 Logs</span>
+          <span id="logCountBadge" style="font-size: 12px; color: var(--text-muted); font-family: var(--font-mono);">0
+            Logs</span>
         </div>
       </div>
 
@@ -938,22 +1027,28 @@
 
     <!-- Panel 4: Esp32CameraManager — 12-Node Hardware CRUD, NVS Provisioning & Wireless OTA Manager -->
     <section class="panel" id="esp32CameraManagerPanel" style="margin-top: 24px;">
-      <div class="panel-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
+      <div class="panel-header"
+        style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
         <div>
-          <h2 class="panel-title">&#128225; Panel 4 &bull; ESP32-CAM Hardware Node CRUD, NVS Reassignment &amp; Wireless OTA Manager (12 Nodes)</h2>
-          <p class="panel-desc">Manage up to 12 ESP32-CAM compartment nodes (Angle 1 Back &amp; Angle 2 Front per shelf) in <code>public.esp32_cameras</code>, push wireless NVS config, and upload <code>.bin</code> firmware via OTA.</p>
+          <h2 class="panel-title">&#128225; Panel 4 &bull; ESP32-CAM Hardware Node CRUD, NVS Reassignment &amp; Wireless
+            OTA Manager (12 Nodes)</h2>
+          <p class="panel-desc">Manage up to 12 ESP32-CAM compartment nodes (Angle 1 Back &amp; Angle 2 Front per shelf)
+            in <code>public.esp32_cameras</code>, push wireless NVS config, and upload <code>.bin</code> firmware via
+            OTA.</p>
         </div>
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <button type="button" class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">
             &#128269; Probe All 12 Nodes
           </button>
-          <button type="button" class="btn-primary" style="height: 36px; padding: 0 14px; font-size: 12px;" onclick="openEsp32ProvisionModal(null)">
+          <button type="button" class="btn-primary" style="height: 36px; padding: 0 14px; font-size: 12px;"
+            onclick="openEsp32ProvisionModal(null)">
             &#10133; Add / Provision Camera Node
           </button>
         </div>
       </div>
 
-      <div id="esp32CameraManagerGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 16px;">
+      <div id="esp32CameraManagerGrid"
+        style="display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 16px;">
         <div style="grid-column: 1 / -1; text-align: center; padding: 32px; color: var(--text-muted);">
           Loading 12 ESP32-CAM hardware nodes...
         </div>
@@ -962,19 +1057,25 @@
   </div>
 
   <!-- Add / Provision ESP32-CAM Modal -->
-  <div id="esp32ProvisionModal" style="display: none; position: fixed; inset: 0; background: rgba(5, 8, 17, 0.85); z-index: 9999; align-items: center; justify-content: center; padding: 16px;">
-    <form onsubmit="submitEsp32ProvisionModal(event)" style="background: var(--surface); border: 1px solid var(--primary); border-radius: 12px; padding: 22px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 50px rgba(0,0,0,0.6);">
+  <div id="esp32ProvisionModal"
+    style="display: none; position: fixed; inset: 0; background: rgba(5, 8, 17, 0.85); z-index: 9999; align-items: center; justify-content: center; padding: 16px;">
+    <form onsubmit="submitEsp32ProvisionModal(event)"
+      style="background: var(--surface); border: 1px solid var(--primary); border-radius: 12px; padding: 22px; width: 100%; max-width: 480px; display: flex; flex-direction: column; gap: 12px; box-shadow: 0 20px 50px rgba(0,0,0,0.6);">
       <div style="display: flex; justify-content: space-between; align-items: center;">
-        <h3 style="margin: 0; font-size: 16px; color: var(--text-primary);">&#128225; Add / Provision ESP32-CAM Node (Wireless NVS)</h3>
-        <button type="button" class="btn-action" style="padding: 2px 8px; font-size: 12px;" onclick="closeEsp32ProvisionModal()">&#10005;</button>
+        <h3 style="margin: 0; font-size: 16px; color: var(--text-primary);">&#128225; Add / Provision ESP32-CAM Node
+          (Wireless NVS)</h3>
+        <button type="button" class="btn-action" style="padding: 2px 8px; font-size: 12px;"
+          onclick="closeEsp32ProvisionModal()">&#10005;</button>
       </div>
       <input type="hidden" id="provCamIdInput" value="" />
 
       <div class="form-group">
         <label for="provCurrentIpInput">Current Camera IP (to Probe &amp; Push NVS Config)</label>
         <div style="display: flex; gap: 8px;">
-          <input type="text" id="provCurrentIpInput" class="form-control" placeholder="192.168.0.101" value="192.168.0.101" required />
-          <button type="button" class="btn-action" id="provProbeBtn" onclick="probeModalCurrentCameraIp()" style="white-space: nowrap;">&#128269; Probe IP</button>
+          <input type="text" id="provCurrentIpInput" class="form-control" placeholder="192.168.0.101"
+            value="192.168.0.101" required />
+          <button type="button" class="btn-action" id="provProbeBtn" onclick="probeModalCurrentCameraIp()"
+            style="white-space: nowrap;">&#128269; Probe IP</button>
         </div>
       </div>
 
@@ -1021,11 +1122,14 @@
         </div>
       </div>
 
-      <div id="provStatusBanner" style="display: none; font-size: 11px; font-family: var(--font-mono); padding: 8px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.1); border: 1px solid var(--primary); color: var(--primary);"></div>
+      <div id="provStatusBanner"
+        style="display: none; font-size: 11px; font-family: var(--font-mono); padding: 8px 10px; border-radius: 6px; background: rgba(56, 189, 248, 0.1); border: 1px solid var(--primary); color: var(--primary);">
+      </div>
 
       <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
         <button type="button" class="btn-action" onclick="closeEsp32ProvisionModal()">Cancel</button>
-        <button type="submit" class="btn-primary" id="provSubmitBtn" style="height: 36px; padding: 0 16px;">&#9889; Provision &amp; Save</button>
+        <button type="submit" class="btn-primary" id="provSubmitBtn" style="height: 36px; padding: 0 16px;">&#9889;
+          Provision &amp; Save</button>
       </div>
     </form>
   </div>
@@ -1144,8 +1248,9 @@
       if (tmModelUrlInput) tmModelUrlInput.value = rawUrl;
       localStorage.setItem('smart_storage_tm_model_url', rawUrl);
 
-      const modelURL = rawUrl + 'model.json';
-      const metadataURL = rawUrl + 'metadata.json';
+      const cb = `?t=${Date.now()}`;
+      const modelURL = rawUrl + 'model.json' + cb;
+      const metadataURL = rawUrl + 'metadata.json' + cb;
 
       if (loadTmModelBtn) {
         loadTmModelBtn.disabled = true;
@@ -1235,7 +1340,7 @@
         }
 
         for (let i = 0; i < data.length; i += 4) {
-          data[i]     = lut[data[i]];
+          data[i] = lut[data[i]];
           data[i + 1] = lut[data[i + 1]];
           data[i + 2] = lut[data[i + 2]];
         }
@@ -1695,7 +1800,7 @@
       try {
         await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.1`, { ip_address: ip1 });
         await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.2`, { ip_address: ip2 });
-      } catch (_) {}
+      } catch (_) { }
       esp32CameraNodesList = (esp32CameraNodesList || []).map(cam => {
         if (cam.shelf_id === shelfId) {
           return {
@@ -2332,7 +2437,7 @@
                 data = bridgeJson.comparison_logs;
               }
             }
-          } catch (e) {}
+          } catch (e) { }
         }
 
         comparisonLogsData = data || [];
@@ -2380,9 +2485,9 @@
               </div>
               <div>
                 ${isOnline
-                  ? '<span class="badge badge-online"><span class="pulse-dot"></span>Online</span>'
-                  : '<span class="badge badge-offline">Offline</span>'
-                }
+            ? '<span class="badge badge-online"><span class="pulse-dot"></span>Online</span>'
+            : '<span class="badge badge-offline">Offline</span>'
+          }
               </div>
             </div>
 
@@ -2577,17 +2682,17 @@
     // ESP32-CAM 12-NODE HARDWARE CRUD, WIRELESS NVS & OTA SERVICE (Panel 4)
     // =========================================================================
     const DEFAULT_12_ESP32_CAMERAS = [
-      { id: 'cam-101', device_id: 'ESP32_R1_C1_CAM1', camera_name: 'R1-C1 Back Angle (CAM 1)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 1, ip_address: '192.168.0.101', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-102', device_id: 'ESP32_R1_C1_CAM2', camera_name: 'R1-C1 Front Angle (CAM 2)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 2, ip_address: '192.168.0.102', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-103', device_id: 'ESP32_R1_C2_CAM1', camera_name: 'R1-C2 Back Angle (CAM 3)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 1, ip_address: '192.168.0.103', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 4)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 5)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 6)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-107', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 7)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-108', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 8)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-109', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 9)',   rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-101', device_id: 'ESP32_R1_C1_CAM1', camera_name: 'R1-C1 Back Angle (CAM 1)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 1, ip_address: '192.168.0.101', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-102', device_id: 'ESP32_R1_C1_CAM2', camera_name: 'R1-C1 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 2, ip_address: '192.168.0.102', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-103', device_id: 'ESP32_R1_C2_CAM1', camera_name: 'R1-C2 Back Angle (CAM 3)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 1, ip_address: '192.168.0.103', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 4)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 5)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 6)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-107', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 7)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-108', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 8)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-109', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 9)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
       { id: 'cam-110', device_id: 'ESP32_R1_C5_CAM2', camera_name: 'R1-C5 Front Angle (CAM 10)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-111', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 11)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
+      { id: 'cam-111', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 11)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
       { id: 'cam-112', device_id: 'ESP32_R1_C6_CAM2', camera_name: 'R1-C6 Front Angle (CAM 12)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null }
     ];
 
@@ -2687,14 +2792,14 @@
           if (!error && data && data.length > 0) {
             return data;
           }
-        } catch (_) {}
+        } catch (_) { }
       }
       try {
         const restData = await sbRest('esp32_cameras', 'GET', '?select=*&order=shelf_id.asc,angle_index.asc');
         if (Array.isArray(restData) && restData.length > 0) {
           return restData;
         }
-      } catch (_) {}
+      } catch (_) { }
       return [...DEFAULT_12_ESP32_CAMERAS];
     }
 
@@ -2728,7 +2833,7 @@
           ? { secondary_ip_address: record.ip_address, secondary_mqtt_client_id: record.device_id }
           : { ip_address: record.ip_address, mqtt_client_id: record.device_id.replace(/_CAM1$/i, '') };
         await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(record.shelf_id)}`, compPatch);
-      } catch (_) {}
+      } catch (_) { }
       return savedRow || { ...cam, ...record };
     }
 
@@ -3104,7 +3209,7 @@
               secondary_ip_address: angleIndex === 2 ? targetIp : (cam2Node ? cam2Node.ip_address : undefined)
             })
           });
-        } catch (_) {}
+        } catch (_) { }
 
         renderEsp32CameraManager();
         loadCompartments();
@@ -3193,4 +3298,5 @@
     })();
   </script>
 </body>
+
 </html>
