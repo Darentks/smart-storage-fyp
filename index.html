@@ -832,7 +832,8 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">&#128247; Panel 2 &bull; Dual ESP32-CAM (<code>CAM1 Back</code> +
-            <code>CAM2 Front</code>) &amp; Google Teachable Machine (5-Scenario) Live Validator</h2>
+            <code>CAM2 Front</code>) &amp; Google Teachable Machine (5-Scenario) Live Validator
+          </h2>
           <p class="panel-desc">Real-time dual-camera perspective (CAM 1 Back + CAM 2 Front) &amp; client-side Google
             Teachable Machine AI classification into 5 physical inventory scenarios.</p>
         </div>
@@ -932,9 +933,9 @@
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="visionBoostSelect">&#128161; Low-Light Vision Boost</label>
               <select id="visionBoostSelect" class="form-control">
-                <option value="auto" selected>&#128161; Auto Low-Light Boost (CLAHE + Shadow Gamma)</option>
+                <option value="off" selected>&#128247; Raw Sensor Image (No Brightness Boost)</option>
+                <option value="auto">&#128161; Auto Low-Light Boost (CLAHE + Shadow Gamma)</option>
                 <option value="high">&#128261; Maximum Brightness Boost (Very Dark Shelf)</option>
-                <option value="off">&#128247; Raw Sensor Image (No Brightness Boost)</option>
               </select>
             </div>
 
@@ -1006,7 +1007,8 @@
           <h2 class="panel-title">&#128248; Panel 3 &bull; OpenCV Before (30s Baseline) vs. After (Post-Trigger)
             Comparison Logs</h2>
           <p class="panel-desc">Every physical inventory interaction verification recorded in
-            <code>public.comparison_logs</code>.</p>
+            <code>public.comparison_logs</code>.
+          </p>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
           <button type="button" class="btn btn-secondary" onclick="exportComparisonLogsCsv()"
@@ -1316,27 +1318,33 @@
     }
 
     // Low-light canvas enhancement fallback (CLAHE approximation + shadow gamma correction)
-    function enhanceCanvasLowLight(sourceEl, boostMode = 'auto') {
+    function enhanceCanvasLowLight(sourceEl, boostMode = 'off') {
       if (!sourceEl) return sourceEl;
       try {
-        const w = sourceEl.naturalWidth || sourceEl.videoWidth || sourceEl.width || 640;
-        const h = sourceEl.naturalHeight || sourceEl.videoHeight || sourceEl.height || 480;
-        if (!w || !h) return sourceEl;
+        const srcW = sourceEl.naturalWidth || sourceEl.videoWidth || sourceEl.width || 640;
+        const srcH = sourceEl.naturalHeight || sourceEl.videoHeight || sourceEl.height || 480;
+        if (!srcW || !srcH) return sourceEl;
+
+        // 1. Center-crop to a 1:1 square so it matches Teachable Machine Webcam/OBS Studio crop
+        const cropSize = Math.min(srcW, srcH);
+        const startX = Math.floor((srcW - cropSize) / 2);
+        const startY = Math.floor((srcH - cropSize) / 2);
 
         const canvas = document.createElement('canvas');
-        canvas.width = w;
-        canvas.height = h;
+        canvas.width = 224;
+        canvas.height = 224;
         const ctx = canvas.getContext('2d');
-        ctx.drawImage(sourceEl, 0, 0, w, h);
+
+        // Draw only the center square scaled cleanly to 224x224
+        ctx.drawImage(sourceEl, startX, startY, cropSize, cropSize, 0, 0, 224, 224);
 
         if (boostMode === 'off') {
           return canvas;
         }
 
-        const imgData = ctx.getImageData(0, 0, w, h);
+        const imgData = ctx.getImageData(0, 0, 224, 224);
         const data = imgData.data;
 
-        // Sample mean luminance (Y ~ 0.299R + 0.587G + 0.114B)
         let totalL = 0;
         const sampleStep = 16;
         let sampleCount = 0;
@@ -1373,7 +1381,7 @@
         ctx.putImageData(imgData, 0, 0);
         return canvas;
       } catch (err) {
-        console.warn('[Enhance] Canvas low-light boost fallback error:', err);
+        console.warn('[Enhance] Canvas preprocess error:', err);
         return sourceEl;
       }
     }
