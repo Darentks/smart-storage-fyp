@@ -1079,7 +1079,7 @@
               <div style="display: grid; grid-template-columns: 1.2fr 0.8fr 0.8fr 1.2fr; gap: 6px;">
                 <div>
                   <label for="cctvIpInput" style="font-size: 10px; color: var(--text-muted);">IP Address</label>
-                  <input type="text" id="cctvIpInput" class="form-control" style="font-size: 11px; padding: 4px 6px;" value="192.168.100.1" />
+                  <input type="text" id="cctvIpInput" class="form-control" style="font-size: 11px; padding: 4px 6px;" value="192.168.0.101" />
                 </div>
                 <div>
                   <label for="cctvUserInput" style="font-size: 10px; color: var(--text-muted);">User</label>
@@ -1103,7 +1103,7 @@
             <!-- Full RTSP URL Input -->
             <div class="form-group">
               <label for="cctvRtspInput" style="font-size: 11px; font-weight: 600;">Full RTSP URL or Webcam Index</label>
-              <input type="text" id="cctvRtspInput" class="form-control" placeholder="rtsp://admin:Password@192.168.100.1:554/Streaming/Channels/102" value="rtsp://admin:Password@192.168.100.1:554/Streaming/Channels/102" required />
+              <input type="text" id="cctvRtspInput" class="form-control" placeholder="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102" value="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102" required />
             </div>
 
             <!-- Assigned Shelves & Quick Preset Pills -->
@@ -3519,8 +3519,8 @@
         cctv_id: 'CCTV_01',
         camera_name: 'Hikvision CCTV 1 (Left Angle - Column 1)',
         rack_id: 'RACK_01',
-        ip_address: '192.168.100.1',
-        rtsp_url: 'rtsp://admin:Password@192.168.100.1:554/Streaming/Channels/102',
+        ip_address: '192.168.0.101',
+        rtsp_url: 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102',
         assigned_shelves: ['SHELF_R1_C1'],
         is_active: true,
         status: 'ONLINE'
@@ -3529,8 +3529,8 @@
         cctv_id: 'CCTV_02',
         camera_name: 'Hikvision CCTV 2 (Center Angle)',
         rack_id: 'RACK_01',
-        ip_address: '192.168.100.2',
-        rtsp_url: 'rtsp://admin:Password@192.168.100.2:554/Streaming/Channels/102',
+        ip_address: '192.168.0.102',
+        rtsp_url: 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102',
         assigned_shelves: ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'],
         is_active: false,
         status: 'OFFLINE'
@@ -3539,8 +3539,8 @@
         cctv_id: 'CCTV_03',
         camera_name: 'Hikvision CCTV 3 (Right Angle)',
         rack_id: 'RACK_01',
-        ip_address: '192.168.100.3',
-        rtsp_url: 'rtsp://admin:Password@192.168.100.3:554/Streaming/Channels/102',
+        ip_address: '192.168.0.103',
+        rtsp_url: 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102',
         assigned_shelves: ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'],
         is_active: false,
         status: 'OFFLINE'
@@ -3551,7 +3551,7 @@
     let runningPipelinesList = [];
 
     function buildCctvRtspFromInputs() {
-      const ip = (document.getElementById('cctvIpInput').value || '192.168.100.1').trim();
+      const ip = (document.getElementById('cctvIpInput').value || '192.168.0.101').trim();
       const user = (document.getElementById('cctvUserInput').value || 'admin').trim();
       const pass = (document.getElementById('cctvPassInput').value || 'Password').trim();
       const channel = (document.getElementById('cctvChannelSelect').value || '102').trim();
@@ -3572,8 +3572,8 @@
     function resetCctvForm() {
       document.getElementById('cctvIdInput').value = 'CCTV_01';
       document.getElementById('cctvNameInput').value = 'Hikvision CCTV 1 - Left Angle (Column 1)';
-      document.getElementById('cctvIpInput').value = '192.168.100.1';
-      document.getElementById('cctvRtspInput').value = 'rtsp://admin:Password@192.168.100.1:554/Streaming/Channels/102';
+      document.getElementById('cctvIpInput').value = '192.168.0.101';
+      document.getElementById('cctvRtspInput').value = 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102';
       document.getElementById('cctvShelvesInput').value = '["SHELF_R1_C1"]';
       document.getElementById('cctvActiveCheck').checked = true;
     }
@@ -3582,7 +3582,7 @@
       if (event) event.preventDefault();
       const cctvId = (document.getElementById('cctvIdInput').value || '').trim();
       const cameraName = (document.getElementById('cctvNameInput').value || '').trim();
-      const ipAddress = (document.getElementById('cctvIpInput').value || '192.168.100.1').trim();
+      const ipAddress = (document.getElementById('cctvIpInput').value || '192.168.0.101').trim();
       const rtspUrl = (document.getElementById('cctvRtspInput').value || '').trim();
       const shelvesRaw = (document.getElementById('cctvShelvesInput').value || '["SHELF_R1_C1"]').trim();
       const isActive = document.getElementById('cctvActiveCheck').checked;
@@ -3819,7 +3819,7 @@
         const cam = JSON.parse(decodeURIComponent(encodedJson));
         document.getElementById('cctvIdInput').value = cam.cctv_id || 'CCTV_01';
         document.getElementById('cctvNameInput').value = cam.camera_name || '';
-        document.getElementById('cctvIpInput').value = cam.ip_address || '192.168.100.1';
+        document.getElementById('cctvIpInput').value = cam.ip_address || '192.168.0.101';
         document.getElementById('cctvRtspInput').value = cam.rtsp_url || '';
         document.getElementById('cctvShelvesInput').value = JSON.stringify(cam.assigned_shelves || ['SHELF_R1_C1']);
         document.getElementById('cctvActiveCheck').checked = cam.is_active !== false;
