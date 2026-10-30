@@ -18,8 +18,8 @@ CREATE TABLE IF NOT EXISTS public.compartments (
     mqtt_client_id VARCHAR(100) UNIQUE NOT NULL,                            -- Primary ESP32 node (e.g. 'ESP32_R1_C1_CAM1')
     secondary_mqtt_client_id TEXT DEFAULT 'ESP32_R1_C1_CAM2',               -- MQTT ID of 2nd ESP32-CAM (Front Angle)
     camera_name VARCHAR(100) NOT NULL DEFAULT 'ESP32 Dual Node R1-C1',      -- Human-readable camera node name
-    ip_address VARCHAR(50) DEFAULT '192.168.0.101',                         -- CAM 1 Back Angle IP
-    secondary_ip_address TEXT DEFAULT '192.168.0.102',                      -- CAM 2 Front Angle IP
+    ip_address VARCHAR(50) DEFAULT '192.168.0.201',                         -- CAM 1 Back Angle IP
+    secondary_ip_address TEXT DEFAULT '192.168.0.202',                      -- CAM 2 Front Angle IP
     current_quantity INTEGER NOT NULL DEFAULT 4 CHECK (current_quantity >= 0 AND current_quantity <= 4),
     max_capacity INTEGER NOT NULL DEFAULT 4,                                -- Max items in compartment (4)
     baseline_image_url TEXT NULL,                                           -- Latest 30s stitched [CAM1 | CAM2] or CAM1 baseline image
@@ -34,9 +34,9 @@ CREATE TABLE IF NOT EXISTS public.compartments (
 );
 
 -- Migration Statements for Existing Table 1
-ALTER TABLE public.compartments ALTER COLUMN ip_address SET DEFAULT '192.168.0.101';
+ALTER TABLE public.compartments ALTER COLUMN ip_address SET DEFAULT '192.168.0.201';
 ALTER TABLE public.compartments ALTER COLUMN camera_name SET DEFAULT 'ESP32 Dual Node R1-C1';
-ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS secondary_ip_address TEXT DEFAULT '192.168.0.102';
+ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS secondary_ip_address TEXT DEFAULT '192.168.0.202';
 ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS secondary_mqtt_client_id TEXT DEFAULT 'ESP32_R1_C1_CAM2';
 ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS baseline_image_2_url TEXT;
 ALTER TABLE public.compartments ADD COLUMN IF NOT EXISTS tm_model_url TEXT DEFAULT 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/';
@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS public.esp32_cameras (
     rack_id TEXT NOT NULL DEFAULT 'RACK_01',
     shelf_id TEXT NOT NULL,                                                 -- e.g. 'SHELF_R1_C1'
     angle_index INTEGER NOT NULL DEFAULT 1 CHECK (angle_index IN (1, 2)),   -- 1 = Back Angle, 2 = Front Angle
-    ip_address TEXT NOT NULL DEFAULT '192.168.0.101',
+    ip_address TEXT NOT NULL DEFAULT '192.168.0.201',
+    secondary_ip_address TEXT DEFAULT '192.168.0.202',
     status TEXT NOT NULL DEFAULT 'OFFLINE',
     rssi_dbm INTEGER NULL,
     last_seen TIMESTAMPTZ NULL,
@@ -154,17 +155,17 @@ INSERT INTO public.compartments (
     shelf_id, rack_id, mqtt_client_id, secondary_mqtt_client_id, camera_name,
     ip_address, secondary_ip_address, current_quantity, max_capacity, status, tm_model_url
 ) VALUES
-    ('SHELF_R1_C1', 'RACK_01', 'ESP32_R1_C1_CAM1', 'ESP32_R1_C1_CAM2', 'ESP32 Dual Node R1-C1', '192.168.0.101', '192.168.0.102', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C2', 'RACK_01', 'ESP32_R1_C2_CAM1', 'ESP32_R1_C2_CAM2', 'ESP32 Dual Node R1-C2', '192.168.0.103', '192.168.0.104', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C3', 'RACK_01', 'ESP32_R1_C3_CAM1', 'ESP32_R1_C3_CAM2', 'ESP32 Dual Node R1-C3', '192.168.0.105', '192.168.0.106', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C4', 'RACK_01', 'ESP32_R1_C4_CAM1', 'ESP32_R1_C4_CAM2', 'ESP32 Dual Node R1-C4', '192.168.0.107', '192.168.0.108', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C5', 'RACK_01', 'ESP32_R1_C5_CAM1', 'ESP32_R1_C5_CAM2', 'ESP32 Dual Node R1-C5', '192.168.0.109', '192.168.0.110', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C6', 'RACK_01', 'ESP32_R1_C6_CAM1', 'ESP32_R1_C6_CAM2', 'ESP32 Dual Node R1-C6', '192.168.0.111', '192.168.0.112', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/')
-ON CONFLICT (shelf_id) DO UPDATE SET
-    rack_id = EXCLUDED.rack_id,
-    mqtt_client_id = EXCLUDED.mqtt_client_id,
-    secondary_mqtt_client_id = EXCLUDED.secondary_mqtt_client_id,
-    camera_name = EXCLUDED.camera_name,
+    ('SHELF_R1_C1', 'RACK_01', 'ESP32_R1_C1_CAM1', 'ESP32_R1_C1_CAM2', 'ESP32 Dual Node R1-C1', '192.168.0.201', '192.168.0.202', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C2', 'RACK_01', 'ESP32_R1_C2_CAM1', 'ESP32_R1_C2_CAM2', 'ESP32 Dual Node R1-C2', '192.168.0.203', '192.168.0.204', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C3', 'RACK_01', 'ESP32_R1_C3_CAM1', 'ESP32_R1_C3_CAM2', 'ESP32 Dual Node R1-C3', '192.168.0.205', '192.168.0.206', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C4', 'RACK_01', 'ESP32_R1_C4_CAM1', 'ESP32_R1_C4_CAM2', 'ESP32 Dual Node R1-C4', '192.168.0.207', '192.168.0.208', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C5', 'RACK_01', 'ESP32_R1_C5_CAM1', 'ESP32_R1_C5_CAM2', 'ESP32 Dual Node R1-C5', '192.168.0.209', '192.168.0.210', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C6', 'RACK_01', 'ESP32_R1_C6_CAM1', 'ESP32_R1_C6_CAM2', 'ESP32 Dual Node R1-C6', '192.168.0.211', '192.168.0.212', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ON CONFLICT (shelf_id) DO UPDATE SET
+    secondary_ip_address = EXCLUDED.secondary_ip_address,
+    current_quantity = EXCLUDED.current_quantity,
+    max_capacity = EXCLUDED.max_capacity,
+    tm_model_url = EXCLUDED.tm_model_url,
     ip_address = EXCLUDED.ip_address,
     secondary_ip_address = EXCLUDED.secondary_ip_address,
     current_quantity = EXCLUDED.current_quantity,
@@ -178,9 +179,9 @@ ON CONFLICT (shelf_id) DO UPDATE SET
 INSERT INTO public.cctv_cameras (
     cctv_id, camera_name, rack_id, ip_address, rtsp_url, assigned_shelves, is_active, status
 ) VALUES
-    ('CCTV_01', 'Hikvision CCTV 1 (Left Angle)', 'RACK_01', '192.168.100.1', 'rtsp://admin:Password@192.168.100.1:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, TRUE, 'ONLINE'),
-    ('CCTV_02', 'Hikvision CCTV 2 (Center Angle)', 'RACK_01', '192.168.100.2', 'rtsp://admin:Password@192.168.100.2:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, FALSE, 'OFFLINE'),
-    ('CCTV_03', 'Hikvision CCTV 3 (Right Angle)', 'RACK_01', '192.168.100.3', 'rtsp://admin:Password@192.168.100.3:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, FALSE, 'OFFLINE')
+    ('CCTV_01', 'Hikvision CCTV 1 (Left Angle)', 'RACK_01', '192.168.0.101', 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, TRUE, 'ONLINE'),
+    ('CCTV_02', 'Hikvision CCTV 2 (Center Angle)', 'RACK_01', '192.168.0.102', 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, FALSE, 'OFFLINE'),
+    ('CCTV_03', 'Hikvision CCTV 3 (Right Angle)', 'RACK_01', '192.168.0.103', 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102', '["SHELF_R1_C1", "SHELF_R1_C2", "SHELF_R1_C3", "SHELF_R1_C4", "SHELF_R1_C5", "SHELF_R1_C6"]'::jsonb, FALSE, 'OFFLINE')
 ON CONFLICT (cctv_id) DO UPDATE SET
     camera_name = EXCLUDED.camera_name,
     rack_id = EXCLUDED.rack_id,
@@ -196,18 +197,18 @@ ON CONFLICT (cctv_id) DO UPDATE SET
 INSERT INTO public.esp32_cameras (
     device_id, camera_name, rack_id, shelf_id, angle_index, ip_address, status
 ) VALUES
-    ('ESP32_R1_C1_CAM1', 'R1-C1 Back Angle (CAM 1)',  'RACK_01', 'SHELF_R1_C1', 1, '192.168.0.101', 'OFFLINE'),
-    ('ESP32_R1_C1_CAM2', 'R1-C1 Front Angle (CAM 2)', 'RACK_01', 'SHELF_R1_C1', 2, '192.168.0.102', 'OFFLINE'),
-    ('ESP32_R1_C2_CAM1', 'R1-C2 Back Angle (CAM 3)',  'RACK_01', 'SHELF_R1_C2', 1, '192.168.0.103', 'OFFLINE'),
-    ('ESP32_R1_C2_CAM2', 'R1-C2 Front Angle (CAM 4)', 'RACK_01', 'SHELF_R1_C2', 2, '192.168.0.104', 'OFFLINE'),
-    ('ESP32_R1_C3_CAM1', 'R1-C3 Back Angle (CAM 5)',  'RACK_01', 'SHELF_R1_C3', 1, '192.168.0.105', 'OFFLINE'),
-    ('ESP32_R1_C3_CAM2', 'R1-C3 Front Angle (CAM 6)', 'RACK_01', 'SHELF_R1_C3', 2, '192.168.0.106', 'OFFLINE'),
-    ('ESP32_R1_C4_CAM1', 'R1-C4 Back Angle (CAM 7)',  'RACK_01', 'SHELF_R1_C4', 1, '192.168.0.107', 'OFFLINE'),
-    ('ESP32_R1_C4_CAM2', 'R1-C4 Front Angle (CAM 8)', 'RACK_01', 'SHELF_R1_C4', 2, '192.168.0.108', 'OFFLINE'),
-    ('ESP32_R1_C5_CAM1', 'R1-C5 Back Angle (CAM 9)',  'RACK_01', 'SHELF_R1_C5', 1, '192.168.0.109', 'OFFLINE'),
-    ('ESP32_R1_C5_CAM2', 'R1-C5 Front Angle (CAM 10)','RACK_01', 'SHELF_R1_C5', 2, '192.168.0.110', 'OFFLINE'),
-    ('ESP32_R1_C6_CAM1', 'R1-C6 Back Angle (CAM 11)', 'RACK_01', 'SHELF_R1_C6', 1, '192.168.0.111', 'OFFLINE'),
-    ('ESP32_R1_C6_CAM2', 'R1-C6 Front Angle (CAM 12)','RACK_01', 'SHELF_R1_C6', 2, '192.168.0.112', 'OFFLINE')
+    ('ESP32_R1_C1_CAM1', 'R1-C1 Back Angle (CAM 1)',  'RACK_01', 'SHELF_R1_C1', 1, '192.168.0.201', 'OFFLINE'),
+    ('ESP32_R1_C1_CAM2', 'R1-C1 Front Angle (CAM 2)', 'RACK_01', 'SHELF_R1_C1', 2, '192.168.0.202', 'OFFLINE'),
+    ('ESP32_R1_C2_CAM1', 'R1-C2 Back Angle (CAM 3)',  'RACK_01', 'SHELF_R1_C2', 1, '192.168.0.203', 'OFFLINE'),
+    ('ESP32_R1_C2_CAM2', 'R1-C2 Front Angle (CAM 4)', 'RACK_01', 'SHELF_R1_C2', 2, '192.168.0.204', 'OFFLINE'),
+    ('ESP32_R1_C3_CAM1', 'R1-C3 Back Angle (CAM 5)',  'RACK_01', 'SHELF_R1_C3', 1, '192.168.0.205', 'OFFLINE'),
+    ('ESP32_R1_C3_CAM2', 'R1-C3 Front Angle (CAM 6)', 'RACK_01', 'SHELF_R1_C3', 2, '192.168.0.206', 'OFFLINE'),
+    ('ESP32_R1_C4_CAM1', 'R1-C4 Back Angle (CAM 7)',  'RACK_01', 'SHELF_R1_C4', 1, '192.168.0.207', 'OFFLINE'),
+    ('ESP32_R1_C4_CAM2', 'R1-C4 Front Angle (CAM 8)', 'RACK_01', 'SHELF_R1_C4', 2, '192.168.0.208', 'OFFLINE'),
+    ('ESP32_R1_C5_CAM1', 'R1-C5 Back Angle (CAM 9)',  'RACK_01', 'SHELF_R1_C5', 1, '192.168.0.209', 'OFFLINE'),
+    ('ESP32_R1_C5_CAM2', 'R1-C5 Front Angle (CAM 10)','RACK_01', 'SHELF_R1_C5', 2, '192.168.0.210', 'OFFLINE'),
+    ('ESP32_R1_C6_CAM1', 'R1-C6 Back Angle (CAM 11)', 'RACK_01', 'SHELF_R1_C6', 1, '192.168.0.211', 'OFFLINE'),
+    ('ESP32_R1_C6_CAM2', 'R1-C6 Front Angle (CAM 12)','RACK_01', 'SHELF_R1_C6', 2, '192.168.0.212', 'OFFLINE')
 ON CONFLICT (device_id) DO UPDATE SET
     camera_name = EXCLUDED.camera_name,
     rack_id = EXCLUDED.rack_id,
