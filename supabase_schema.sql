@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS public.esp32_cameras (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE public.esp32_cameras ADD COLUMN IF NOT EXISTS secondary_ip_address TEXT DEFAULT '192.168.0.202';
+
 CREATE INDEX IF NOT EXISTS idx_esp32_cameras_shelf_id ON public.esp32_cameras(shelf_id);
 CREATE INDEX IF NOT EXISTS idx_esp32_cameras_device_id ON public.esp32_cameras(device_id);
 
@@ -160,12 +162,12 @@ INSERT INTO public.compartments (
     ('SHELF_R1_C3', 'RACK_01', 'ESP32_R1_C3_CAM1', 'ESP32_R1_C3_CAM2', 'ESP32 Dual Node R1-C3', '192.168.0.205', '192.168.0.206', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
     ('SHELF_R1_C4', 'RACK_01', 'ESP32_R1_C4_CAM1', 'ESP32_R1_C4_CAM2', 'ESP32 Dual Node R1-C4', '192.168.0.207', '192.168.0.208', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
     ('SHELF_R1_C5', 'RACK_01', 'ESP32_R1_C5_CAM1', 'ESP32_R1_C5_CAM2', 'ESP32 Dual Node R1-C5', '192.168.0.209', '192.168.0.210', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C6', 'RACK_01', 'ESP32_R1_C6_CAM1', 'ESP32_R1_C6_CAM2', 'ESP32 Dual Node R1-C6', '192.168.0.211', '192.168.0.212', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ON CONFLICT (shelf_id) DO UPDATE SET
-    secondary_ip_address = EXCLUDED.secondary_ip_address,
-    current_quantity = EXCLUDED.current_quantity,
-    max_capacity = EXCLUDED.max_capacity,
-    tm_model_url = EXCLUDED.tm_model_url,
+    ('SHELF_R1_C6', 'RACK_01', 'ESP32_R1_C6_CAM1', 'ESP32_R1_C6_CAM2', 'ESP32 Dual Node R1-C6', '192.168.0.211', '192.168.0.212', 4, 4, 'OFFLINE', 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/')
+ON CONFLICT (shelf_id) DO UPDATE SET
+    rack_id = EXCLUDED.rack_id,
+    mqtt_client_id = EXCLUDED.mqtt_client_id,
+    secondary_mqtt_client_id = EXCLUDED.secondary_mqtt_client_id,
+    camera_name = EXCLUDED.camera_name,
     ip_address = EXCLUDED.ip_address,
     secondary_ip_address = EXCLUDED.secondary_ip_address,
     current_quantity = EXCLUDED.current_quantity,
@@ -215,6 +217,18 @@ ON CONFLICT (device_id) DO UPDATE SET
     shelf_id = EXCLUDED.shelf_id,
     angle_index = EXCLUDED.angle_index,
     ip_address = EXCLUDED.ip_address;
+
+-- -----------------------------------------------------------------------------
+-- Egress Optimization Cleanup (Clears heavy Base64 strings & trims old logs)
+-- -----------------------------------------------------------------------------
+UPDATE public.compartments
+SET baseline_image_url = NULL,
+    baseline_image_2_url = NULL;
+
+DELETE FROM public.comparison_logs
+WHERE log_id NOT IN (
+    SELECT log_id FROM public.comparison_logs ORDER BY created_at DESC LIMIT 10
+);
 
 -- ============================================================================
 -- EXPLICIT DATA API GRANTS
