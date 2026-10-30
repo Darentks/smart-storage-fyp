@@ -9,6 +9,7 @@ import time
 from typing import Any
 import numpy as np
 import cv2
+import torch
 from ultralytics import YOLO
 
 
@@ -58,18 +59,25 @@ class PoseEstimator:
         (KEYPOINT_LEFT_HIP, KEYPOINT_RIGHT_HIP),
     ]
 
-    def __init__(self, model_path="models/yolo11n-pose.pt", oks_threshold=0.50, device="cpu"):
+    def __init__(self, model_path="models/yolo11n-pose.pt", oks_threshold=0.50, device=None):
         """
         Initializes the YOLO11-Pose inference engine.
         :param model_path: Path to the YOLO11 pose weights (default: models/yolo11n-pose.pt)
         :param oks_threshold: Confidence threshold for keypoints (COCO OKS threshold >= 0.50 per NFR-04)
-        :param device: 'cpu' or 'cuda' / 0 if GPU available
+        :param device: 'cpu', 'cuda:0', or None (auto-detects CUDA GPU if available)
         """
         self.oks_threshold = oks_threshold
-        self.device = device
+        if device is None or device == "auto":
+            try:
+                import torch
+                self.device = "0" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                self.device = "cpu"
+        else:
+            self.device = device
         self.model_path = self._resolve_model_path(model_path)
-        
-        print(f"[PoseEstimator] Loading model from: {self.model_path}")
+
+        print(f"[PoseEstimator] Loading model from: {self.model_path} (device={self.device})")
         self.model = YOLO(self.model_path)
         self.last_inference_time_ms = 0.0
 
@@ -97,6 +105,7 @@ class PoseEstimator:
                  - 'person_id': int index
                  - 'box': [x1, y1, x2, y2]
                  - 'box_conf': float
+                 - 'inference_time_ms': float (in milliseconds)
                  - 'keypoints': np.ndarray (17, 2) (x, y)
                  - 'confs': np.ndarray (17,)
                  - 'wrists': list of dicts [{'side': 'left'|'right', 'index': int, 'pt': (x,y), 'conf': float}]
