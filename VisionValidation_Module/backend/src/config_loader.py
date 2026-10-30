@@ -133,13 +133,13 @@ class SupabaseRestFallback:
         )
         return res if isinstance(res, list) else []
 
-    def update(self, table: str, query_params: str, payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def update(self, table: str, query_params: str, payload: Dict[str, Any], prefer: str = "return=minimal") -> List[Dict[str, Any]]:
         res = _supabase_rest(
             method="PATCH",
             table=table,
             query=query_params,
             payload=payload,
-            prefer="return=representation",
+            prefer=prefer,
             timeout=self.timeout,
         )
         return res if isinstance(res, list) else []
@@ -421,7 +421,7 @@ def update_esp32_health_in_supabase(node_payload: Dict[str, Any]) -> Optional[Di
     else:
         query_param = f"?mqtt_client_id=eq.{urllib.parse.quote(str(device_id))}"
 
-    updated = fallback.update("compartments", query_param, update_fields)
+    updated = fallback.update("compartments", query_param, update_fields, prefer="return=minimal")
     if updated:
         return updated[0]
 
@@ -476,7 +476,7 @@ def update_compartment_baseline_in_supabase(
             print(f"[ConfigLoader] Failed to update compartment baseline via SDK ({exc}), trying SupabaseRestFallback.")
 
     fallback = SupabaseRestFallback()
-    updated = fallback.update("compartments", f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}", update_data)
+    updated = fallback.update("compartments", f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}", update_data, prefer="return=minimal")
     return updated[0] if updated else None
 
 

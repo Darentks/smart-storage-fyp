@@ -91,6 +91,47 @@ ACTIVE_ESP32_IPS: Dict[str, Any] = {
 PENDING_CCTV_TRIGGERS: list = []
 LAST_TM_BASE_URL: str = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/"
 
+# Running YOLO11n-Pose CCTV pipeline process manager
+RUNNING_PIPELINES: Dict[str, Dict[str, Any]] = {}
+
+# Multi-CCTV Trigger deduplication & debounce tracking (6s window)
+LAST_SHELF_TRIGGER_TS: Dict[str, float] = {}
+MULTI_CCTV_DEBOUNCE_SEC = 6.0
+
+# In-memory cache for Supabase compartments and comparison logs to eliminate redundant egress
+SUPABASE_COMPARTMENTS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
+SUPABASE_LOGS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
+SUPABASE_CACHE_TTL_SEC: float = 120.0
+LAST_CLOUD_BASELINE_SYNC_TS: Dict[str, float] = {}
+
+
+def get_cached_compartments(force_refresh: bool = False) -> list:
+    """Returns cached compartments from Supabase, refreshing only after TTL or when forced."""
+    now = time.time()
+    if force_refresh or (now - SUPABASE_COMPARTMENTS_CACHE["fetched_at"] >= SUPABASE_CACHE_TTL_SEC) or not SUPABASE_COMPARTMENTS_CACHE["data"]:
+        try:
+            data = list_esp32_cameras()
+            if data:
+                SUPABASE_COMPARTMENTS_CACHE["data"] = data
+                SUPABASE_COMPARTMENTS_CACHE["fetched_at"] = now
+        except Exception as e:
+            print(f"[CameraService Cache] Compartments refresh warning: {e}")
+    return SUPABASE_COMPARTMENTS_CACHE["data"]
+
+
+def get_cached_comparison_logs(force_refresh: bool = False, limit: int = 10) -> list:
+    """Returns cached comparison logs from Supabase, refreshing only after TTL or when forced."""
+    now = time.time()
+    if force_refresh or (now - SUPABASE_LOGS_CACHE["fetched_at"] >= SUPABASE_CACHE_TTL_SEC) or not SUPABASE_LOGS_CACHE["data"]:
+        try:
+            data = list_comparison_logs(limit)
+            if data:
+                SUPABASE_LOGS_CACHE["data"] = data
+                SUPABASE_LOGS_CACHE["fetched_at"] = now
+        except Exception as e:
+            print(f"[CameraService Cache] Comparison logs refresh warning: {e}")
+    return SUPABASE_LOGS_CACHE["data"]
+
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 mqtt_bridge = MQTTClientNode(
@@ -110,7 +151,7 @@ def get_merged_compartments_and_nodes():
     """
     spatial_mapper.load_roi_config()
     local_comps = spatial_mapper.compartments
-    db_rows = list_esp32_cameras()
+    db_rows = get_cached_compartments(force_refresh=False)
     db_nodes = {row.get("mqtt_client_id"): row for row in db_rows if row.get("mqtt_client_id")}
     db_by_shelf = {row.get("shelf_id"): row for row in db_rows if row.get("shelf_id")}
     live_mqtt = mqtt_bridge.edge_nodes
@@ -680,6 +721,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             pass
 
         if path in ["/", "/status", "/health"]:
+            active_pipes = [
+                {"cctv_id": k, "pid": v["proc"].pid, "source": v["source"], "running": (v["proc"].poll() is None)}
+                for k, v in list(RUNNING_PIPELINES.items()) if v.get("proc") and v["proc"].poll() is None
+            ]
             self._send_json(200, {
                 "status": "ok",
                 "service": "Smart Storage Local Camera Control & MQTT Telemetry Service",
@@ -687,6 +732,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "mqtt_connected": mqtt_bridge.is_connected,
                 "mqtt_broker": f"{mqtt_bridge.broker_address}:{mqtt_bridge.port}",
                 "active_esp32_nodes": len(mqtt_bridge.edge_nodes),
+                "running_pipelines": active_pipes,
                 "port": 8008,
             })
             return
@@ -701,7 +747,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/esp32_nodes":
             nodes = get_merged_compartments_and_nodes()
-            logs = list_comparison_logs(15)
+            logs = get_cached_comparison_logs(force_refresh=False, limit=10)
             discovered = get_discovered_cameras_list(nodes)
 
             # Expose pending CCTV triggers (retain recent items within last 60s, max 20)
@@ -709,6 +755,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             now = time.time()
             pending = [t for t in PENDING_CCTV_TRIGGERS if (now - t.get("timestamp", 0)) < 60.0][-20:]
 
+            active_pipes = [
+                {"cctv_id": k, "pid": v["proc"].pid, "source": v["source"], "running": (v["proc"].poll() is None)}
+                for k, v in list(RUNNING_PIPELINES.items()) if v.get("proc") and v["proc"].poll() is None
+            ]
             self._send_json(200, {
                 "status": "success",
                 "rack_id": spatial_mapper.rack_id,
@@ -719,6 +769,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "recent_responses": list(reversed(mqtt_bridge.recent_responses[-15:])),
                 "comparison_logs": logs,
                 "pending_cctv_triggers": pending,
+                "running_pipelines": active_pipes,
             })
             return
 
@@ -845,15 +896,16 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/run_calibration":
             source = body.get("source") or get_active_rtsp_url(default_source=0)
+            cctv_id = body.get("cctv_id") or "CCTV_01"
             script_path = os.path.join(BACKEND_DIR, "calibrate_roi.py")
             if not os.path.isfile(script_path):
                 self._send_json(500, {"status": "failed", "error": f"Script not found at {script_path}"})
                 return
 
             masked = mask_rtsp_url(source)
-            print(f"[CameraService] Spawning ROI Calibration GUI for: {masked}")
+            print(f"[CameraService] Spawning ROI Calibration GUI for [{cctv_id}]: {masked}")
             try:
-                cmd = [sys.executable, script_path, "--source", str(source)]
+                cmd = [sys.executable, script_path, "--source", str(source), "--cctv-id", str(cctv_id)]
                 proc = subprocess.Popen(
                     cmd,
                     cwd=BACKEND_DIR,
@@ -862,12 +914,87 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json(200, {
                     "status": "launched",
+                    "cctv_id": cctv_id,
                     "pid": proc.pid,
                     "source": masked,
-                    "message": "Shelf ROI Calibration window opened on local desktop.",
+                    "message": f"Shelf ROI Calibration window for {cctv_id} opened on local desktop.",
                 })
             except Exception as exc:
                 self._send_json(500, {"status": "failed", "error": f"Failed to spawn calibration process: {str(exc)}"})
+            return
+
+        # RUN YOLO11n-Pose PIPELINE for specific CCTV
+        if path == "/run_pipeline":
+            cctv_id = str(body.get("cctv_id") or "CCTV_01").strip()
+            source = body.get("source") or get_active_rtsp_url(default_source=0)
+            privacy = bool(body.get("privacy", False))
+            script_path = os.path.join(BACKEND_DIR, "run_pipeline.py")
+
+            if not os.path.isfile(script_path):
+                self._send_json(500, {"status": "failed", "error": f"Pipeline script not found at {script_path}"})
+                return
+
+            # Terminate existing running process for this cctv_id if active
+            existing = RUNNING_PIPELINES.get(cctv_id)
+            if existing and existing.get("proc") and existing["proc"].poll() is None:
+                try:
+                    existing["proc"].terminate()
+                    time.sleep(0.3)
+                except Exception as e:
+                    print(f"[CameraService] Error stopping previous pipeline for {cctv_id}: {e}")
+
+            masked = mask_rtsp_url(source)
+            print(f"[CameraService] Launching YOLO11n-Pose pipeline for [{cctv_id}]: {masked}")
+            try:
+                cmd = [sys.executable, script_path, "--source", str(source), "--cctv-id", str(cctv_id)]
+                if privacy:
+                    cmd.append("--privacy")
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=BACKEND_DIR,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                RUNNING_PIPELINES[cctv_id] = {
+                    "proc": proc,
+                    "cctv_id": cctv_id,
+                    "source": masked,
+                    "started_at": now_iso,
+                    "pid": proc.pid,
+                }
+                self._send_json(200, {
+                    "status": "launched",
+                    "cctv_id": cctv_id,
+                    "pid": proc.pid,
+                    "source": masked,
+                })
+            except Exception as exc:
+                self._send_json(500, {"status": "failed", "error": f"Failed to spawn pipeline: {str(exc)}"})
+            return
+
+        # STOP YOLO11n-Pose PIPELINE
+        if path == "/stop_pipeline":
+            cctv_id = body.get("cctv_id")
+            stop_all = bool(body.get("all", False))
+            stopped = []
+
+            for cid, item in list(RUNNING_PIPELINES.items()):
+                if stop_all or cid == cctv_id:
+                    proc = item.get("proc")
+                    if proc and proc.poll() is None:
+                        try:
+                            proc.terminate()
+                            stopped.append(cid)
+                        except Exception as e:
+                            print(f"[CameraService] Error terminating pipeline {cid}: {e}")
+                    del RUNNING_PIPELINES[cid]
+
+            self._send_json(200, {
+                "status": "stopped",
+                "cctv_id": cctv_id,
+                "stopped_pipelines": stopped,
+            })
             return
 
         # ASSIGN DUAL CAMERA IPs TO SHELF: Immediately update ACTIVE_ESP32_IPS and Supabase public.compartments
@@ -899,6 +1026,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     "last_seen_at": now_iso,
                 })
 
+            get_cached_compartments(force_refresh=True)
             self._send_json(200, {
                 "status": "success",
                 "shelf_id": shelf_id,
@@ -910,13 +1038,27 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # MANUAL TRIGGER: Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
         if path == "/esp32_trigger":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
-            # Guardrail 1: Freeze 30s baseline for 10s during interaction
-            esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
-
             command = str(body.get("command", "CAPTURE_STATE")).upper()
             expected_action = str(body.get("expected_action", "BORROW")).upper()
             rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
             source = str(body.get("source", "MANUAL")).upper()
+
+            # Multi-CCTV Debounce: When 2 or 3 CCTVs see the same hand interaction simultaneously
+            if command == "CAPTURE_STATE" and source == "CCTV":
+                now_ts = time.time()
+                last_ts = LAST_SHELF_TRIGGER_TS.get(shelf_id, 0.0)
+                if (now_ts - last_ts) < MULTI_CCTV_DEBOUNCE_SEC:
+                    print(f"[CameraService] Debounced duplicate multi-CCTV trigger for {shelf_id} ({now_ts - last_ts:.2f}s < {MULTI_CCTV_DEBOUNCE_SEC}s)")
+                    self._send_json(200, {
+                        "status": "debounced",
+                        "shelf_id": shelf_id,
+                        "message": "Duplicate multi-CCTV trigger ignored within 6s window",
+                    })
+                    return
+                LAST_SHELF_TRIGGER_TS[shelf_id] = now_ts
+
+            # Guardrail 1: Freeze 30s baseline for 10s during interaction
+            esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
 
             if command == "CAPTURE_REFERENCE":
                 box_count = int(body.get("box_count", 4))
@@ -1087,6 +1229,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     comparison_result=comp_res,
                 )
 
+            get_cached_compartments(force_refresh=True)
+            get_cached_comparison_logs(force_refresh=True)
             self._send_json(200, {
                 "status": "success",
                 "comparison": comp_res,
@@ -1172,7 +1316,7 @@ def esp32_http_baseline_poller():
 
             db_compartments = []
             try:
-                db_compartments = list_esp32_cameras()
+                db_compartments = get_cached_compartments(force_refresh=False)
                 for comp_row in db_compartments:
                     s_id = comp_row.get("shelf_id")
                     if s_id and s_id not in ACTIVE_ESP32_IPS:
@@ -1273,14 +1417,29 @@ def esp32_http_baseline_poller():
                     mqtt_bridge.edge_nodes[dev_id2] = node_health2
                     update_esp32_health_in_supabase(node_health2)
 
+                should_sync_cloud = (time.time() - LAST_CLOUD_BASELINE_SYNC_TS.get(shelf_id, 0.0) >= 300.0)
                 if online or online_cam2:
-                    # Update 30s baseline cache and Supabase compartments row (dual-angle stitched)
-                    esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip, esp32_ip2=sec_ip)
+                    # Update 30s local baseline cache; sync to Supabase at most once every 5 minutes (300s)
+                    esp32_ref_manager.update_30s_baseline(
+                        shelf_id=shelf_id,
+                        esp32_ip=clean_ip,
+                        esp32_ip2=sec_ip,
+                        sync_supabase=should_sync_cloud,
+                    )
+                    if should_sync_cloud:
+                        LAST_CLOUD_BASELINE_SYNC_TS[shelf_id] = time.time()
                 else:
                     # Check if node has a cached baseline; if not, do a synthetic or retry fetch
                     cached = esp32_ref_manager.baseline_cache.get(shelf_id)
                     if not cached or not cached.get("data_url"):
-                        esp32_ref_manager.update_30s_baseline(shelf_id=shelf_id, esp32_ip=clean_ip, esp32_ip2=sec_ip)
+                        esp32_ref_manager.update_30s_baseline(
+                            shelf_id=shelf_id,
+                            esp32_ip=clean_ip,
+                            esp32_ip2=sec_ip,
+                            sync_supabase=should_sync_cloud,
+                        )
+                        if should_sync_cloud:
+                            LAST_CLOUD_BASELINE_SYNC_TS[shelf_id] = time.time()
 
         except Exception as exc:
             print(f"[CameraService Poller] Exception in baseline poller cycle: {exc}")

@@ -25,6 +25,7 @@ Comprehensive ROI Editing Features:
       * Press [Q] or [ESC] to exit
 """
 
+import argparse
 import os
 import sys
 import json
@@ -250,8 +251,20 @@ def mouse_callback(event, x, y, flags, param):
 def main():
     global spatial_mapper, is_frozen, frozen_frame, selected_idx
 
-    config_path = os.path.join(os.path.dirname(__file__), "config", "roi_config.json")
-    spatial_mapper = SpatialMapper(config_path)
+    parser = argparse.ArgumentParser(description="Interactive Dynamic ROI Calibration Canvas")
+    parser.add_argument("--source", default=None, help="Camera index or RTSP URL")
+    parser.add_argument("--cctv-id", default="CCTV_01", help="CCTV Identifier (e.g. CCTV_01, CCTV_02, CCTV_03)")
+    args, _ = parser.parse_known_args()
+
+    cctv_id = str(args.cctv_id).strip() if args.cctv_id else "CCTV_01"
+    config_dir = os.path.join(os.path.dirname(__file__), "config")
+    os.makedirs(config_dir, exist_ok=True)
+    base_config_path = os.path.join(config_dir, "roi_config.json")
+    cctv_config_path = os.path.join(config_dir, f"roi_config_{cctv_id}.json")
+
+    # Load from per-CCTV config if exists, otherwise fallback to shared roi_config.json
+    active_load_path = cctv_config_path if os.path.exists(cctv_config_path) else base_config_path
+    spatial_mapper = SpatialMapper(active_load_path)
 
     mqtt_notifier = MQTTClientNode(
         rack_id=spatial_mapper.rack_id,
@@ -264,10 +277,8 @@ def main():
     if len(spatial_mapper.compartments) > 0:
         selected_idx = 0
 
-    if len(sys.argv) > 1:
-        arg_val = sys.argv[1]
-        if arg_val == "--source" and len(sys.argv) > 2:
-            arg_val = sys.argv[2]
+    if args.source:
+        arg_val = str(args.source).strip()
         try:
             cam_idx = int(arg_val)
         except ValueError:
@@ -284,11 +295,11 @@ def main():
         print("[-] Could not open camera.")
         return
 
-    window_name = "Dynamic ROI Calibration Canvas - Smart Storage FYP"
+    window_name = f"Dynamic ROI Calibration Canvas [{cctv_id}] - Smart Storage FYP"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
     cv2.setMouseCallback(window_name, mouse_callback)
 
-    set_status(f"Loaded {len(spatial_mapper.compartments)} ROIs. Click any box to edit its shape/size.", (0, 255, 255))
+    set_status(f"Loaded {len(spatial_mapper.compartments)} ROIs for {cctv_id}. Click any box to edit its shape/size.", (0, 255, 255))
 
     while True:
         if not is_frozen or frozen_frame is None:
@@ -383,13 +394,19 @@ def main():
             # Spawn new compartment box
             spawn_center_compartment(frame_w=w, frame_h=h)
         elif key in [ord('s'), ord('S'), 13]:  # 'S' or ENTER: Save
+            # Save to both per-CCTV config and master roi_config.json
+            spatial_mapper.config_file = cctv_config_path
             spatial_mapper.save_roi_config()
+            spatial_mapper.config_file = base_config_path
+            spatial_mapper.save_roi_config()
+            spatial_mapper.config_file = cctv_config_path
             mqtt_notifier.notify_roi_reload(reason="ROI_CALIBRATED")
-            set_status("SAVED TO config/roi_config.json!", (0, 255, 0), duration=6.0)
+            set_status(f"SAVED TO {os.path.basename(cctv_config_path)} & roi_config.json!", (0, 255, 0), duration=6.0)
         elif key in [ord('r'), ord('R')]:  # Reload
+            spatial_mapper.config_file = active_load_path
             spatial_mapper.load_roi_config()
             selected_idx = 0 if len(spatial_mapper.compartments) > 0 else -1
-            set_status("Reloaded saved configuration from disk.", (0, 255, 255))
+            set_status(f"Reloaded saved configuration from {os.path.basename(active_load_path)}.", (0, 255, 255))
         elif key in [ord('x'), ord('X'), 8]:  # 'X' or Backspace: Delete selected
             if 0 <= selected_idx < len(spatial_mapper.compartments):
                 removed = spatial_mapper.compartments.pop(selected_idx)

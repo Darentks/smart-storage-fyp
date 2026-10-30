@@ -23,6 +23,11 @@ def main():
         help="Camera index (0, 1), RTSP URL, or video path. If omitted, dynamically fetches active camera from Supabase.",
     )
     parser.add_argument(
+        "--cctv-id",
+        default="CCTV_01",
+        help="CCTV camera identifier (default: CCTV_01)",
+    )
+    parser.add_argument(
         "--model",
         default="models/yolo11n-pose.pt",
         help="Path to YOLO11-Pose weights (default: models/yolo11n-pose.pt)",
@@ -65,17 +70,26 @@ def main():
     except (ValueError, TypeError):
         pass
 
+    cctv_id = str(args.cctv_id).strip() if args.cctv_id else "CCTV_01"
+    config_dir = os.path.join(os.path.dirname(__file__), "config")
+    cctv_config = os.path.join(config_dir, f"roi_config_{cctv_id}.json")
+    chosen_config = args.config
+
+    if (args.config == "config/roi_config.json" or not os.path.isfile(args.config)) and os.path.isfile(cctv_config):
+        chosen_config = cctv_config
+        print(f"[run_pipeline] Found per-CCTV ROI config for {cctv_id}: {chosen_config}")
+
     engine = VisionValidationEngine(
         camera_source=source,
         model_path=args.model,
-        roi_config_path=args.config,
+        roi_config_path=chosen_config,
         mqtt_broker=args.broker,
         mqtt_port=args.port,
         privacy_mode=args.privacy,
     )
 
     engine.initialize_system()
-    engine.run_pipeline()
+    engine.run_pipeline(window_name=f"Smart Storage YOLO11n-Pose [{cctv_id}]")
 
 
 if __name__ == "__main__":

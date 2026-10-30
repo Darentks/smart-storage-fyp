@@ -71,12 +71,18 @@ SCENARIO_MAP: Dict[int, str] = {
 # IMAGE ENCODING & DECODING HELPERS
 # =============================================================================
 
-def encode_bgr_to_data_url(frame_bgr: Any, quality: int = 80) -> str:
-    """Encodes an OpenCV BGR image array into a base64 JPEG data URL."""
+def encode_bgr_to_data_url(frame_bgr: Any, quality: int = 65, max_width: int = 640) -> str:
+    """Encodes an OpenCV BGR image array into a base64 JPEG data URL, resizing if width > max_width."""
     if not _OPENCV_AVAILABLE or frame_bgr is None:
         return ""
     try:
-        success, buffer = cv2.imencode(".jpg", frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, quality])
+        h, w = frame_bgr.shape[:2]
+        if max_width > 0 and w > max_width:
+            target_h = int(h * (max_width / float(w)))
+            frame_to_encode = cv2.resize(frame_bgr, (max_width, target_h), interpolation=cv2.INTER_AREA)
+        else:
+            frame_to_encode = frame_bgr
+        success, buffer = cv2.imencode(".jpg", frame_to_encode, [cv2.IMWRITE_JPEG_QUALITY, quality])
         if not success:
             return ""
         b64_str = base64.b64encode(buffer).decode("utf-8")
@@ -447,6 +453,7 @@ class ESP32ReferenceManager:
         esp32_ip2: Optional[str] = None,
         image_data_url: Optional[str] = None,
         image_2_data_url: Optional[str] = None,
+        sync_supabase: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """
         Updates the 30-second resting baseline cache for shelf_id and syncs to Supabase.
@@ -495,13 +502,14 @@ class ESP32ReferenceManager:
         }
         self.baseline_cache[shelf_id] = cached_entry
 
-        # Sync to Supabase public.compartments
-        update_compartment_baseline_in_supabase(
-            shelf_id=shelf_id,
-            baseline_image_url=data_url or "",
-            ip_address=esp32_ip,
-            baseline_image_2_url=url_front,
-        )
+        # Sync to Supabase public.compartments only when requested
+        if sync_supabase:
+            update_compartment_baseline_in_supabase(
+                shelf_id=shelf_id,
+                baseline_image_url=data_url or "",
+                ip_address=esp32_ip,
+                baseline_image_2_url=url_front,
+            )
 
         print(f"[ESP32ReferenceManager] Updated 30s resting baseline for {shelf_id} at {now_iso}.")
         return cached_entry
