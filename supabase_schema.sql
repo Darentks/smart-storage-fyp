@@ -22,8 +22,8 @@ CREATE TABLE IF NOT EXISTS public.compartments (
     secondary_ip_address TEXT DEFAULT '192.168.0.202',                      -- CAM 2 Front Angle IP
     current_quantity INTEGER NOT NULL DEFAULT 4 CHECK (current_quantity >= 0 AND current_quantity <= 4),
     max_capacity INTEGER NOT NULL DEFAULT 4,                                -- Max items in compartment (4)
-    baseline_image_url TEXT NULL,                                           -- Latest 30s stitched [CAM1 | CAM2] or CAM1 baseline image
-    baseline_image_2_url TEXT NULL,                                         -- Latest 30s CAM2 Front baseline image
+    baseline_image_url TEXT NULL,                                           -- Latest 30s stitched [CAM1 | CAM2] or CAM1 baseline image (stored in local Python RAM)
+    baseline_image_2_url TEXT NULL,                                         -- Latest 30s CAM2 Front baseline image (stored in local Python RAM)
     baseline_updated_at TIMESTAMPTZ NULL,                                   -- Timestamp of last baseline update
     tm_model_url TEXT DEFAULT 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/', -- Teachable Machine model URL
     status VARCHAR(20) NOT NULL DEFAULT 'OFFLINE',                          -- 'ONLINE', 'OFFLINE', 'ERROR'
@@ -53,8 +53,8 @@ CREATE TABLE IF NOT EXISTS public.comparison_logs (
     shelf_id VARCHAR(50) NOT NULL REFERENCES public.compartments(shelf_id) ON DELETE CASCADE,
     mqtt_client_id VARCHAR(100) NOT NULL,
     trigger_action VARCHAR(20) NOT NULL DEFAULT 'BORROW',
-    before_image_url TEXT NULL,                                             -- Latest 30-second picture
-    after_image_url TEXT NULL,                                              -- Post-trigger independent picture
+    before_image_url TEXT NULL,                                             -- Latest 30-second picture (cached in local bridge RAM)
+    after_image_url TEXT NULL,                                              -- Post-trigger independent picture (cached in local bridge RAM)
     diff_score NUMERIC(5,2) NULL,                                           -- OpenCV visual pixel diff %
     similarity_score NUMERIC(5,2) NULL,                                     -- Teachable Machine confidence %
     matched_box_count INTEGER NULL,                                         -- 0..4 boxes from CAM1 + CAM2
@@ -113,6 +113,49 @@ ALTER TABLE public.esp32_cameras ADD COLUMN IF NOT EXISTS secondary_ip_address T
 
 CREATE INDEX IF NOT EXISTS idx_esp32_cameras_shelf_id ON public.esp32_cameras(shelf_id);
 CREATE INDEX IF NOT EXISTS idx_esp32_cameras_device_id ON public.esp32_cameras(device_id);
+
+-- -----------------------------------------------------------------------------
+-- PostgreSQL Zero-Base64 Egress Guardrail Triggers
+-- Ensures 'data:image/...' Base64 blobs are NEVER stored in PostgreSQL tables
+-- (Images remain in local Python RAM: esp32_ref_manager.baseline_cache & mqtt_bridge)
+-- -----------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.strip_base64_compartments()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.baseline_image_url IS NOT NULL AND NEW.baseline_image_url LIKE 'data:image/%' THEN
+        NEW.baseline_image_url := NULL;
+    END IF;
+    IF NEW.baseline_image_2_url IS NOT NULL AND NEW.baseline_image_2_url LIKE 'data:image/%' THEN
+        NEW.baseline_image_2_url := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_strip_base64_compartments ON public.compartments;
+CREATE TRIGGER trg_strip_base64_compartments
+BEFORE INSERT OR UPDATE ON public.compartments
+FOR EACH ROW
+EXECUTE FUNCTION public.strip_base64_compartments();
+
+CREATE OR REPLACE FUNCTION public.strip_base64_comparison_logs()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.before_image_url IS NOT NULL AND NEW.before_image_url LIKE 'data:image/%' THEN
+        NEW.before_image_url := NULL;
+    END IF;
+    IF NEW.after_image_url IS NOT NULL AND NEW.after_image_url LIKE 'data:image/%' THEN
+        NEW.after_image_url := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trg_strip_base64_comparison_logs ON public.comparison_logs;
+CREATE TRIGGER trg_strip_base64_comparison_logs
+BEFORE INSERT OR UPDATE ON public.comparison_logs
+FOR EACH ROW
+EXECUTE FUNCTION public.strip_base64_comparison_logs();
 
 -- -----------------------------------------------------------------------------
 -- Row Level Security (RLS) Policies
@@ -225,10 +268,17 @@ UPDATE public.compartments
 SET baseline_image_url = NULL,
     baseline_image_2_url = NULL;
 
+UPDATE public.comparison_logs
+SET before_image_url = NULL,
+    after_image_url = NULL
+WHERE before_image_url LIKE 'data:image/%'
+   OR after_image_url LIKE 'data:image/%';
+
 DELETE FROM public.comparison_logs
-WHERE log_id NOT IN (
-    SELECT log_id FROM public.comparison_logs ORDER BY created_at DESC LIMIT 10
-);
+WHERE state_delta = 'NO_CHANGE'
+   OR log_id NOT IN (
+       SELECT log_id FROM public.comparison_logs ORDER BY created_at DESC LIMIT 10
+   );
 
 -- ============================================================================
 -- EXPLICIT DATA API GRANTS
