@@ -78,8 +78,8 @@ esp32_ref_manager = ESP32ReferenceManager()
 
 ACTIVE_ESP32_IPS: Dict[str, Any] = {
     "SHELF_R1_C1": {
-        "ip1": os.getenv("ESP32_CAM_IP", "192.168.0.101"),
-        "ip2": os.getenv("ESP32_CAM_IP2", "192.168.0.102"),
+        "ip1": os.getenv("ESP32_CAM_IP", "192.168.0.201"),
+        "ip2": os.getenv("ESP32_CAM_IP2", "192.168.0.202"),
     },
 }
 
@@ -97,7 +97,7 @@ MULTI_CCTV_DEBOUNCE_SEC = 6.0
 # In-memory cache for Supabase compartments and comparison logs to eliminate redundant egress
 SUPABASE_COMPARTMENTS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
 SUPABASE_LOGS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
-SUPABASE_CACHE_TTL_SEC: float = 120.0
+SUPABASE_CACHE_TTL_SEC: float = 300.0
 LAST_CLOUD_BASELINE_SYNC_TS: Dict[str, float] = {}
 
 
@@ -384,22 +384,14 @@ def discover_active_esp32_cameras(subnet_prefix=None) -> list:
         if ip:
             candidates.add(ip)
 
-    # b) Standard PlatformIO static IP pool (.101 to .112 and .201 to .202)
+    # b) Standard PlatformIO static IP pool (.201 to .212)
     prefixes = {"192.168.0"}
     if subnet_prefix and str(subnet_prefix).strip():
         clean_p = str(subnet_prefix).strip().rstrip(".")
         if clean_p.count(".") == 2:
             prefixes.add(clean_p)
 
-    # c) Configured compartments and ACTIVE_ESP32_IPS
-    try:
-        for comp in get_cached_compartments(force_refresh=False):
-            if comp.get("ip_address"):
-                candidates.add(str(comp["ip_address"]).strip())
-            if comp.get("secondary_ip_address"):
-                candidates.add(str(comp["secondary_ip_address"]).strip())
-    except Exception:
-        pass
+    
 
     # Auto-detect local LAN subnet prefix if possible
     try:
@@ -804,30 +796,13 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
             if clean_ip1 or clean_ip2:
                 prev_entry = ACTIVE_ESP32_IPS.get(shelf_id)
-                prev_ip1 = prev_entry.get("ip1") if isinstance(prev_entry, dict) else (str(prev_entry) if prev_entry else "192.168.0.101")
-                prev_ip2 = prev_entry.get("ip2") if isinstance(prev_entry, dict) else "192.168.0.102"
+                prev_ip1 = prev_entry.get("ip1") if isinstance(prev_entry, dict) else (str(prev_entry) if prev_entry else "192.168.0.201")
+                prev_ip2 = prev_entry.get("ip2") if isinstance(prev_entry, dict) else "192.168.0.202"
                 ACTIVE_ESP32_IPS[shelf_id] = {
                     "ip1": clean_ip1 or prev_ip1,
                     "ip2": clean_ip2 or prev_ip2,
                 }
 
-                now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                if clean_ip1:
-                    update_esp32_health_in_supabase({
-                        "device_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
-                        "shelf_id": shelf_id,
-                        "ip_address": clean_ip1,
-                        "status": "ONLINE",
-                        "last_seen_at": now_iso,
-                    })
-                if clean_ip2:
-                    update_esp32_health_in_supabase({
-                        "device_id": f"ESP32_{shelf_id.replace('SHELF_', '')}_CAM2",
-                        "shelf_id": shelf_id,
-                        "ip_address": clean_ip2,
-                        "status": "ONLINE",
-                        "last_seen_at": now_iso,
-                    })
 
             if esp32_ip and esp32_ip2:
                 # Dual-camera capture: Back Cam (ip) + Front Cam (ip2)

@@ -1269,8 +1269,8 @@
     // =========================================================================
     // SUPABASE CLIENT & CONFIGURATION
     // =========================================================================
-    const SUPABASE_URL = 'https://hrufeowqpnyjfwxydocm.supabase.co';
-    const SUPABASE_ANON_KEY = 'sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt';
+    const SUPABASE_URL = 'https://tosvjwxvcuxvgtcmakta.supabase.co';
+    const SUPABASE_ANON_KEY = 'sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l';
 
     let supabaseClient = null;
     try {
@@ -1282,7 +1282,7 @@
     }
 
     // Direct Supabase REST API helper using native browser fetch
-    async function sbRest(table, method = 'GET', query = '', body = null, prefer = 'return=representation') {
+    async function sbRest(table, method = 'GET', query = '', body = null, prefer = 'return=minimal') {
       if (query && typeof query === 'object' && body === null) {
         body = query;
         query = '';
@@ -2230,7 +2230,7 @@
         try {
           await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
             current_quantity: newQty,
-            baseline_image_url: stitchedDataUrl,
+            baseline_image_url: null,
             baseline_updated_at: new Date().toISOString()
           }, 'return=minimal');
 
@@ -2238,8 +2238,8 @@
             shelf_id: shelfId,
             mqtt_client_id: comp.mqtt_client_id || `ESP32_${shelfId.replace('SHELF_', '')}`,
             trigger_action: 'BORROW',
-            before_image_url: comp.baseline_image_url || null,
-            after_image_url: stitchedDataUrl,
+            before_image_url: null,
+            after_image_url: null,
             diff_score: 15.0,
             similarity_score: tmRes.confidence,
             matched_box_count: newQty,
@@ -2466,7 +2466,10 @@
 
     let lastCloudCompartmentsFetchMs = 0;
     let lastCloudLogsFetchMs = 0;
-    const CLOUD_POLL_INTERVAL_MS = 120000; // 2 minutes throttle for Supabase Egress reduction
+    const CLOUD_POLL_INTERVAL_MS = 300000; // 5 minutes throttle for Supabase Egress reduction
+
+    const COMPARTMENT_COLS = 'shelf_id,rack_id,mqtt_client_id,secondary_mqtt_client_id,camera_name,ip_address,secondary_ip_address,current_quantity,max_capacity,baseline_updated_at,tm_model_url,status,rssi_dbm,free_heap_bytes,last_seen_at';
+    const LOG_COLS = 'log_id,shelf_id,mqtt_client_id,trigger_action,diff_score,similarity_score,matched_box_count,scenario_label,state_delta,quantity_before,quantity_after,created_at';
 
     async function loadCompartments(forceCloud = false) {
       const now = Date.now();
@@ -2477,12 +2480,12 @@
         try {
           let data = null;
           try {
-            data = await sbRest('compartments', 'GET', '?select=*&order=shelf_id.asc');
+            data = await sbRest('compartments', 'GET', `?select=${COMPARTMENT_COLS}&order=shelf_id.asc`);
           } catch (restErr) {
             if (supabaseClient) {
               const res = await supabaseClient
                 .from('compartments')
-                .select('*')
+                .select(COMPARTMENT_COLS)
                 .order('shelf_id', { ascending: true });
               if (!res.error && res.data) data = res.data;
             }
@@ -2579,12 +2582,12 @@
         try {
           let data = null;
           try {
-            data = await sbRest('comparison_logs', 'GET', '?select=*&order=created_at.desc&limit=10');
+            data = await sbRest('comparison_logs', 'GET', `?select=${LOG_COLS}&order=created_at.desc&limit=10`);
           } catch (restErr) {
             if (supabaseClient) {
               const res = await supabaseClient
                 .from('comparison_logs')
-                .select('*')
+                .select(LOG_COLS)
                 .order('created_at', { ascending: false })
                 .limit(10);
               if (!res.error && res.data) data = res.data;
@@ -3033,25 +3036,55 @@
       return `http://${host}/capture?mode=${cleanMode}&t=${Date.now()}`;
     }
 
-    async function getCameras() {
+    const CAMERA_COLS = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address,secondary_ip_address,status,rssi_dbm,last_seen';
+
+    async function getCameras(forceRefresh = false) {
+      if (!forceRefresh) {
+        try {
+          const lastFetch = Number(localStorage.getItem('smart_storage_esp32_cameras_fetched_at') || 0);
+          const cached = localStorage.getItem('smart_storage_esp32_cameras_cache');
+          if (cached && (Date.now() - lastFetch < 300000)) {
+            const parsed = JSON.parse(cached);
+            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+          }
+        } catch (_) { }
+      }
+
       if (supabaseClient) {
         try {
           const { data, error } = await supabaseClient
             .from('esp32_cameras')
-            .select('*')
+            .select(CAMERA_COLS)
             .order('shelf_id', { ascending: true })
             .order('angle_index', { ascending: true });
           if (!error && data && data.length > 0) {
+            try {
+              localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(data));
+              localStorage.setItem('smart_storage_esp32_cameras_fetched_at', String(Date.now()));
+            } catch (_) { }
             return data;
           }
         } catch (_) { }
       }
       try {
-        const restData = await sbRest('esp32_cameras', 'GET', '?select=*&order=shelf_id.asc,angle_index.asc');
+        const restData = await sbRest('esp32_cameras', 'GET', `?select=${CAMERA_COLS}&order=shelf_id.asc,angle_index.asc`, null, 'return=representation');
         if (Array.isArray(restData) && restData.length > 0) {
+          try {
+            localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(restData));
+            localStorage.setItem('smart_storage_esp32_cameras_fetched_at', String(Date.now()));
+          } catch (_) { }
           return restData;
         }
       } catch (_) { }
+
+      try {
+        const cached = localStorage.getItem('smart_storage_esp32_cameras_cache');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        }
+      } catch (_) { }
+
       return [...DEFAULT_12_ESP32_CAMERAS];
     }
 
@@ -3075,7 +3108,7 @@
         const { data, error } = await supabaseClient
           .from('esp32_cameras')
           .upsert(record, { onConflict: 'device_id' })
-          .select()
+          .select(CAMERA_COLS)
           .single();
         if (!error && data) savedRow = data;
       }
@@ -3086,6 +3119,20 @@
           : { ip_address: record.ip_address, mqtt_client_id: record.device_id.replace(/_CAM1$/i, '') };
         await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(record.shelf_id)}`, compPatch);
       } catch (_) { }
+
+      // Update local storage cache
+      try {
+        const list = await getCameras();
+        const idx = list.findIndex(item => item.device_id === record.device_id || (cam.id && item.id === cam.id));
+        const merged = savedRow || { id: cam.id || `cam-${Date.now()}`, ...record };
+        if (idx >= 0) {
+          list[idx] = { ...list[idx], ...merged };
+        } else {
+          list.push(merged);
+        }
+        localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(list));
+      } catch (_) { }
+
       return savedRow || { ...cam, ...record };
     }
 
@@ -3489,7 +3536,16 @@
             'postgres_changes',
             { event: '*', schema: 'public', table: 'compartments' },
             (payload) => {
-              loadCompartments(true);
+              if (payload.new && payload.new.shelf_id) {
+                const idx = compartmentsData.findIndex(c => c.shelf_id === payload.new.shelf_id);
+                if (idx >= 0) {
+                  compartmentsData[idx] = { ...compartmentsData[idx], ...payload.new };
+                } else {
+                  compartmentsData.push(payload.new);
+                }
+                renderCompartments(compartmentsData);
+                syncSelectedShelfTelemetry();
+              }
             }
           )
           .subscribe();
@@ -3501,8 +3557,15 @@
             'postgres_changes',
             { event: 'INSERT', schema: 'public', table: 'comparison_logs' },
             (payload) => {
-              loadComparisonLogs(true);
-              showToast(`New verification log for ${payload.new.shelf_id}: ${payload.new.state_delta}`, 'info');
+              if (payload.new) {
+                const exists = comparisonLogsData.some(l => l.log_id && l.log_id === payload.new.log_id);
+                if (!exists) {
+                  comparisonLogsData.unshift(payload.new);
+                  if (comparisonLogsData.length > 10) comparisonLogsData.length = 10;
+                  renderComparisonLogs(comparisonLogsData);
+                }
+                showToast(`New verification log for ${payload.new.shelf_id}: ${payload.new.state_delta}`, 'info');
+              }
             }
           )
           .subscribe();

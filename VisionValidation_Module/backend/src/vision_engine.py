@@ -10,7 +10,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Optional, Tuple
+from typing import Any, Optional, Tuple, Union
 import cv2
 from .pose_estimator import PoseEstimator
 from .spatial_mapper import SpatialMapper
@@ -26,14 +26,14 @@ class VisionValidationEngine:
 
     def __init__(
         self,
-        camera_source=0,
-        model_path="models/yolo11n-pose.pt",
-        roi_config_path="config/roi_config.json",
-        mqtt_broker="localhost",
-        mqtt_port=1883,
-        privacy_mode=False,
+        camera_source: Union[int, str] = 0,
+        model_path: str = "models/yolo11n-pose.pt",
+        roi_config_path: str = "config/roi_config.json",
+        mqtt_broker: str = "localhost",
+        mqtt_port: int = 1883,
+        privacy_mode: bool = False,
     ):
-        self.camera_source = camera_source
+        self.camera_source: Union[int, str] = camera_source
         self.model_path = model_path
         self.roi_config_path = roi_config_path
         self.mqtt_broker = mqtt_broker

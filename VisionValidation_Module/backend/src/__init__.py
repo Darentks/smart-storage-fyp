@@ -18,9 +18,6 @@ from .config_loader import (
     update_compartment_baseline_in_supabase,
     apply_inventory_delta_in_supabase,
     list_comparison_logs,
-    insert_esp32_reference_sample,
-    list_esp32_reference_samples,
-    delete_esp32_reference_sample,
 )
 
 try:
@@ -47,7 +44,4 @@ __all__ = [
     "update_compartment_baseline_in_supabase",
     "apply_inventory_delta_in_supabase",
     "list_comparison_logs",
-    "insert_esp32_reference_sample",
-    "list_esp32_reference_samples",
-    "delete_esp32_reference_sample",
 ]

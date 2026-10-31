@@ -7,6 +7,7 @@ Author: Daren Tan Khai Shuen
 import argparse
 import os
 import sys
+from typing import Union
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.vision_engine import VisionValidationEngine
@@ -57,6 +58,7 @@ def main():
     args = parser.parse_args()
 
     # Determine camera source: Manual CLI override or Dynamic Supabase ingestion
+    source: Union[int, str]
     if args.source is not None and args.source.strip().lower() != "auto":
         source = args.source.strip()
         print(f"[run_pipeline] Using manual camera source override: {mask_rtsp_url(source)}")
