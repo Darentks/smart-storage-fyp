@@ -23,6 +23,17 @@ if TYPE_CHECKING:
 DEFAULT_SUPABASE_URL = "https://hrufeowqpnyjfwxydocm.supabase.co"
 DEFAULT_SUPABASE_KEY = "sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt"
 
+# Lightweight non-Base64 column lists to prevent Supabase Egress bloat
+COMPARTMENTS_LIGHT_COLS = (
+    "shelf_id,rack_id,mqtt_client_id,camera_name,ip_address,secondary_ip_address,"
+    "secondary_mqtt_client_id,current_quantity,max_capacity,baseline_updated_at,"
+    "tm_model_url,status,rssi_dbm,free_heap_bytes,last_seen_at,created_at"
+)
+COMPARISON_LOGS_LIGHT_COLS = (
+    "log_id,shelf_id,mqtt_client_id,trigger_action,diff_score,similarity_score,"
+    "matched_box_count,scenario_label,state_delta,quantity_before,quantity_after,created_at"
+)
+
 try:
     from supabase import create_client
     _SUPABASE_AVAILABLE = True
@@ -314,18 +325,18 @@ def get_active_rtsp_url(default_source: Union[int, str] = 0) -> Union[int, str]:
 def list_esp32_cameras() -> List[Dict[str, Any]]:
     """
     READ: Fetches all registered shelf compartments & ESP32 runtime state
-    from the Supabase 'compartments' table ordered by shelf_id.
+    from the Supabase 'compartments' table ordered by shelf_id (excluding Base64 columns).
     """
     client = get_supabase_client()
     if client is not None:
         try:
-            resp = client.table("compartments").select("*").order("shelf_id", desc=False).execute()
+            resp = client.table("compartments").select(COMPARTMENTS_LIGHT_COLS).order("shelf_id", desc=False).execute()
             return resp.data or []
         except Exception as exc:
             print(f"[ConfigLoader] Warning: SDK read 'compartments' failed ({exc}), trying SupabaseRestFallback.")
 
     fallback = SupabaseRestFallback()
-    return fallback.select("compartments", "?select=*&order=shelf_id.asc")
+    return fallback.select("compartments", f"?select={COMPARTMENTS_LIGHT_COLS}&order=shelf_id.asc")
 
 
 def update_esp32_health_in_supabase(node_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -440,7 +451,7 @@ def update_esp32_health_in_supabase(node_payload: Dict[str, Any]) -> Optional[Di
 
 
 # =============================================================================
-# SUPABASE OPERATIONS: 30s BASELINE & OPENCV INVENTORY DELTA
+# SUPABASE OPERATIONS: 30s BASELINE & TEACHABLE MACHINE INVENTORY DELTA
 # =============================================================================
 
 def update_compartment_baseline_in_supabase(
@@ -450,34 +461,27 @@ def update_compartment_baseline_in_supabase(
     baseline_image_2_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Updates baseline_image_url, baseline_image_2_url (Front Cam), baseline_updated_at = now(),
-    status = 'ONLINE', and optionally ip_address in public.compartments where shelf_id = shelf_id.
+    Updates baseline_updated_at = now(), status = 'ONLINE', and optionally ip_address
+    in public.compartments using Prefer: return=minimal (never uploads Base64 strings).
     """
     shelf_id = shelf_id.strip()
     now_iso = datetime.now(timezone.utc).isoformat()
     update_data: Dict[str, Any] = {
-        "baseline_image_url": baseline_image_url,
         "baseline_updated_at": now_iso,
         "status": "ONLINE",
         "last_seen_at": now_iso,
     }
-    if baseline_image_2_url:
-        update_data["baseline_image_2_url"] = baseline_image_2_url
     if ip_address:
         update_data["ip_address"] = str(ip_address).strip()
 
-    client = get_supabase_client()
-    if client is not None:
-        try:
-            resp = client.table("compartments").update(update_data).eq("shelf_id", shelf_id).execute()
-            if resp.data and len(resp.data) > 0:
-                return resp.data[0]
-        except Exception as exc:
-            print(f"[ConfigLoader] Failed to update compartment baseline via SDK ({exc}), trying SupabaseRestFallback.")
-
-    fallback = SupabaseRestFallback()
-    updated = fallback.update("compartments", f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}", update_data, prefer="return=minimal")
-    return updated[0] if updated else None
+    _supabase_rest(
+        method="PATCH",
+        table="compartments",
+        query=f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}",
+        payload=update_data,
+        prefer="return=minimal",
+    )
+    return update_data
 
 
 def apply_inventory_delta_in_supabase(
@@ -485,132 +489,104 @@ def apply_inventory_delta_in_supabase(
     mqtt_client_id: str,
     trigger_action: str,
     comparison_result: Dict[str, Any],
+    current_quantity_hint: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Applies inventory deduction (-1 / +1) in public.compartments and logs
-    the comparison details into public.comparison_logs:
-    a) Reads current_quantity from public.compartments for shelf_id (default 4).
-    b) Applies delta = int(comparison_result.get("delta", 0)) so
-       quantity_after = max(0, min(4, quantity_before + delta)).
-    c) If delta != 0, updates current_quantity = quantity_after and
-       baseline_image_url = comparison_result.get("after_image") in public.compartments.
-    d) Inserts a row into public.comparison_logs and returns the log record.
+    Applies inventory deduction (-1 / +1) in public.compartments ONLY when delta != 0,
+    and inserts a lightweight row (without Base64 images) into public.comparison_logs.
     """
     shelf_id = shelf_id.strip()
     mqtt_client_id = mqtt_client_id.strip()
     delta = int(comparison_result.get("delta", 0))
-    state_delta = comparison_result.get("state_delta", "NO_CHANGE")
+    state_delta = str(comparison_result.get("state_delta", "NO_CHANGE"))
     diff_score = comparison_result.get("diff_score")
     similarity_score = comparison_result.get("similarity_score")
     matched_box_count = comparison_result.get("matched_box_count")
-    if matched_box_count is None:
-        print(
-            f"[ConfigLoader] Skipping comparison_logs insert and inventory update for {shelf_id}: "
-            f"predicted_box_count is None (Teachable Machine prediction required)."
-        )
-        return None
-    before_image_url = comparison_result.get("before_image_url") or comparison_result.get("before_image")
-    after_image_url = comparison_result.get("after_image_url") or comparison_result.get("after_image")
-    action_clean = trigger_action.upper() if trigger_action.upper() in ["BORROW", "RETURN"] else "BORROW"
 
-    # a) Read current_quantity from public.compartments for shelf_id (default 4)
-    quantity_before = 4
-    client = get_supabase_client()
-    read_success = False
-    if client is not None:
-        try:
-            resp = client.table("compartments").select("current_quantity").eq("shelf_id", shelf_id).limit(1).execute()
-            if resp.data and len(resp.data) > 0:
-                quantity_before = int(resp.data[0].get("current_quantity", 4))
-                read_success = True
-        except Exception as exc:
-            print(f"[ConfigLoader] Warning querying compartments quantity via SDK: {exc}")
+    if matched_box_count is None:
+        return None
+
+    # Skip writing NO_CHANGE / intention-only checks to Supabase
+    if delta == 0 or state_delta in ("NO_CHANGE", "SKIPPED_NO_TM"):
+        return None
 
     fallback = SupabaseRestFallback()
-    if not read_success:
-        records = fallback.select("compartments", f"?select=current_quantity&shelf_id=eq.{urllib.parse.quote(shelf_id)}&limit=1")
+    if current_quantity_hint is not None:
+        quantity_before = int(current_quantity_hint)
+    else:
+        quantity_before = 4
+        records = fallback.select(
+            "compartments",
+            f"?select=current_quantity&shelf_id=eq.{urllib.parse.quote(shelf_id)}&limit=1",
+        )
         if records:
             quantity_before = int(records[0].get("current_quantity", 4))
 
-    # b) Compute quantity_after = max(0, min(4, quantity_before + delta))
-    quantity_after = max(0, min(4, quantity_before + delta))
+    quantity_after = max(0, min(4, int(matched_box_count)))
+    if quantity_after == quantity_before:
+        return None
 
-    # c) If delta != 0, update current_quantity & baseline_image_url in public.compartments
     now_iso = datetime.now(timezone.utc).isoformat()
-    if delta != 0:
-        update_data: Dict[str, Any] = {
-            "current_quantity": quantity_after,
-            "last_seen_at": now_iso,
-            "status": "ONLINE",
-        }
-        if after_image_url:
-            update_data["baseline_image_url"] = after_image_url
-            update_data["baseline_updated_at"] = now_iso
+    derived_action = "BORROW" if quantity_after < quantity_before else "RETURN"
 
-        update_done = False
-        if client is not None:
-            try:
-                client.table("compartments").update(update_data).eq("shelf_id", shelf_id).execute()
-                print(f"[ConfigLoader] Updated {shelf_id} inventory: {quantity_before} -> {quantity_after} ({state_delta}).")
-                update_done = True
-            except Exception as exc:
-                print(f"[ConfigLoader] Failed to update compartment inventory via SDK ({exc}), trying SupabaseRestFallback.")
+    update_data: Dict[str, Any] = {
+        "current_quantity": quantity_after,
+        "baseline_updated_at": now_iso,
+        "last_seen_at": now_iso,
+        "status": "ONLINE",
+    }
+    _supabase_rest(
+        method="PATCH",
+        table="compartments",
+        query=f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}",
+        payload=update_data,
+        prefer="return=minimal",
+    )
+    print(f"[ConfigLoader] Updated {shelf_id} inventory: {quantity_before} -> {quantity_after} ({state_delta}).")
 
-        if not update_done:
-            fallback.update("compartments", f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}", update_data)
-            print(f"[ConfigLoader] Updated {shelf_id} inventory via REST: {quantity_before} -> {quantity_after} ({state_delta}).")
-
-    # d) Insert row into public.comparison_logs
     scenario_label = comparison_result.get("matched_scenario_label") or comparison_result.get("scenario_label")
-    log_record: Dict[str, Any] = {
+    db_log_record: Dict[str, Any] = {
         "shelf_id": shelf_id,
         "mqtt_client_id": mqtt_client_id,
-        "trigger_action": action_clean,
-        "before_image_url": before_image_url,
-        "after_image_url": after_image_url,
+        "trigger_action": derived_action,
+        "before_image_url": None,
+        "after_image_url": None,
         "diff_score": float(diff_score) if diff_score is not None else None,
         "similarity_score": float(similarity_score) if similarity_score is not None else None,
-        "matched_box_count": int(matched_box_count) if matched_box_count is not None else None,
+        "matched_box_count": int(matched_box_count),
         "scenario_label": scenario_label,
         "state_delta": state_delta,
         "quantity_before": quantity_before,
         "quantity_after": quantity_after,
         "created_at": now_iso,
     }
+    _supabase_rest(
+        method="POST",
+        table="comparison_logs",
+        payload=db_log_record,
+        prefer="return=minimal",
+    )
 
-    if client is not None:
-        try:
-            ins = client.table("comparison_logs").insert(log_record).execute()
-            return ins.data[0] if ins.data else log_record
-        except Exception as exc:
-            if "scenario_label" in str(exc).lower():
-                try:
-                    record_no_scen = {k: v for k, v in log_record.items() if k != "scenario_label"}
-                    ins = client.table("comparison_logs").insert(record_no_scen).execute()
-                    return ins.data[0] if ins.data else log_record
-                except Exception:
-                    pass
-            print(f"[ConfigLoader] Failed to insert comparison_log via SDK ({exc}), trying SupabaseRestFallback.")
-
-    inserted_logs = fallback.insert("comparison_logs", log_record)
-    if not inserted_logs and "scenario_label" in log_record:
-        record_no_scen = {k: v for k, v in log_record.items() if k != "scenario_label"}
-        inserted_logs = fallback.insert("comparison_logs", record_no_scen)
-    return inserted_logs[0] if inserted_logs else log_record
+    local_log = dict(db_log_record)
+    local_log["before_image_url"] = comparison_result.get("before_image_url") or comparison_result.get("before_image")
+    local_log["after_image_url"] = comparison_result.get("after_image_url") or comparison_result.get("after_image")
+    return local_log
 
 
-def list_comparison_logs(limit: int = 15) -> List[Dict[str, Any]]:
+def list_comparison_logs(limit: int = 10) -> List[Dict[str, Any]]:
     """
-    Fetches recent rows from public.comparison_logs ordered by created_at desc.
+    Fetches recent rows from public.comparison_logs ordered by created_at desc (excluding Base64 columns).
     """
+    safe_limit = min(max(1, int(limit)), 10)
     client = get_supabase_client()
     if client is not None:
         try:
             resp = (
                 client.table("comparison_logs")
-                .select("*")
+                .select(COMPARISON_LOGS_LIGHT_COLS)
+                .neq("state_delta", "NO_CHANGE")
                 .order("created_at", desc=True)
-                .limit(limit)
+                .limit(safe_limit)
                 .execute()
             )
             return resp.data or []
@@ -618,117 +594,7 @@ def list_comparison_logs(limit: int = 15) -> List[Dict[str, Any]]:
             print(f"[ConfigLoader] Warning: SDK read 'comparison_logs' failed ({exc}), trying SupabaseRestFallback.")
 
     fallback = SupabaseRestFallback()
-    return fallback.select("comparison_logs", f"?select=*&order=created_at.desc&limit={int(limit)}")
-
-
-# =============================================================================
-# SUPABASE OPERATIONS: public.esp32_reference_samples
-# =============================================================================
-
-def insert_esp32_reference_sample(sample_record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Inserts or upserts an ESP32 reference capture sample into public.esp32_reference_samples.
-    If a record with the same (shelf_id, sample_label) exists, cleanly replaces it.
-    """
-    shelf_id = str(sample_record.get("shelf_id", "SHELF_R1_C1")).strip()
-    mqtt_client_id = sample_record.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}"
-    rack_id = sample_record.get("rack_id", "RACK_01")
-    box_count = int(sample_record.get("box_count", 4))
-    image_url = sample_record.get("image_url", "")
-    sample_label = str(sample_record.get("sample_label") or f"{shelf_id} - {box_count} Boxes Ref").strip()
-
-    payload: Dict[str, Any] = {
-        "shelf_id": shelf_id,
-        "mqtt_client_id": mqtt_client_id,
-        "rack_id": rack_id,
-        "sample_label": sample_label,
-        "box_count": max(0, min(4, box_count)),
-        "image_url": image_url,
-        "flash_enabled": bool(sample_record.get("flash_enabled", True)),
-        "slot_states": sample_record.get("slot_states", {"front_top": 1, "back_top": 1, "front_bottom": 1, "back_bottom": 1}),
-        "feature_signature": sample_record.get("feature_signature"),
-        "capture_latency_ms": sample_record.get("capture_latency_ms"),
-    }
-
-    client = get_supabase_client()
-    if client is not None:
-        try:
-            # 1. Try SDK upsert with on_conflict
-            resp = client.table("esp32_reference_samples").upsert(payload, on_conflict="shelf_id,sample_label").execute()
-            if resp.data and len(resp.data) > 0:
-                return resp.data[0]
-        except Exception as exc:
-            # If unique constraint on (shelf_id, sample_label) is missing or SDK throws,
-            # explicitly delete any existing record with same (shelf_id, sample_label) and re-insert
-            print(f"[ConfigLoader] SDK upsert esp32_reference_sample: {exc}. Trying delete + insert...")
-            try:
-                client.table("esp32_reference_samples").delete().eq("shelf_id", shelf_id).eq("sample_label", sample_label).execute()
-                ins_resp = client.table("esp32_reference_samples").insert(payload).execute()
-                if ins_resp.data and len(ins_resp.data) > 0:
-                    return ins_resp.data[0]
-            except Exception as inner_exc:
-                print(f"[ConfigLoader] SDK delete+insert fallback failed ({inner_exc}), trying REST...")
-
-    # REST Fallback
-    fallback = SupabaseRestFallback()
-    # First attempt REST upsert with on_conflict
-    upserted = fallback.upsert("esp32_reference_samples", payload, on_conflict="shelf_id,sample_label")
-    if upserted:
-        return upserted[0]
-
-    # If upsert didn't return representation (e.g. unique constraint not defined on table),
-    # cleanly delete existing record for this shelf_id and sample_label, then insert
-    fallback.delete(
-        "esp32_reference_samples",
-        f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}&sample_label=eq.{urllib.parse.quote(sample_label)}",
+    return fallback.select(
+        "comparison_logs",
+        f"?select={COMPARISON_LOGS_LIGHT_COLS}&state_delta=neq.NO_CHANGE&order=created_at.desc&limit={safe_limit}",
     )
-    inserted = fallback.insert("esp32_reference_samples", payload)
-    return inserted[0] if inserted else payload
-
-
-def list_esp32_reference_samples(shelf_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Lists reference samples from public.esp32_reference_samples, optionally filtered by shelf_id.
-    """
-    client = get_supabase_client()
-    if client is not None:
-        try:
-            query = client.table("esp32_reference_samples").select("*").order("created_at", desc=True)
-            if shelf_id:
-                query = query.eq("shelf_id", shelf_id.strip())
-            resp = query.execute()
-            return resp.data or []
-        except Exception as exc:
-            print(f"[ConfigLoader] Warning: SDK read 'esp32_reference_samples' failed ({exc}), trying SupabaseRestFallback.")
-
-    fallback = SupabaseRestFallback()
-    q = f"?select=*&shelf_id=eq.{urllib.parse.quote(shelf_id.strip())}&order=created_at.desc" if shelf_id else "?select=*&order=created_at.desc"
-    return fallback.select("esp32_reference_samples", q)
-
-
-def delete_esp32_reference_sample(sample_id: Optional[str] = None, shelf_id: Optional[str] = None) -> bool:
-    """
-    Deletes an ESP32 reference sample by sample_id, or bulk deletes all samples for a shelf_id.
-    """
-    if not sample_id and not shelf_id:
-        return False
-
-    client = get_supabase_client()
-    if client is not None:
-        try:
-            query = client.table("esp32_reference_samples").delete()
-            if sample_id:
-                query = query.eq("sample_id", sample_id)
-            elif shelf_id:
-                query = query.eq("shelf_id", shelf_id.strip())
-            query.execute()
-            return True
-        except Exception as exc:
-            print(f"[ConfigLoader] Failed to delete esp32_reference_sample via SDK ({exc}), trying SupabaseRestFallback.")
-
-    fallback = SupabaseRestFallback()
-    if sample_id:
-        return fallback.delete("esp32_reference_samples", f"?sample_id=eq.{urllib.parse.quote(str(sample_id))}")
-    elif shelf_id:
-        return fallback.delete("esp32_reference_samples", f"?shelf_id=eq.{urllib.parse.quote(str(shelf_id).strip())}")
-    return False

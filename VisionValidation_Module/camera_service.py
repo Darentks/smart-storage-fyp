@@ -61,15 +61,11 @@ from src.config_loader import (  # type: ignore
     update_compartment_baseline_in_supabase,
     apply_inventory_delta_in_supabase,
     list_comparison_logs,
-    insert_esp32_reference_sample,
-    list_esp32_reference_samples,
-    delete_esp32_reference_sample,
 )
 from src.spatial_mapper import SpatialMapper  # type: ignore
 from src.mqtt_client import MQTTClientNode  # type: ignore
 from src.reference_validator import (  # type: ignore
     ESP32ReferenceManager,
-    extract_2x2_feature_signature,
     encode_bgr_to_data_url,
     decode_data_url_to_bgr,
 )
@@ -395,6 +391,16 @@ def discover_active_esp32_cameras(subnet_prefix=None) -> list:
         if clean_p.count(".") == 2:
             prefixes.add(clean_p)
 
+    # c) Configured compartments and ACTIVE_ESP32_IPS
+    try:
+        for comp in get_cached_compartments(force_refresh=False):
+            if comp.get("ip_address"):
+                candidates.add(str(comp["ip_address"]).strip())
+            if comp.get("secondary_ip_address"):
+                candidates.add(str(comp["secondary_ip_address"]).strip())
+    except Exception:
+        pass
+
     # Auto-detect local LAN subnet prefix if possible
     try:
         hostname = socket.gethostname()
@@ -474,7 +480,7 @@ def discover_active_esp32_cameras(subnet_prefix=None) -> list:
     return get_discovered_cameras_list()
 
 
-def capture_single_frame(source_str):
+def capture_single_frame(source_str) -> Dict[str, Any]:
     """
     Connects to an RTSP or webcam source, captures a single frame, and measures latency.
     """
@@ -877,16 +883,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        if path == "/esp32_reference_samples":
-            shelf_id = query.get("shelf_id", [None])[0]
-            samples = list_esp32_reference_samples(shelf_id=shelf_id)
-            self._send_json(200, {
-                "status": "success",
-                "shelf_id": shelf_id,
-                "samples": samples,
-            })
-            return
-
         self._send_json(404, {"error": "Endpoint not found"})
 
     def do_POST(self):
@@ -1096,79 +1092,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # STORE REFERENCE SAMPLE: Capture & store an ESP32 reference photo (4, 3, 2, 1, 0 boxes)
-        if path == "/esp32_reference_samples":
-            shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
-            esp32_ip = body.get("ip_address") or body.get("ip")
-            if esp32_ip and str(esp32_ip).strip():
-                clean_ip = str(esp32_ip).replace("http://", "").replace("/", "").strip()
-                prev_entry = ACTIVE_ESP32_IPS.get(shelf_id)
-                prev_ip2 = prev_entry.get("ip2") if isinstance(prev_entry, dict) else "192.168.0.102"
-                ACTIVE_ESP32_IPS[shelf_id] = {"ip1": clean_ip, "ip2": prev_ip2}
-
-            box_count = int(body.get("box_count", 4))
-            sample_label = str(body.get("sample_label") or f"{shelf_id} - {box_count} Boxes Ref").strip()
-            provided_image = body.get("image") or body.get("image_url")
-
-            t0 = time.time()
-            frame_bgr = None
-            data_url = ""
-            if provided_image:
-                frame_bgr = decode_data_url_to_bgr(provided_image)
-                data_url = provided_image
-            else:
-                frame_bgr, data_url = esp32_ref_manager.fetch_esp32_http_frame(
-                    esp32_ip=esp32_ip,
-                    mode="live",
-                )
-
-            latency_ms = int((time.time() - t0) * 1000)
-            feature_sig = extract_2x2_feature_signature(frame_bgr) if frame_bgr is not None else {}
-
-            slot_states = body.get("slot_states") or {
-                "front_top": 1,
-                "back_top": 1,
-                "front_bottom": 1,
-                "back_bottom": 1,
-            }
-            scenario_code = str(body.get("scenario_code") or "").strip().lower()
-
-            sample_record = {
-                "shelf_id": shelf_id,
-                "mqtt_client_id": f"ESP32_{shelf_id.replace('SHELF_', '')}",
-                "rack_id": spatial_mapper.rack_id,
-                "sample_label": sample_label,
-                "box_count": box_count,
-                "slot_states": slot_states,
-                "image_url": data_url,
-                "flash_enabled": bool(body.get("flash_enabled", True)),
-                "feature_signature": feature_sig,
-                "capture_latency_ms": latency_ms,
-            }
-
-            inserted = insert_esp32_reference_sample(sample_record)
-
-            # Also save copy to local disk reference_esp32/{shelf_id}/ref_<scenario_or_label>.jpg if cv2 available
-            if _OPENCV_AVAILABLE and frame_bgr is not None:
-                try:
-                    ref_dir = os.path.join(BACKEND_DIR, "reference_esp32", shelf_id)
-                    os.makedirs(ref_dir, exist_ok=True)
-                    clean_name = scenario_code or sample_label.lower()
-                    safe_slug = re.sub(r"[^a-z0-9]+", "_", clean_name).strip("_")
-                    if not safe_slug.startswith("ref_"):
-                        safe_slug = f"ref_{safe_slug}"
-                    f_name = f"{safe_slug}.jpg"
-                    cv2.imwrite(os.path.join(ref_dir, f_name), frame_bgr)
-                except Exception as e:
-                    print(f"[CameraService] Local disk write skipped: {e}")
-
-            self._send_json(200, {
-                "status": "success",
-                "sample": inserted or sample_record,
-            })
-            return
-
-        # VALIDATE: Run hybrid 30s baseline + reference validation and apply Supabase delta
+        # VALIDATE: Run 30s baseline + Teachable Machine validation and apply Supabase delta
         if path == "/esp32_validate":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
             boost = body.get("boost") or "auto"
@@ -1189,13 +1113,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             scenario_label = body.get("scenario_label")
             tm_confidence = body.get("tm_confidence") or body.get("confidence")
 
-            # Determine current quantity
+            # Determine current quantity from local cache (zero Supabase egress)
             curr_qty = 4
             try:
-                for comp in list_esp32_cameras():
+                for comp in get_cached_compartments(force_refresh=False):
                     if comp.get("shelf_id") == shelf_id:
                         curr_qty = int(comp.get("current_quantity", 4))
-                        # If esp32_ip2 wasn't sent in body, check if compartment has secondary_ip_address
                         if not esp32_ip2 and comp.get("secondary_ip_address"):
                             esp32_ip2 = comp.get("secondary_ip_address")
                         break
@@ -1216,21 +1139,22 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 tm_confidence=float(tm_confidence) if tm_confidence is not None else None,
             )
 
-            # Require predicted_box_count is not None before updating public.compartments or public.comparison_logs
             log_entry = None
             if predicted_box_count is not None:
-                # Clear consumed pending triggers for this shelf so browser refreshes do not re-run old triggers
                 PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
 
-                log_entry = apply_inventory_delta_in_supabase(
-                    shelf_id=shelf_id,
-                    mqtt_client_id=mqtt_client_id,
-                    trigger_action=expected_action,
-                    comparison_result=comp_res,
-                )
+                # ONLY write to Supabase and refresh cache if box count actually changed (delta != 0)
+                if comp_res.get("delta", 0) != 0:
+                    derived_action = "BORROW" if comp_res.get("delta", 0) < 0 else "RETURN"
+                    log_entry = apply_inventory_delta_in_supabase(
+                        shelf_id=shelf_id,
+                        mqtt_client_id=mqtt_client_id,
+                        trigger_action=derived_action,
+                        comparison_result=comp_res,
+                    )
+                    get_cached_compartments(force_refresh=True)
+                    get_cached_comparison_logs(force_refresh=True)
 
-            get_cached_compartments(force_refresh=True)
-            get_cached_comparison_logs(force_refresh=True)
             self._send_json(200, {
                 "status": "success",
                 "comparison": comp_res,
@@ -1241,56 +1165,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "Endpoint not found"})
 
     def do_DELETE(self):
-        parsed = urllib.parse.urlparse(self.path)
-        path = parsed.path
-        query = urllib.parse.parse_qs(parsed.query)
-
-        if path == "/esp32_reference_samples":
-            sample_id = query.get("sample_id", [None])[0]
-            shelf_id = query.get("shelf_id", [None])[0]
-            all_param = query.get("all", ["0"])[0]
-
-            if not sample_id and not shelf_id:
-                body = self._read_json_body()
-                sample_id = body.get("sample_id")
-                shelf_id = body.get("shelf_id")
-                if "all" in body:
-                    all_param = str(body.get("all"))
-
-            # Bulk delete all samples for a shelf
-            if shelf_id and (str(all_param) in ["1", "true", "True"] or not sample_id):
-                deleted = delete_esp32_reference_sample(shelf_id=str(shelf_id).strip())
-                # Also optionally remove local disk sample pictures
-                try:
-                    ref_dir = os.path.join(BACKEND_DIR, "reference_esp32", str(shelf_id).strip())
-                    if os.path.isdir(ref_dir):
-                        for f in os.listdir(ref_dir):
-                            if f.endswith(".jpg"):
-                                try:
-                                    os.remove(os.path.join(ref_dir, f))
-                                except Exception:
-                                    pass
-                except Exception:
-                    pass
-
-                self._send_json(200 if deleted else 500, {
-                    "status": "success" if deleted else "failed",
-                    "shelf_id": shelf_id,
-                    "deleted_all": True,
-                })
-                return
-
-            if not sample_id:
-                self._send_json(400, {"status": "failed", "error": "Missing sample_id or shelf_id with all=1"})
-                return
-
-            deleted = delete_esp32_reference_sample(sample_id=str(sample_id))
-            self._send_json(200 if deleted else 500, {
-                "status": "success" if deleted else "failed",
-                "sample_id": sample_id,
-            })
-            return
-
         self._send_json(404, {"error": "Endpoint not found"})
 
     def log_message(self, format, *args):
@@ -1382,7 +1256,6 @@ def esp32_http_baseline_poller():
                         "last_seen_at": now_iso,
                     }
                     mqtt_bridge.edge_nodes[dev_id1] = node_health
-                    update_esp32_health_in_supabase(node_health)
 
                 # Also probe secondary camera (CAM 2 Front Angle)
                 online_cam2 = False
@@ -1415,31 +1288,24 @@ def esp32_http_baseline_poller():
                         "last_seen_at": now_iso,
                     }
                     mqtt_bridge.edge_nodes[dev_id2] = node_health2
-                    update_esp32_health_in_supabase(node_health2)
 
-                should_sync_cloud = (time.time() - LAST_CLOUD_BASELINE_SYNC_TS.get(shelf_id, 0.0) >= 300.0)
+                # Keep 30s baseline strictly in local RAM (sync_supabase=False) to prevent Base64 egress
                 if online or online_cam2:
-                    # Update 30s local baseline cache; sync to Supabase at most once every 5 minutes (300s)
                     esp32_ref_manager.update_30s_baseline(
                         shelf_id=shelf_id,
                         esp32_ip=clean_ip,
                         esp32_ip2=sec_ip,
-                        sync_supabase=should_sync_cloud,
+                        sync_supabase=False,
                     )
-                    if should_sync_cloud:
-                        LAST_CLOUD_BASELINE_SYNC_TS[shelf_id] = time.time()
                 else:
-                    # Check if node has a cached baseline; if not, do a synthetic or retry fetch
                     cached = esp32_ref_manager.baseline_cache.get(shelf_id)
                     if not cached or not cached.get("data_url"):
                         esp32_ref_manager.update_30s_baseline(
                             shelf_id=shelf_id,
                             esp32_ip=clean_ip,
                             esp32_ip2=sec_ip,
-                            sync_supabase=should_sync_cloud,
+                            sync_supabase=False,
                         )
-                        if should_sync_cloud:
-                            LAST_CLOUD_BASELINE_SYNC_TS[shelf_id] = time.time()
 
         except Exception as exc:
             print(f"[CameraService Poller] Exception in baseline poller cycle: {exc}")

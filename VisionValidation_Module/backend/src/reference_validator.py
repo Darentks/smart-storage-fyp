@@ -42,15 +42,11 @@ try:
     from .config_loader import (
         get_supabase_client,
         update_compartment_baseline_in_supabase,
-        list_esp32_reference_samples,
-        insert_esp32_reference_sample,
     )
 except ImportError:
     from config_loader import (
         get_supabase_client,
         update_compartment_baseline_in_supabase,
-        list_esp32_reference_samples,
-        insert_esp32_reference_sample,
     )
 
 

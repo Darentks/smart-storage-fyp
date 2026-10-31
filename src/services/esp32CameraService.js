@@ -32,7 +32,7 @@ function cleanIpAddress(ip) {
   return String(ip || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
 }
 
-async function supabaseRestRequest(table, method = 'GET', query = '', body = null, prefer = 'return=representation') {
+async function supabaseRestRequest(table, method = 'GET', query = '', body = null, prefer = 'return=minimal') {
   const url = `${SUPABASE_URL}/rest/v1/${table}${query}`;
   const headers = {
     apikey: SUPABASE_ANON_KEY,
@@ -49,7 +49,7 @@ async function supabaseRestRequest(table, method = 'GET', query = '', body = nul
     const errText = await resp.text();
     throw new Error(`Supabase ${method} ${table} failed (${resp.status}): ${errText}`);
   }
-  if (resp.status === 204) return null;
+  if (resp.status === 204 || prefer.includes('return=minimal')) return null;
   return await resp.json();
 }
 
@@ -179,11 +179,30 @@ export function captureLiveSnapshotUrl(ip, mode = 'live') {
  * Fetches all ESP32-CAM records from Supabase `public.esp32_cameras`
  * (with resilient fallback to local storage / 12-camera seed list)
  */
-export async function getCameras() {
+export async function getCameras(forceRefresh = false) {
+  if (!forceRefresh) {
+    try {
+      const lastFetch = Number(localStorage.getItem('smart_storage_esp32_cameras_fetched_at') || 0);
+      const cached = localStorage.getItem('smart_storage_esp32_cameras_cache');
+      if (cached && (Date.now() - lastFetch < 300000)) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {}
+  }
+
   try {
-    const rows = await supabaseRestRequest('esp32_cameras', 'GET', '?select=*&order=shelf_id.asc,angle_index.asc');
+    const cols = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address,secondary_ip_address,status,rssi_dbm,last_seen';
+    const rows = await supabaseRestRequest(
+      'esp32_cameras',
+      'GET',
+      `?select=${cols}&order=shelf_id.asc,angle_index.asc`,
+      null,
+      'return=representation'
+    );
     if (Array.isArray(rows) && rows.length > 0) {
       localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(rows));
+      localStorage.setItem('smart_storage_esp32_cameras_fetched_at', String(Date.now()));
       return rows;
     }
   } catch (err) {
