@@ -471,6 +471,11 @@
     }
 
     /* Panel 2: Live Angle Tester & Scenario Reference Collector */
+    /* Fullscreen CCTV viewer */
+    #cctvViewerColumn:fullscreen { background: #020617; padding: 12px; overflow: auto; justify-content: flex-start; }
+    #cctvViewerColumn:fullscreen #cctvTestContainer { flex: 1; min-height: 0; }
+    #cctvViewerColumn:fullscreen #cctvPoseCanvas { width: auto; max-width: 100%; max-height: calc(100vh - 220px); }
+
     .tester-grid {
       display: grid;
       grid-template-columns: 1.2fr 1fr;
@@ -1049,7 +1054,7 @@
       </div>
 
       <!-- 2-Column Tester & CRUD Grid -->
-      <div class="tester-grid" style="margin-bottom: 20px;">
+      <div class="tester-grid" style="margin-bottom: 20px; grid-template-columns: 1fr;">
         <!-- Left Column: Add / Edit Hikvision CCTV or Webcam Form -->
         <div
           style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
@@ -1159,9 +1164,9 @@
           </form>
         </div>
 
-        <!-- Right Column: In-Browser MediaPipe Pose CCTV Wrist-ROI Dwell Detector -->
-        <div
-          style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+        <!-- Viewer (full width, shown above the CCTV form): In-Browser MediaPipe Pose CCTV Wrist-ROI Dwell Detector -->
+        <div id="cctvViewerColumn"
+          style="order: -1; background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 13px; font-weight: 700; color: var(--text-primary);">&#9889; MediaPipe Pose
@@ -1198,6 +1203,10 @@
               style="height: 30px; font-size: 11px; padding: 0 10px; border-color: var(--primary); color: var(--primary);"
               onclick="toggleRoiCalibrationMode()">
               &#127919; Calibrate ROI
+            </button>
+            <button type="button" class="btn-action" id="cctvFullscreenBtn"
+              style="height: 30px; font-size: 11px; padding: 0 10px;" onclick="toggleCctvFullscreen()">
+              &#9974; Fullscreen
             </button>
             <button type="button" class="btn-action" id="cctvSimulateBtn"
               style="height: 30px; font-size: 11px; padding: 0 10px; border-color: #a855f7; color: #c084fc; background: rgba(168, 85, 247, 0.08);"
@@ -1240,10 +1249,10 @@
 
           <!-- Canvas & Video Viewport -->
           <div class="preview-canvas-box" id="cctvTestContainer"
-            style="position: relative; flex: 1; min-height: 280px; display: flex; align-items: center; justify-content: center; background: #070b14; border-radius: 8px; overflow: hidden;">
+            style="position: relative; flex: 1; min-height: 360px; aspect-ratio: auto; display: flex; align-items: center; justify-content: center; background: #070b14; border-radius: 8px; overflow: hidden;">
             <video id="cctvPoseVideo" playsinline muted style="display:none;"></video>
             <canvas id="cctvPoseCanvas" width="640" height="480"
-              style="width: 100%; height: auto; max-height: 440px; aspect-ratio: 4/3; object-fit: contain; display: block;"></canvas>
+              style="width: 100%; height: auto; display: block;"></canvas>
             <div id="cctvTestPlaceholder" class="snapshot-placeholder"
               style="position: absolute; inset: 0; pointer-events: none; background: rgba(11, 17, 32, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 20px;">
               <span style="font-size: 28px;">&#128249;</span>
@@ -4536,7 +4545,14 @@
             const img = new Image();
             img.crossOrigin = 'anonymous';
             await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = data.image; });
-            if (isPoseRunning && mpPose && img.naturalWidth) await mpPose.send({ image: img });
+            if (isPoseRunning && mpPose && img.naturalWidth) {
+              const cv = document.getElementById('cctvPoseCanvas');
+              if (cv && (cv.width !== img.naturalWidth || cv.height !== img.naturalHeight)) {
+                cv.width = img.naturalWidth;
+                cv.height = img.naturalHeight;
+              }
+              await mpPose.send({ image: img });
+            }
           }
         } catch (_) { }
         busy = false;
@@ -4847,20 +4863,44 @@
       }).join('');
     }
 
+    // Draw a bridge snapshot onto the main tracker canvas (full-width viewer)
+    function drawFrameOnCanvas(dataUrl) {
+      return new Promise((resolve) => {
+        const canvas = document.getElementById('cctvPoseCanvas');
+        const img = new Image();
+        img.onload = () => {
+          if (canvas) {
+            canvas.width = img.naturalWidth || 640;
+            canvas.height = img.naturalHeight || 480;
+            canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+          }
+          resolve(true);
+        };
+        img.onerror = () => resolve(false);
+        img.src = dataUrl;
+      });
+    }
+
+    function toggleCctvFullscreen() {
+      const el = document.getElementById('cctvViewerColumn');
+      if (!el) return;
+      if (document.fullscreenElement) document.exitFullscreen();
+      else if (el.requestFullscreen) el.requestFullscreen();
+    }
+
     async function testCctvFeed(cctvId, rtspUrl) {
       const placeholder = document.getElementById('cctvTestPlaceholder');
-      const img = document.getElementById('cctvTestPreviewImg');
       showToast(`Connecting to ${cctvId}...`, 'info');
 
       try {
         const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(rtspUrl)}`, { cache: 'no-store' });
         const res = await resp.json();
         if (resp.ok && res.status === 'success' && res.image) {
-          if (img) {
-            img.src = res.image;
-            img.style.display = 'block';
-          }
+          if (isPoseRunning) stopMediaPipeTracker();
           if (placeholder) placeholder.style.display = 'none';
+          await drawFrameOnCanvas(res.image);
+          const panel = document.getElementById('cctvViewerColumn');
+          if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
           showToast(`Captured snapshot from ${cctvId} in ${res.latency_ms}ms`, 'success');
         } else {
           showToast(`Test feed failed for ${cctvId}: ${res.error || 'Unknown error'}`, 'error');
