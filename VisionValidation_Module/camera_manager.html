@@ -1184,9 +1184,9 @@
                 style="font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Source:</label>
               <select id="cctvPoseSourceSelect" class="form-control"
                 style="font-size: 11px; padding: 4px 6px; height: 30px;" onchange="onCctvSourceChanged()">
-                <option value="webcam" selected>&#128247; Laptop / USB Webcam (Device 0)</option>
+                <option value="cctv_bridge" selected>&#127760; CCTV Camera (via Local Bridge, same as Test Feed)</option>
+                <option value="webcam">&#128247; Laptop / USB Webcam (Device 0)</option>
                 <option value="simulation">&#127918; Synthetic Wrist-ROI Interaction Simulation</option>
-                <option value="cctv_bridge">&#127760; CCTV Stream via Local Bridge (/test_feed)</option>
               </select>
             </div>
             <button type="button" class="btn-action" id="cctvPoseToggleBtn"
@@ -4517,26 +4517,30 @@
       simulationAnimId = requestAnimationFrame(loop);
     }
 
-    function startCctvBridgePollingLoop() {
-      const source = (document.getElementById('cctvRtspInput')?.value || '0').trim();
-      const testImg = new Image();
-      testImg.crossOrigin = 'anonymous';
+    // RTSP URL of the CCTV currently selected for tracking (set by "Start MediaPipe" / "Calibrate ROI" on a CCTV card)
+    let activeCctvSourceUrl = null;
 
+    function startCctvBridgePollingLoop() {
+      const source = (activeCctvSourceUrl || document.getElementById('cctvRtspInput')?.value || '0').trim();
+      let busy = false;
+
+      // Browsers cannot open rtsp:// directly, so the local bridge grabs CCTV frames (same path as "Test Feed")
+      // and each frame is fed to MediaPipe Pose in the browser.
       bridgeStreamInterval = setInterval(async () => {
-        if (!isPoseRunning) return;
+        if (!isPoseRunning || busy) return;
+        busy = true;
         try {
           const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}`, { cache: 'no-store' });
-          if (resp.ok) {
-            const data = await resp.json();
-            if (data.image && mpPose) {
-              testImg.onload = async () => {
-                if (isPoseRunning && mpPose) await mpPose.send({ image: testImg });
-              };
-              testImg.src = data.image;
-            }
+          const data = resp.ok ? await resp.json() : null;
+          if (data && data.image && mpPose) {
+            const img = new Image();
+            img.crossOrigin = 'anonymous';
+            await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = data.image; });
+            if (isPoseRunning && mpPose && img.naturalWidth) await mpPose.send({ image: img });
           }
         } catch (_) { }
-      }, 150); // ~6.6 FPS bridge stream
+        busy = false;
+      }, 150);
     }
 
     // Interactive ROI Calibration Handlers
@@ -4878,16 +4882,26 @@
           updateCalibCoordsText();
         }
       }
-      showToast(`Ready to calibrate ROI for ${cctvId}. Drag box on canvas above.`, 'info');
+      useCctvAsTrackerSource(rtspUrl);
+      showToast(`Ready to calibrate ROI for ${cctvId} on its CCTV feed. Drag box on canvas above.`, 'info');
+    }
+
+    // Point the tracker canvas at the selected CCTV (via local bridge) instead of the laptop webcam
+    function useCctvAsTrackerSource(rtspUrl) {
+      activeCctvSourceUrl = rtspUrl;
+      const sourceSelect = document.getElementById('cctvPoseSourceSelect');
+      if (sourceSelect) sourceSelect.value = 'cctv_bridge';
+      const rtspInput = document.getElementById('cctvRtspInput');
+      if (rtspInput && rtspUrl) rtspInput.value = rtspUrl;
+      if (isPoseRunning) stopMediaPipeTracker();
+      setTimeout(startMediaPipeTracker, 200);
     }
 
     function startCctvPipeline(cctvId, rtspUrl) {
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
-      const sourceSelect = document.getElementById('cctvPoseSourceSelect');
-      if (sourceSelect) sourceSelect.value = 'webcam';
-      startMediaPipeTracker();
-      showToast(`Running MediaPipe Pose JS (Browser/Vercel) for ${cctvId}`, 'success');
+      useCctvAsTrackerSource(rtspUrl);
+      showToast(`Running MediaPipe Pose JS (Browser/Vercel) on ${cctvId} CCTV feed`, 'success');
     }
 
     function stopCctvPipeline(cctvId) {
