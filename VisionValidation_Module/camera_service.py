@@ -21,18 +21,22 @@ Runs a lightweight HTTP server on port 8008 providing:
 
 import base64
 import concurrent.futures
+import glob
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 # Add backend directory to sys.path
 BACKEND_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "backend"))
@@ -186,8 +190,8 @@ def get_merged_compartments_and_nodes():
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
         baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
         baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
-        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.101"
-        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or "192.168.0.102"
+        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.201"
+        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or "192.168.0.202"
 
         merged.append({
             "camera_id": db_row.get("camera_id"),
@@ -242,8 +246,8 @@ def get_merged_compartments_and_nodes():
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
         baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
         baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
-        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.101"
-        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or "192.168.0.102"
+        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.201"
+        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or "192.168.0.202"
 
         merged.append({
             "camera_id": db_row.get("camera_id"),
@@ -282,8 +286,8 @@ def get_merged_compartments_and_nodes():
             baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
             baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
             baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
-            ip_addr = live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.101"
-            sec_ip_addr = db_row.get("secondary_ip_address") or "192.168.0.102"
+            ip_addr = live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.201"
+            sec_ip_addr = db_row.get("secondary_ip_address") or "192.168.0.202"
 
             merged.append({
                 "camera_id": db_row.get("camera_id"),
@@ -405,12 +409,12 @@ def discover_active_esp32_cameras(subnet_prefix=None) -> list:
         pass
 
     for pfx in prefixes:
-        for host_id in list(range(101, 113)) + [201, 202]:
+        for host_id in list(range(101, 113)) + list(range(201, 213)):
             candidates.add(f"{pfx}.{host_id}")
 
-    # c) Configured compartments and ACTIVE_ESP32_IPS
+    # c) Configured compartments and ACTIVE_ESP32_IPS (using 300s RAM cache)
     try:
-        for comp in list_esp32_cameras():
+        for comp in get_cached_compartments(force_refresh=False):
             if comp.get("ip_address"):
                 candidates.add(str(comp["ip_address"]).strip())
             if comp.get("secondary_ip_address"):
@@ -563,6 +567,260 @@ def capture_single_frame(source_str) -> Dict[str, Any]:
                 cap.release()
             except Exception:
                 pass
+
+
+def resolve_edge_relay_repo_path(custom_path: Optional[str] = None) -> Optional[str]:
+    """
+    Resolves the directory containing the EdgeHardwareRelay PlatformIO project (platformio.ini).
+    Checks custom_path, os.getenv("EDGE_RELAY_REPO_PATH"), sibling folders, and ~/Desktop or ~/Documents.
+    """
+    candidates = []
+    if custom_path and str(custom_path).strip():
+        candidates.append(os.path.abspath(str(custom_path).strip()))
+        candidates.append(os.path.abspath(os.path.join(os.path.dirname(__file__), str(custom_path).strip())))
+        candidates.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", str(custom_path).strip())))
+
+    env_path = os.getenv("EDGE_RELAY_REPO_PATH", "").strip()
+    if env_path:
+        candidates.append(os.path.abspath(env_path))
+        candidates.append(os.path.abspath(os.path.join(os.path.dirname(__file__), env_path)))
+        candidates.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..", env_path)))
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    workspace_dir = os.path.abspath(os.path.join(base_dir, ".."))
+
+    # Sibling folders
+    for name in ["EdgeHardwareRelay-main", "EdgeHardwareRelay", "EdgeNodeRelay"]:
+        candidates.append(os.path.abspath(os.path.join(workspace_dir, "..", name)))
+        candidates.append(os.path.abspath(os.path.join(workspace_dir, name)))
+        candidates.append(os.path.abspath(os.path.join(base_dir, "..", name)))
+
+    # ~/Desktop and ~/Documents
+    home = os.path.expanduser("~")
+    for base in [
+        os.path.join(home, "Desktop"),
+        os.path.join(home, "OneDrive", "Desktop"),
+        os.path.join(home, "Documents"),
+        os.path.join(home, "OneDrive", "Documents"),
+    ]:
+        for name in ["EdgeHardwareRelay-main", "EdgeHardwareRelay", "EdgeNodeRelay"]:
+            candidates.append(os.path.join(base, name))
+
+    seen = set()
+    for cand in candidates:
+        norm = os.path.normpath(cand)
+        if norm in seen:
+            continue
+        seen.add(norm)
+        if os.path.isdir(norm) and os.path.isfile(os.path.join(norm, "platformio.ini")):
+            return norm
+
+    # Fallback to existing directory among candidates
+    for cand in candidates:
+        if os.path.isdir(cand):
+            return os.path.normpath(cand)
+
+    return os.path.normpath(candidates[0]) if candidates else None
+
+
+def find_platformio_executable() -> str:
+    """Finds the PlatformIO CLI executable (pio or pio.exe)."""
+    env_pio = shutil.which("pio")
+    if env_pio:
+        return env_pio
+
+    home = os.path.expanduser("~")
+    penv_candidates = [
+        os.path.join(home, ".platformio", "penv", "Scripts", "pio.exe"),
+        os.path.join(home, ".platformio", "penv", "Scripts", "platformio.exe"),
+        os.path.join(home, ".platformio", "penv", "bin", "pio"),
+        os.path.join(home, ".platformio", "penv", "bin", "platformio"),
+        shutil.which("platformio"),
+    ]
+    for p in penv_candidates:
+        if p and os.path.isfile(p):
+            return p
+    return "pio"
+
+
+def compile_and_locate_firmware(force_build: bool = True, custom_repo_path: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Runs [pio_exe, "run"] (timeout 120s) when force_build=True, then finds the newest
+    .pio/build/*/firmware.bin (>10KB) and returns:
+    {"status": "success", "repo_path", "env_name", "bin_path", "size_bytes", "modified_at", "build_log"}
+    """
+    repo_dir = resolve_edge_relay_repo_path(custom_repo_path)
+    if not repo_dir or not os.path.isdir(repo_dir):
+        return {
+            "status": "failed",
+            "error": f"Edge hardware relay repository not found at '{repo_dir}'. Checked EDGE_RELAY_REPO_PATH and candidate folders.",
+            "repo_path": repo_dir,
+            "build_log": None,
+        }
+
+    build_log = ""
+    if force_build:
+        pio_exe = find_platformio_executable()
+        print(f"[CameraService OTA] Compiling PlatformIO project in '{repo_dir}' using '{pio_exe}'...")
+        try:
+            proc = subprocess.run(
+                [pio_exe, "run"],
+                cwd=repo_dir,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            build_log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+            if proc.returncode != 0:
+                print(f"[CameraService OTA] PlatformIO build failed (exit code {proc.returncode})")
+                return {
+                    "status": "failed",
+                    "error": f"PlatformIO compilation failed with exit code {proc.returncode}",
+                    "repo_path": repo_dir,
+                    "build_log": build_log,
+                }
+            print("[CameraService OTA] PlatformIO compilation succeeded.")
+        except subprocess.TimeoutExpired as te:
+            out = (te.stdout or "") if hasattr(te, "stdout") else ""
+            err = (te.stderr or "") if hasattr(te, "stderr") else ""
+            return {
+                "status": "failed",
+                "error": "PlatformIO build timed out (120s limit exceeded).",
+                "repo_path": repo_dir,
+                "build_log": f"{out}\n{err}".strip(),
+            }
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "error": f"Failed to execute PlatformIO build: {str(exc)}",
+                "repo_path": repo_dir,
+                "build_log": str(exc),
+            }
+
+    # Locate newest .pio/build/*/firmware.bin (>10KB)
+    pattern = os.path.join(repo_dir, ".pio", "build", "*", "firmware.bin")
+    candidate_bins = glob.glob(pattern)
+    valid_bins = [b for b in candidate_bins if os.path.isfile(b) and os.path.getsize(b) > 10240]
+
+    if not valid_bins:
+        return {
+            "status": "failed",
+            "error": "No compiled firmware.bin (>10KB) found in .pio/build/*/. Please enable compilation or run 'pio run'.",
+            "repo_path": repo_dir,
+            "build_log": build_log or None,
+        }
+
+    valid_bins.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    newest_bin = valid_bins[0]
+    env_name = os.path.basename(os.path.dirname(newest_bin))
+    size_bytes = os.path.getsize(newest_bin)
+    modified_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(os.path.getmtime(newest_bin)))
+
+    return {
+        "status": "success",
+        "repo_path": repo_dir,
+        "env_name": env_name,
+        "bin_path": newest_bin,
+        "size_bytes": size_bytes,
+        "modified_at": modified_at,
+        "build_log": build_log or None,
+    }
+
+
+def push_ota_firmware_to_esp32(esp32_ip: str, bin_path: str, timeout: float = 45.0) -> dict:
+    """
+    Streams firmware.bin as multipart/form-data (name="file"; filename="firmware.bin")
+    via POST http://{clean_ip}/update and returns:
+    {"status", "ip", "http_status", "elapsed_ms", "device_response"}
+    """
+    clean_ip = str(esp32_ip).replace("http://", "").replace("/", "").strip()
+    if not clean_ip:
+        return {
+            "status": "failed",
+            "ip": esp32_ip,
+            "http_status": None,
+            "elapsed_ms": 0,
+            "device_response": None,
+            "error": "Empty or invalid IP address",
+        }
+
+    if not os.path.isfile(bin_path):
+        return {
+            "status": "failed",
+            "ip": clean_ip,
+            "http_status": None,
+            "elapsed_ms": 0,
+            "device_response": None,
+            "error": f"Firmware binary not found at '{bin_path}'",
+        }
+
+    boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
+    part_header = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="file"; filename="firmware.bin"\r\n'
+        f"Content-Type: application/octet-stream\r\n\r\n"
+    ).encode("utf-8")
+    part_footer = f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+    try:
+        with open(bin_path, "rb") as bf:
+            file_bytes = bf.read()
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "ip": clean_ip,
+            "http_status": None,
+            "elapsed_ms": 0,
+            "device_response": None,
+            "error": f"Failed to read firmware binary: {str(exc)}",
+        }
+
+    body_bytes = part_header + file_bytes + part_footer
+    headers = {
+        "User-Agent": "SmartStorageOTA/1.0",
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body_bytes)),
+    }
+    url = f"http://{clean_ip}/update"
+    t0 = time.time()
+
+    try:
+        req = urllib.request.Request(url, data=body_bytes, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            elapsed_ms = int((time.time() - t0) * 1000)
+            status_code = resp.status
+            dev_resp = resp.read().decode("utf-8", errors="replace")
+            print(f"[CameraService OTA] Successfully flashed {clean_ip} in {elapsed_ms}ms: {dev_resp[:100]}")
+            return {
+                "status": "success" if (200 <= status_code < 300) else "failed",
+                "ip": clean_ip,
+                "http_status": status_code,
+                "elapsed_ms": elapsed_ms,
+                "device_response": dev_resp,
+            }
+    except urllib.error.HTTPError as he:
+        elapsed_ms = int((time.time() - t0) * 1000)
+        dev_resp = he.read().decode("utf-8", errors="replace") if he.fp else str(he)
+        print(f"[CameraService OTA] HTTP error flashing {clean_ip}: {he.code} {he.reason} - {dev_resp[:100]}")
+        return {
+            "status": "failed",
+            "ip": clean_ip,
+            "http_status": he.code,
+            "elapsed_ms": elapsed_ms,
+            "device_response": dev_resp,
+            "error": f"HTTP {he.code}: {he.reason}",
+        }
+    except Exception as exc:
+        elapsed_ms = int((time.time() - t0) * 1000)
+        print(f"[CameraService OTA] Exception flashing {clean_ip}: {exc}")
+        return {
+            "status": "failed",
+            "ip": clean_ip,
+            "http_status": None,
+            "elapsed_ms": elapsed_ms,
+            "device_response": None,
+            "error": str(exc),
+        }
 
 
 class CameraServiceRequestHandler(BaseHTTPRequestHandler):
@@ -821,6 +1079,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         esp32_ip2=esp32_ip2,
                         image_data_url=combined_url,
                         image_2_data_url=url2,
+                        sync_supabase=False,
                     )
 
                 self._send_json(200, {
@@ -845,6 +1104,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     shelf_id=shelf_id,
                     esp32_ip=esp32_ip,
                     image_data_url=data_url,
+                    sync_supabase=False,
                 )
 
             self._send_json(200, {
@@ -856,6 +1116,13 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "image_front": None,
                 "latency_ms": latency_ms,
             })
+            return
+
+        if path == "/esp32_ota_info":
+            repo_param = query.get("repo_path")
+            custom_repo: Optional[str] = repo_param[0] if (repo_param and len(repo_param) > 0) else None
+            info = compile_and_locate_firmware(force_build=False, custom_repo_path=custom_repo)
+            self._send_json(200, info)
             return
 
         self._send_json(404, {"error": "Endpoint not found"})
@@ -971,8 +1238,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # ASSIGN DUAL CAMERA IPs TO SHELF: Immediately update ACTIVE_ESP32_IPS and Supabase public.compartments
         if path == "/esp32_assign_ips":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
-            raw_ip1 = str(body.get("ip_address") or body.get("ip") or "192.168.0.101").replace("http://", "").replace("/", "").strip()
-            raw_ip2 = str(body.get("secondary_ip_address") or body.get("ip2") or "192.168.0.102").replace("http://", "").replace("/", "").strip()
+            raw_ip1 = str(body.get("ip_address") or body.get("ip") or "192.168.0.201").replace("http://", "").replace("/", "").strip()
+            raw_ip2 = str(body.get("secondary_ip_address") or body.get("ip2") or "192.168.0.202").replace("http://", "").replace("/", "").strip()
 
             ACTIVE_ESP32_IPS[shelf_id] = {
                 "ip1": raw_ip1,
@@ -1137,6 +1404,48 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        # 1-CLICK PLATFORMIO BUILD & WIRELESS OTA FLASH (Batch or Single)
+        if path == "/esp32_ota_flash":
+            repo_path_val = body.get("repo_path")
+            repo_path: Optional[str] = str(repo_path_val).strip() if repo_path_val else None
+            build_first = bool(body.get("build", True))
+            raw_ips = body.get("ips") or body.get("ip") or []
+            if isinstance(raw_ips, str):
+                target_ips = [raw_ips]
+            elif isinstance(raw_ips, list):
+                target_ips = [str(x) for x in raw_ips if x]
+            else:
+                target_ips = []
+
+            if not target_ips:
+                self._send_json(400, {"status": "failed", "error": "No target camera IP(s) provided"})
+                return
+
+            print(f"[CameraService OTA] Received flash request for {target_ips} (build={build_first}, repo={repo_path})")
+            firmware_res = compile_and_locate_firmware(force_build=build_first, custom_repo_path=repo_path)
+            if firmware_res.get("status") != "success":
+                self._send_json(400, {
+                    "status": "failed",
+                    "error": firmware_res.get("error", "Firmware compilation or location failed"),
+                    "firmware": firmware_res,
+                })
+                return
+
+            bin_path = firmware_res["bin_path"]
+            results = []
+            for tip in target_ips:
+                res = push_ota_firmware_to_esp32(tip, bin_path, timeout=45.0)
+                results.append(res)
+
+            all_ok = all(r.get("status") == "success" for r in results) if results else False
+            status_code = 200 if all_ok else 207
+            self._send_json(status_code, {
+                "status": "success" if all_ok else ("partial_success" if any(r.get("status") == "success" for r in results) else "failed"),
+                "firmware": firmware_res,
+                "results": results,
+            })
+            return
+
         self._send_json(404, {"error": "Endpoint not found"})
 
     def do_DELETE(self):
@@ -1149,7 +1458,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 def esp32_http_baseline_poller():
     """
     Background daemon thread running every 30 seconds:
-    - Polls ACTIVE_ESP32_IPS (defaulting SHELF_R1_C1 to ESP32_CAM_IP or 192.168.0.101).
+    - Polls ACTIVE_ESP32_IPS (defaulting SHELF_R1_C1 to ESP32_CAM_IP or 192.168.0.201).
     - Queries http://<ip>/status (2s timeout) to verify node connectivity & extract rssi.
     - Calls esp32_ref_manager.update_30s_baseline(shelf_id, esp32_ip=ip) to fetch
       the ESP32-CAM's latest 30s resting baseline JPEG and sync it into public.compartments,
@@ -1159,8 +1468,8 @@ def esp32_http_baseline_poller():
     while True:
         try:
             # Ensure default for SHELF_R1_C1 and populate configured shelves from Supabase
-            default_ip = os.getenv("ESP32_CAM_IP", "192.168.0.101")
-            default_ip2 = os.getenv("ESP32_CAM_IP2", "192.168.0.102")
+            default_ip = os.getenv("ESP32_CAM_IP", "192.168.0.201")
+            default_ip2 = os.getenv("ESP32_CAM_IP2", "192.168.0.202")
             ACTIVE_ESP32_IPS.setdefault("SHELF_R1_C1", {"ip1": default_ip, "ip2": default_ip2})
 
             db_compartments = []
@@ -1170,8 +1479,8 @@ def esp32_http_baseline_poller():
                     s_id = comp_row.get("shelf_id")
                     if s_id and s_id not in ACTIVE_ESP32_IPS:
                         ACTIVE_ESP32_IPS[s_id] = {
-                            "ip1": comp_row.get("ip_address") or "192.168.0.101",
-                            "ip2": comp_row.get("secondary_ip_address") or "192.168.0.102",
+                            "ip1": comp_row.get("ip_address") or "192.168.0.201",
+                            "ip2": comp_row.get("secondary_ip_address") or "192.168.0.202",
                         }
             except Exception:
                 pass
@@ -1213,10 +1522,10 @@ def esp32_http_baseline_poller():
                 if not sec_ip:
                     for comp_row in db_compartments:
                         if comp_row.get("shelf_id") == shelf_id:
-                            sec_ip = comp_row.get("secondary_ip_address") or "192.168.0.102"
+                            sec_ip = comp_row.get("secondary_ip_address") or "192.168.0.202"
                             break
                     if not sec_ip:
-                        sec_ip = "192.168.0.102"
+                        sec_ip = "192.168.0.202"
 
                 if online:
                     dev_id1 = f"ESP32_{shelf_id.replace('SHELF_', '')}"
@@ -1345,6 +1654,8 @@ def run_service(host="0.0.0.0", port=8008):
     print("    - POST   /esp32_reference_samples : Save reference sample for tested angles")
     print("    - DELETE /esp32_reference_samples : Remove reference sample")
     print("    - POST   /esp32_validate          : Run hybrid comparison against baseline")
+    print("    - GET    /esp32_ota_info          : Check PlatformIO repo & compiled firmware.bin")
+    print("    - POST   /esp32_ota_flash         : 1-Click PlatformIO build & wireless OTA flash")
     print("=================================================================")
 
     try:

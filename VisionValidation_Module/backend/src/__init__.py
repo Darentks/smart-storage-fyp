@@ -20,19 +20,12 @@ from .config_loader import (
     list_comparison_logs,
 )
 
-try:
-    from .pose_estimator import PoseEstimator
-    from .vision_engine import VisionValidationEngine
-except ImportError:
-    PoseEstimator = None  # type: ignore
-    VisionValidationEngine = None  # type: ignore
+
 
 __all__ = [
-    "PoseEstimator",
     "SpatialMapper",
     "BehaviorClassifier",
     "VideoProcessor",
-    "VisionValidationEngine",
     "MQTTClientNode",
     "ESP32ReferenceManager",
     "get_supabase_client",

@@ -612,7 +612,7 @@
       z-index: 2;
     }
 
-    /* Panel 3: OpenCV Comparison Logs */
+    /* Panel 3: MediaPipe Pose JS (Browser/Vercel) Comparison Logs */
     .logs-list {
       display: flex;
       flex-direction: column;
@@ -755,6 +755,10 @@
       }
     }
   </style>
+  <!-- MediaPipe Pose JS (Browser/Vercel) -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
 </head>
 
 <body>
@@ -803,8 +807,9 @@
         <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);"
           onclick="document.getElementById('esp32CameraManagerPanel').scrollIntoView({ behavior: 'smooth' })">&#128225;
           12-Node &amp; OTA Manager</button>
-        <button type="button" class="btn-action" onclick="launchLocalCalibrator()">&#9881; Launch Desktop
-          Calibrator</button>
+        <button type="button" class="btn-action"
+          onclick="document.getElementById('cctvCameraManagerPanel').scrollIntoView({ behavior: 'smooth' }); toggleRoiCalibrationMode(true);">&#127919;
+          Calibrate CCTV ROIs</button>
         <button type="button" class="btn-action" onclick="refreshAllData()">&circlearrowright; Refresh All</button>
       </div>
     </div>
@@ -918,16 +923,16 @@
               <label for="refEspIpInput">ESP32-CAM 1 Back Angle IP</label>
               <select id="cam1IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
                 onchange="onSelectAssignedCameraIp(1, this.value)"></select>
-              <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.101"
-                value="192.168.0.101" oninput="markIpInputDirty(1)" />
+              <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.201"
+                value="192.168.0.201" oninput="markIpInputDirty(1)" />
             </div>
 
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refEspIp2Input">ESP32-CAM 2 Front Angle IP</label>
               <select id="cam2IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
                 onchange="onSelectAssignedCameraIp(2, this.value)"></select>
-              <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.102"
-                value="192.168.0.102" oninput="markIpInputDirty(2)" />
+              <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.202"
+                value="192.168.0.202" oninput="markIpInputDirty(2)" />
             </div>
 
             <div class="form-group" style="margin-bottom: 12px;">
@@ -999,12 +1004,12 @@
       </div>
     </section>
 
-    <!-- Panel 3: OpenCV Before vs. After Comparison Log -->
+    <!-- Panel 3: MediaPipe Pose JS (Browser/Vercel) Before (30s Baseline) vs. After Comparison Log -->
     <section class="panel">
       <div class="panel-header"
         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div>
-          <h2 class="panel-title">&#128248; Panel 3 &bull; OpenCV Before (30s Baseline) vs. After (Post-Trigger)
+          <h2 class="panel-title">&#128248; Panel 3 &bull; MediaPipe Pose JS (Browser/Vercel) Before (30s Baseline) vs. After (Post-Trigger)
             Comparison Logs</h2>
           <p class="panel-desc">Every physical inventory interaction verification recorded in
             <code>public.comparison_logs</code>.
@@ -1027,13 +1032,14 @@
       </div>
     </section>
 
-    <!-- Panel 4A: Multi-CCTV Camera Manager, RTSP Tester, ROI Calibrator & YOLO11n-Pose Launcher -->
+    <!-- Panel 4A: MediaPipe Pose JS (Browser/Vercel) CCTV Manager -->
     <section class="panel" id="cctvCameraManagerPanel" style="margin-top: 24px;">
+      <div id="cctvCamerasSection"></div>
       <div class="panel-header"
         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
         <div>
-          <h2 class="panel-title">&#128249; Panel 4A &bull; Multi-CCTV Camera Manager, RTSP Tester, ROI Calibrator &amp; YOLO11n-Pose Launcher (<code>public.cctv_cameras</code>)</h2>
-          <p class="panel-desc">Manage up to 3 Hikvision CCTV cameras facing Rack 01, test live sub-streams, calibrate per-CCTV ROIs for Column 1 (<code>SHELF_R1_C1</code>), and launch YOLO11n-Pose instances with multi-camera trigger deduplication.</p>
+          <h2 class="panel-title">&#128249; Panel 4A &bull; MediaPipe Pose JS (Browser/Vercel) CCTV Manager (<code>public.cctv_cameras</code>)</h2>
+          <p class="panel-desc">Run 100% client-side MediaPipe Pose JS (Browser/Vercel) (<code>modelComplexity: 0</code>) in-browser on Vercel without desktop Python. Tracks wrist keypoints, detects sustained ROI dwell (&ge; 1.2s), and triggers dual-camera AI verification.</p>
         </div>
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <button type="button" class="btn-action" onclick="loadCctvCameras()">
@@ -1045,17 +1051,22 @@
       <!-- 2-Column Tester & CRUD Grid -->
       <div class="tester-grid" style="margin-bottom: 20px;">
         <!-- Left Column: Add / Edit Hikvision CCTV or Webcam Form -->
-        <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
+        <div
+          style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h3 style="font-size: 14px; font-weight: 700; margin: 0; color: var(--text-primary);">&#128249; Add / Edit CCTV Camera</h3>
-            <button type="button" class="btn-action" style="font-size: 11px; padding: 3px 8px;" onclick="resetCctvForm()">Clear Form</button>
+            <h3 style="font-size: 14px; font-weight: 700; margin: 0; color: var(--text-primary);">&#128249; Add / Edit
+              CCTV Camera</h3>
+            <button type="button" class="btn-action" style="font-size: 11px; padding: 3px 8px;"
+              onclick="resetCctvForm()">Clear Form</button>
           </div>
 
-          <form id="cctvCrudForm" onsubmit="saveCctvCamera(event)" style="display: flex; flex-direction: column; gap: 10px;">
+          <form id="cctvCrudForm" onsubmit="saveCctvCamera(event)"
+            style="display: flex; flex-direction: column; gap: 10px;">
             <div style="display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px;">
               <div class="form-group">
                 <label for="cctvIdInput" style="font-size: 11px; font-weight: 600;">CCTV ID</label>
-                <input type="text" id="cctvIdInput" class="form-control" list="cctvIdPresets" placeholder="CCTV_01" value="CCTV_01" required />
+                <input type="text" id="cctvIdInput" class="form-control" list="cctvIdPresets" placeholder="CCTV_01"
+                  value="CCTV_01" required />
                 <datalist id="cctvIdPresets">
                   <option value="CCTV_01">CCTV 1 (Left Angle)</option>
                   <option value="CCTV_02">CCTV 2 (Center Angle)</option>
@@ -1064,33 +1075,43 @@
               </div>
               <div class="form-group">
                 <label for="cctvNameInput" style="font-size: 11px; font-weight: 600;">Camera Name</label>
-                <input type="text" id="cctvNameInput" class="form-control" placeholder="Hikvision CCTV 1 - Left Angle (Column 1)" value="Hikvision CCTV 1 - Left Angle (Column 1)" required />
+                <input type="text" id="cctvNameInput" class="form-control"
+                  placeholder="Hikvision CCTV 1 - Left Angle (Column 1)"
+                  value="Hikvision CCTV 1 - Left Angle (Column 1)" required />
               </div>
             </div>
 
             <!-- Quick RTSP Builder Helper Row -->
-            <div style="background: rgba(0,0,0,0.25); border: 1px dashed var(--border); border-radius: 8px; padding: 10px;">
+            <div
+              style="background: rgba(0,0,0,0.25); border: 1px dashed var(--border); border-radius: 8px; padding: 10px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <span style="font-size: 11px; font-weight: 700; color: var(--primary);">&#9889; Quick RTSP Builder Helper</span>
-                <button type="button" class="btn-action" style="font-size: 10px; padding: 2px 7px; border-color: var(--primary); color: var(--primary);" onclick="buildCctvRtspFromInputs()">
+                <span style="font-size: 11px; font-weight: 700; color: var(--primary);">&#9889; Quick RTSP Builder
+                  Helper</span>
+                <button type="button" class="btn-action"
+                  style="font-size: 10px; padding: 2px 7px; border-color: var(--primary); color: var(--primary);"
+                  onclick="buildCctvRtspFromInputs()">
                   &#9889; Auto-Fill RTSP URL
                 </button>
               </div>
               <div style="display: grid; grid-template-columns: 1.2fr 0.8fr 0.8fr 1.2fr; gap: 6px;">
                 <div>
                   <label for="cctvIpInput" style="font-size: 10px; color: var(--text-muted);">IP Address</label>
-                  <input type="text" id="cctvIpInput" class="form-control" style="font-size: 11px; padding: 4px 6px;" value="192.168.0.101" />
+                  <input type="text" id="cctvIpInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
+                    value="192.168.0.101" />
                 </div>
                 <div>
                   <label for="cctvUserInput" style="font-size: 10px; color: var(--text-muted);">User</label>
-                  <input type="text" id="cctvUserInput" class="form-control" style="font-size: 11px; padding: 4px 6px;" value="admin" />
+                  <input type="text" id="cctvUserInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
+                    value="admin" />
                 </div>
                 <div>
                   <label for="cctvPassInput" style="font-size: 10px; color: var(--text-muted);">Password</label>
-                  <input type="password" id="cctvPassInput" class="form-control" style="font-size: 11px; padding: 4px 6px;" value="Password" />
+                  <input type="password" id="cctvPassInput" class="form-control"
+                    style="font-size: 11px; padding: 4px 6px;" value="Password" />
                 </div>
                 <div>
-                  <label for="cctvChannelSelect" style="font-size: 10px; color: var(--text-muted);">Channel / Stream</label>
+                  <label for="cctvChannelSelect" style="font-size: 10px; color: var(--text-muted);">Channel /
+                    Stream</label>
                   <select id="cctvChannelSelect" class="form-control" style="font-size: 11px; padding: 4px 4px;">
                     <option value="102" selected>102 (Sub-Stream Fast)</option>
                     <option value="101">101 (Main Stream HD)</option>
@@ -1102,17 +1123,25 @@
 
             <!-- Full RTSP URL Input -->
             <div class="form-group">
-              <label for="cctvRtspInput" style="font-size: 11px; font-weight: 600;">Full RTSP URL or Webcam Index</label>
-              <input type="text" id="cctvRtspInput" class="form-control" placeholder="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102" value="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102" required />
+              <label for="cctvRtspInput" style="font-size: 11px; font-weight: 600;">Full RTSP URL or Webcam
+                Index</label>
+              <input type="text" id="cctvRtspInput" class="form-control"
+                placeholder="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102"
+                value="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102" required />
             </div>
 
             <!-- Assigned Shelves & Quick Preset Pills -->
             <div class="form-group">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                <label for="cctvShelvesInput" style="font-size: 11px; font-weight: 600;">Assigned Shelves (JSON array)</label>
+                <label for="cctvShelvesInput" style="font-size: 11px; font-weight: 600;">Assigned Shelves (JSON
+                  array)</label>
                 <div style="display: flex; gap: 5px;">
-                  <button type="button" class="btn-action" style="font-size: 10px; padding: 2px 6px;" onclick="setCctvShelvesPreset('[\&quot;SHELF_R1_C1\&quot;]')">&#127919; Column 1 Only: SHELF_R1_C1</button>
-                  <button type="button" class="btn-action" style="font-size: 10px; padding: 2px 6px;" onclick="setCctvShelvesPreset('[\&quot;SHELF_R1_C1\&quot;, \&quot;SHELF_R1_C2\&quot;, \&quot;SHELF_R1_C3\&quot;, \&quot;SHELF_R1_C4\&quot;, \&quot;SHELF_R1_C5\&quot;, \&quot;SHELF_R1_C6\&quot;]')">&#128452; All 6 Shelves: SHELF_R1_C1..C6</button>
+                  <button type="button" class="btn-action" style="font-size: 10px; padding: 2px 6px;"
+                    onclick="setCctvShelvesPreset('[\&quot;SHELF_R1_C1\&quot;]')">&#127919; Column 1 Only:
+                    SHELF_R1_C1</button>
+                  <button type="button" class="btn-action" style="font-size: 10px; padding: 2px 6px;"
+                    onclick="setCctvShelvesPreset('[\&quot;SHELF_R1_C1\&quot;, \&quot;SHELF_R1_C2\&quot;, \&quot;SHELF_R1_C3\&quot;, \&quot;SHELF_R1_C4\&quot;, \&quot;SHELF_R1_C5\&quot;, \&quot;SHELF_R1_C6\&quot;]')">&#128452;
+                    All 6 Shelves: SHELF_R1_C1..C6</button>
                 </div>
               </div>
               <input type="text" id="cctvShelvesInput" class="form-control" value='["SHELF_R1_C1"]' required />
@@ -1130,23 +1159,116 @@
           </form>
         </div>
 
-        <!-- Right Column: Live CCTV Stream Test Preview Canvas -->
-        <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-            <span style="font-size: 13px; font-weight: 700; color: var(--text-muted);">&#128065; Live CCTV Stream Test Preview</span>
-            <span id="cctvTestOverlayText" style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Preview Idle</span>
-          </div>
-          <div class="preview-canvas-box" id="cctvTestContainer" style="flex: 1; min-height: 250px;">
-            <div id="cctvTestPlaceholder" class="snapshot-placeholder">
-              <span>&#128249; Click "[👁 Test Feed]" on any CCTV camera below to grab a live test frame.</span>
+        <!-- Right Column: In-Browser MediaPipe Pose CCTV Wrist-ROI Dwell Detector -->
+        <div
+          style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 13px; font-weight: 700; color: var(--text-primary);">&#9889; MediaPipe Pose
+                Wrist-ROI Dwell Detector</span>
+              <span class="badge badge-offline" id="cctvPoseStatusBadge" style="font-size: 10px;">Tracker Idle</span>
             </div>
-            <img id="cctvTestPreviewImg" src="" crossOrigin="anonymous" alt="CCTV Test Stream Preview" style="display:none;" />
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <span id="cctvFpsText" style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">0
+                FPS</span>
+              <span id="cctvPoseDwellMeter" class="badge"
+                style="display: none; font-size: 10px; background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; color: #fbbf24;"></span>
+            </div>
+          </div>
+
+          <!-- Video Source & Tracker Controls Bar -->
+          <div
+            style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;">
+            <div style="display: flex; align-items: center; gap: 6px; flex: 1; min-width: 200px;">
+              <label for="cctvPoseSourceSelect"
+                style="font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Source:</label>
+              <select id="cctvPoseSourceSelect" class="form-control"
+                style="font-size: 11px; padding: 4px 6px; height: 30px;" onchange="onCctvSourceChanged()">
+                <option value="webcam" selected>&#128247; Laptop / USB Webcam (Device 0)</option>
+                <option value="simulation">&#127918; Synthetic Wrist-ROI Interaction Simulation</option>
+                <option value="cctv_bridge">&#127760; CCTV Stream via Local Bridge (/test_feed)</option>
+              </select>
+            </div>
+            <button type="button" class="btn-action" id="cctvPoseToggleBtn"
+              style="height: 30px; font-size: 11px; padding: 0 12px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 700;"
+              onclick="toggleMediaPipeTracker()">
+              &#9654; Start Pose Tracker
+            </button>
+            <button type="button" class="btn-action" id="cctvCalibrateRoiBtn"
+              style="height: 30px; font-size: 11px; padding: 0 10px; border-color: var(--primary); color: var(--primary);"
+              onclick="toggleRoiCalibrationMode()">
+              &#127919; Calibrate ROI
+            </button>
+            <button type="button" class="btn-action" id="cctvSimulateBtn"
+              style="height: 30px; font-size: 11px; padding: 0 10px; border-color: #a855f7; color: #c084fc; background: rgba(168, 85, 247, 0.08);"
+              onclick="runSimulatedHandInteraction()">
+              &#9889; Test 1.3s Dwell (Sim)
+            </button>
+          </div>
+
+          <!-- Interactive ROI Calibration Bar (Shown when Calibrate ROI is active) -->
+          <div id="cctvCalibrationToolbar"
+            style="display: none; background: rgba(56, 189, 248, 0.08); border: 1px dashed var(--primary); border-radius: 8px; padding: 8px 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;">
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              <span style="font-size: 11px; font-weight: 700; color: var(--primary);">&#127919; Target Shelf:</span>
+              <select id="cctvCalibShelfSelect" class="form-control"
+                style="font-size: 11px; padding: 2px 6px; height: 26px; width: 140px;" onchange="onCalibShelfChanged()">
+                <option value="SHELF_R1_C1" selected>SHELF_R1_C1</option>
+                <option value="SHELF_R1_C2">SHELF_R1_C2</option>
+                <option value="SHELF_R1_C3">SHELF_R1_C3</option>
+                <option value="SHELF_R1_C4">SHELF_R1_C4</option>
+                <option value="SHELF_R1_C5">SHELF_R1_C5</option>
+                <option value="SHELF_R1_C6">SHELF_R1_C6</option>
+              </select>
+              <span style="font-size: 11px; color: var(--text-muted);">Click &amp; drag on canvas to set box</span>
+              <span id="cctvCalibCoordsText"
+                style="font-size: 10px; font-family: var(--font-mono); color: var(--primary); background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">x:
+                0.60–0.81, y: 0.19–0.42</span>
+            </div>
+            <div style="display: flex; gap: 6px;">
+              <button type="button" class="btn-action"
+                style="font-size: 10px; padding: 3px 8px; border-color: var(--success); color: var(--success);"
+                onclick="saveCalibratedRois()">
+                &#128190; Save ROIs
+              </button>
+              <button type="button" class="btn-action" style="font-size: 10px; padding: 3px 8px;"
+                onclick="resetDefaultRois()">
+                &#8634; Reset Defaults
+              </button>
+            </div>
+          </div>
+
+          <!-- Canvas & Video Viewport -->
+          <div class="preview-canvas-box" id="cctvTestContainer"
+            style="position: relative; flex: 1; min-height: 280px; display: flex; align-items: center; justify-content: center; background: #070b14; border-radius: 8px; overflow: hidden;">
+            <video id="cctvPoseVideo" playsinline muted style="display:none;"></video>
+            <canvas id="cctvPoseCanvas" width="640" height="480"
+              style="width: 100%; height: auto; max-height: 440px; aspect-ratio: 4/3; object-fit: contain; display: block;"></canvas>
+            <div id="cctvTestPlaceholder" class="snapshot-placeholder"
+              style="position: absolute; inset: 0; pointer-events: none; background: rgba(11, 17, 32, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 20px;">
+              <span style="font-size: 28px;">&#128249;</span>
+              <span style="font-size: 12px; color: var(--text-muted); max-width: 320px;">Click <strong>&quot;&#9654;
+                  Start Pose Tracker&quot;</strong> above to launch 100% In-Browser MediaPipe Wrist-ROI Dwell Detection
+                (&ge; 1.2s).</span>
+            </div>
+            <img id="cctvTestPreviewImg" src="" crossOrigin="anonymous" alt="CCTV Test Stream Preview"
+              style="display:none;" />
+          </div>
+
+          <!-- Bottom Telemetry HUD Bar -->
+          <div
+            style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;">
+            <div>Model: <span style="color: var(--primary);">BlazePose Lite (c:0)</span></div>
+            <div>Wrists: <span id="cctvWristsText" style="color: var(--text-primary);">None</span></div>
+            <div>Dwell: <span id="cctvDwellStatusText" style="color: var(--text-primary);">Idle (0.0s)</span></div>
+            <div>Last Event: <span id="cctvLastTriggerText" style="color: var(--warning);">None</span></div>
           </div>
         </div>
       </div>
 
       <!-- Bottom Table / Cards: All Configured CCTV Cameras -->
-      <div id="cctvCamerasListGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px;">
+      <div id="cctvCamerasListGrid"
+        style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px;">
         <div style="grid-column: 1 / -1; text-align: center; padding: 24px; color: var(--text-muted);">
           Loading CCTV cameras...
         </div>
@@ -1172,6 +1294,30 @@
             onclick="openEsp32ProvisionModal(null)">
             &#10133; Add / Provision Camera Node
           </button>
+        </div>
+
+        <div
+          style="width: 100%; margin-top: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px;">
+          <div style="display: flex; align-items: center; gap: 8px; flex: 1; min-width: 280px;">
+            <label for="ota-repo-path-input"
+              style="font-size: 11px; font-weight: 700; color: var(--text-muted); white-space: nowrap;">&#9889;
+              PlatformIO Repo:</label>
+            <input type="text" id="ota-repo-path-input" class="form-control"
+              style="font-size: 11px; padding: 5px 8px; height: 30px; width: 100%;"
+              placeholder="../EdgeHardwareRelay-main" />
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+            <label
+              style="display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-muted); cursor: pointer; user-select: none;">
+              <input type="checkbox" id="ota-compile-before-flash" checked style="cursor: pointer;" />
+              Build with PlatformIO before Flash
+            </label>
+            <button type="button" class="btn-action" id="otaFlashAllBtn"
+              style="height: 30px; font-size: 11px; padding: 0 12px; border-color: #f59e0b; color: #fbbf24; font-weight: 700; white-space: nowrap;"
+              onclick="flashAllOnlineEsp32Cameras()">
+              &#9889; Build &amp; Flash All Online Cameras
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1200,8 +1346,8 @@
       <div class="form-group">
         <label for="provCurrentIpInput">Current Camera IP (to Probe &amp; Push NVS Config)</label>
         <div style="display: flex; gap: 8px;">
-          <input type="text" id="provCurrentIpInput" class="form-control" placeholder="192.168.0.101"
-            value="192.168.0.101" required />
+          <input type="text" id="provCurrentIpInput" class="form-control" placeholder="192.168.0.201"
+            value="192.168.0.201" required />
           <button type="button" class="btn-action" id="provProbeBtn" onclick="probeModalCurrentCameraIp()"
             style="white-space: nowrap;">&#128269; Probe IP</button>
         </div>
@@ -1282,11 +1428,13 @@
     }
 
     // Direct Supabase REST API helper using native browser fetch
-    async function sbRest(table, method = 'GET', query = '', body = null, prefer = 'return=minimal') {
+    async function sbRest(table, method = 'GET', query = '', body = null, prefer = null) {
       if (query && typeof query === 'object' && body === null) {
         body = query;
         query = '';
       }
+      const upperMethod = String(method || 'GET').toUpperCase();
+      const effectivePrefer = prefer !== null ? prefer : (upperMethod === 'GET' ? null : 'return=minimal');
       const cleanQuery = query && !String(query).startsWith('?') ? '?' + query : (query || '');
       const url = `${SUPABASE_URL}/rest/v1/${table}${cleanQuery}`;
       const headers = {
@@ -1294,10 +1442,10 @@
         'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
         'Content-Type': 'application/json',
       };
-      if (prefer) headers['Prefer'] = prefer;
+      if (effectivePrefer) headers['Prefer'] = effectivePrefer;
 
       const opts = {
-        method: method || 'GET',
+        method: upperMethod,
         headers,
         body: body ? JSON.stringify(body) : undefined,
       };
@@ -1305,10 +1453,11 @@
       const resp = await fetch(url, opts);
       if (!resp.ok) {
         const errText = await resp.text();
-        throw new Error(`Supabase REST ${method} ${table} error (${resp.status}): ${errText}`);
+        throw new Error(`Supabase REST ${upperMethod} ${table} error (${resp.status}): ${errText}`);
       }
-      if (resp.status === 204) return null;
-      return await resp.json();
+      if (resp.status === 204 || (effectivePrefer && effectivePrefer.includes('return=minimal'))) return null;
+      const text = await resp.text();
+      return text ? JSON.parse(text) : null;
     }
 
     // DOM Elements
@@ -1651,23 +1800,12 @@
       }
     }
 
-    // Launch Desktop OpenCV Calibrator via Local Bridge
-    async function launchLocalCalibrator() {
-      const url = getBridgeUrl();
-      try {
-        const resp = await fetch(`${url}/run_calibration`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({})
-        });
-        if (resp.ok) {
-          showToast('Desktop ROI Calibrator launched on local machine!', 'success');
-        } else {
-          showToast('Failed to launch calibrator. Is camera_service.py running?', 'error');
-        }
-      } catch (e) {
-        showToast('Local bridge offline. Start camera_service.py to run local desktop OpenCV.', 'error');
-      }
+    // In-Browser MediaPipe ROI Calibrator Launcher
+    function launchLocalCalibrator() {
+      const panel = document.getElementById('cctvCameraManagerPanel');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth' });
+      toggleRoiCalibrationMode(true);
+      showToast('Switched to In-Browser MediaPipe ROI Calibrator!', 'info');
     }
 
     // =========================================================================
@@ -1703,20 +1841,10 @@
     // PANEL 2: DUAL-CAMERA SETUP, IP SELECTOR DROPDOWNS & LIVE PREVIEW
     // =========================================================================
     const PLATFORMIO_CAMERA_IP_PRESETS = [
-      { ip: "192.168.0.101", label: "CAM 1 \u2014 SHELF_R1_C1 Back Angle [192.168.0.101]" },
-      { ip: "192.168.0.102", label: "CAM 2 \u2014 SHELF_R1_C1 Front Angle [192.168.0.102]" },
-      { ip: "192.168.0.103", label: "CAM 3 \u2014 SHELF_R1_C2 Back Angle [192.168.0.103]" },
-      { ip: "192.168.0.104", label: "CAM 4 \u2014 SHELF_R1_C2 Front Angle [192.168.0.104]" },
-      { ip: "192.168.0.105", label: "CAM 5 \u2014 SHELF_R1_C3 Back Angle [192.168.0.105]" },
-      { ip: "192.168.0.106", label: "CAM 6 \u2014 SHELF_R1_C3 Front Angle [192.168.0.106]" },
-      { ip: "192.168.0.107", label: "CAM 7 \u2014 SHELF_R1_C4 Back Angle [192.168.0.107]" },
-      { ip: "192.168.0.108", label: "CAM 8 \u2014 SHELF_R1_C4 Front Angle [192.168.0.108]" },
-      { ip: "192.168.0.109", label: "CAM 9 \u2014 SHELF_R1_C5 Back Angle [192.168.0.109]" },
-      { ip: "192.168.0.110", label: "CAM 10 \u2014 SHELF_R1_C5 Front Angle [192.168.0.110]" },
-      { ip: "192.168.0.111", label: "CAM 11 \u2014 SHELF_R1_C6 Back Angle [192.168.0.111]" },
-      { ip: "192.168.0.112", label: "CAM 12 \u2014 SHELF_R1_C6 Front Angle [192.168.0.112]" },
-      { ip: "192.168.0.201", label: "Legacy R1-C1 Node [192.168.0.201]" },
-      { ip: "192.168.0.202", label: "Legacy R1-C2 Node [192.168.0.202]" },
+      ...Array.from({ length: 12 }, (_, n) => {
+        const ip = `192.168.0.${201 + n}`;
+        return { ip, label: `CAM ${n + 1} \u2014 SHELF_R1_C${Math.floor(n / 2) + 1} ${n % 2 ? 'Front' : 'Back'} Angle [${ip}]` };
+      }),
       { ip: "esp32_r1_c1_cam1.local", label: "mDNS Hostname \u2014 CAM 1 Back [esp32_r1_c1_cam1.local]" },
       { ip: "esp32_r1_c1_cam2.local", label: "mDNS Hostname \u2014 CAM 2 Front [esp32_r1_c1_cam2.local]" }
     ];
@@ -1833,13 +1961,13 @@
 
       const comp = compartmentsData.find(c => c.shelf_id === selShelf);
       const defaultFallbacks = {
-        'SHELF_R1_C1': { ip1: '192.168.0.101', ip2: '192.168.0.102' },
-        'SHELF_R1_C2': { ip1: '192.168.0.103', ip2: '192.168.0.104' },
-        'SHELF_R1_C3': { ip1: '192.168.0.105', ip2: '192.168.0.106' },
-        'SHELF_R1_C4': { ip1: '192.168.0.107', ip2: '192.168.0.108' },
-        'SHELF_R1_C5': { ip1: '192.168.0.109', ip2: '192.168.0.110' },
-        'SHELF_R1_C6': { ip1: '192.168.0.111', ip2: '192.168.0.112' },
-      }[selShelf] || { ip1: '192.168.0.101', ip2: '192.168.0.102' };
+        'SHELF_R1_C1': { ip1: '192.168.0.201', ip2: '192.168.0.202' },
+        'SHELF_R1_C2': { ip1: '192.168.0.203', ip2: '192.168.0.204' },
+        'SHELF_R1_C3': { ip1: '192.168.0.205', ip2: '192.168.0.206' },
+        'SHELF_R1_C4': { ip1: '192.168.0.207', ip2: '192.168.0.208' },
+        'SHELF_R1_C5': { ip1: '192.168.0.209', ip2: '192.168.0.210' },
+        'SHELF_R1_C6': { ip1: '192.168.0.211', ip2: '192.168.0.212' },
+      }[selShelf] || { ip1: '192.168.0.201', ip2: '192.168.0.202' };
 
       const activeEl = document.activeElement;
       const cam1Focused = (activeEl === refEspIpInput || activeEl === cam1IpSelect);
@@ -1901,8 +2029,8 @@
 
     async function saveAssignedShelfIps() {
       const shelfId = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
-      const ip1 = refEspIpInput ? refEspIpInput.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.101';
-      const ip2 = refEspIp2Input ? refEspIp2Input.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.102';
+      const ip1 = refEspIpInput ? refEspIpInput.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.201';
+      const ip2 = refEspIp2Input ? refEspIp2Input.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.202';
 
       if (!ip1 || !ip2) {
         showToast('Please enter or select valid IP addresses for both CAM 1 and CAM 2.', 'error');
@@ -2187,8 +2315,8 @@
       const shelfId = refShelfSelect.value;
       const comp = compartmentsData.find(c => c.shelf_id === shelfId) || { shelf_id: shelfId, current_quantity: 4 };
       const beforeBoxes = comp.current_quantity != null ? comp.current_quantity : 4;
-      const ip1 = refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.101';
-      const ip2 = refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.102';
+      const ip1 = refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201';
+      const ip2 = refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202';
 
       const valPayload = {
         shelf_id: shelfId,
@@ -2217,6 +2345,23 @@
           const delta = compRes.delta !== undefined ? compRes.delta : 0;
           const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
           showToast(`Offline Test Verified: ${compRes.state_delta || 'NO_CHANGE'} (${deltaSign}) | ${tmRes.scenarioLabel}`, 'success');
+          prependLatestAction({
+            log_id: `local-${Date.now()}`,
+            created_at: new Date().toISOString(),
+            shelf_id: shelfId,
+            rack_id: comp.rack_id || 'RACK_01',
+            mqtt_client_id: comp.mqtt_client_id || `ESP32_${shelfId.replace('SHELF_', '')}`,
+            trigger_action: 'BORROW',
+            before_image_url: comp.baseline_image_url || null,
+            after_image_url: stitchedDataUrl,
+            diff_score: compRes.diff_score != null ? compRes.diff_score : null,
+            similarity_score: tmRes.confidence,
+            matched_box_count: tmRes.totalBoxes,
+            scenario_label: tmRes.scenarioLabel,
+            state_delta: compRes.state_delta || 'NO_CHANGE',
+            quantity_before: beforeBoxes,
+            quantity_after: tmRes.totalBoxes
+          });
         }
       } catch (bridgeErr) {
         console.warn('Local bridge offline during offline photo test:', bridgeErr);
@@ -2234,13 +2379,16 @@
             baseline_updated_at: new Date().toISOString()
           }, 'return=minimal');
 
-          await sbRest('comparison_logs', 'POST', '', {
+          prependLatestAction({
+            log_id: `local-${Date.now()}`,
+            created_at: new Date().toISOString(),
             shelf_id: shelfId,
+            rack_id: comp.rack_id || 'RACK_01',
             mqtt_client_id: comp.mqtt_client_id || `ESP32_${shelfId.replace('SHELF_', '')}`,
             trigger_action: 'BORROW',
-            before_image_url: null,
-            after_image_url: null,
-            diff_score: 15.0,
+            before_image_url: comp.baseline_image_url || null,
+            after_image_url: stitchedDataUrl,
+            diff_score: null,
             similarity_score: tmRes.confidence,
             matched_box_count: newQty,
             scenario_label: tmRes.scenarioLabel,
@@ -2264,8 +2412,8 @@
     // =========================================================================
     async function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
       const comp = compartmentsData.find(c => c.shelf_id === shelfId);
-      const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.101');
-      const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.102');
+      const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201');
+      const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202');
 
       const prefix = isCctvTrigger ? 'CCTV Trigger' : 'Dual-Camera Validation';
       showToast(`${prefix}: Running validation for ${shelfId} (${action})...`, 'info');
@@ -2437,6 +2585,23 @@
 
         const tmScenario = tmRes ? ` | ${tmRes.scenarioLabel} (${tmRes.confidence}%)` : '';
         showToast(`Verified ${shelfId}: ${stateDelta} (${deltaSign})${tmScenario}`, stateDelta === 'ITEM_REMOVED' ? 'error' : 'success');
+        prependLatestAction({
+          log_id: `local-${Date.now()}`,
+          created_at: new Date().toISOString(),
+          shelf_id: shelfId,
+          rack_id: (comp && comp.rack_id) || 'RACK_01',
+          mqtt_client_id: (comp && comp.mqtt_client_id) || `ESP32_${shelfId.replace('SHELF_', '')}`,
+          trigger_action: action,
+          before_image_url: (comp && comp.baseline_image_url) || null,
+          after_image_url: previewData.image || null,
+          diff_score: compRes.diff_score != null ? compRes.diff_score : null,
+          similarity_score: tmRes.confidence,
+          matched_box_count: tmRes.totalBoxes,
+          scenario_label: tmRes.scenarioLabel,
+          state_delta: stateDelta,
+          quantity_before: compRes.quantity_before != null ? compRes.quantity_before : (comp ? comp.current_quantity : null),
+          quantity_after: compRes.quantity_after != null ? compRes.quantity_after : tmRes.totalBoxes
+        });
         refreshAllData();
         return valResult;
       } catch (err) {
@@ -2455,21 +2620,87 @@
     // FETCH COMPARTMENTS & COMPARISON LOGS
     // =========================================================================
     const processedTriggerIds = new Set();
-    const DEFAULT_6_COMPARTMENTS = [
-      { shelf_id: 'SHELF_R1_C1', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C1', secondary_mqtt_client_id: 'ESP32_R1_C1_CAM2', camera_name: 'ESP32 Dual Node R1-C1', ip_address: '192.168.0.101', secondary_ip_address: '192.168.0.102', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
-      { shelf_id: 'SHELF_R1_C2', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C2', secondary_mqtt_client_id: 'ESP32_R1_C2_CAM2', camera_name: 'ESP32 Dual Node R1-C2', ip_address: '192.168.0.103', secondary_ip_address: '192.168.0.104', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
-      { shelf_id: 'SHELF_R1_C3', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C3', secondary_mqtt_client_id: 'ESP32_R1_C3_CAM2', camera_name: 'ESP32 Dual Node R1-C3', ip_address: '192.168.0.105', secondary_ip_address: '192.168.0.106', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
-      { shelf_id: 'SHELF_R1_C4', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C4', secondary_mqtt_client_id: 'ESP32_R1_C4_CAM2', camera_name: 'ESP32 Dual Node R1-C4', ip_address: '192.168.0.107', secondary_ip_address: '192.168.0.108', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
-      { shelf_id: 'SHELF_R1_C5', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C5', secondary_mqtt_client_id: 'ESP32_R1_C5_CAM2', camera_name: 'ESP32 Dual Node R1-C5', ip_address: '192.168.0.109', secondary_ip_address: '192.168.0.110', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' },
-      { shelf_id: 'SHELF_R1_C6', rack_id: 'RACK_01', mqtt_client_id: 'ESP32_R1_C6', secondary_mqtt_client_id: 'ESP32_R1_C6_CAM2', camera_name: 'ESP32 Dual Node R1-C6', ip_address: '192.168.0.111', secondary_ip_address: '192.168.0.112', current_quantity: 4, max_capacity: 4, status: 'OFFLINE' }
-    ];
+    const DEFAULT_6_COMPARTMENTS = Array.from({ length: 6 }, (_, i) => ({
+      shelf_id: `SHELF_R1_C${i + 1}`, rack_id: 'RACK_01',
+      mqtt_client_id: `ESP32_R1_C${i + 1}`, secondary_mqtt_client_id: `ESP32_R1_C${i + 1}_CAM2`,
+      camera_name: `ESP32 Dual Node R1-C${i + 1}`,
+      ip_address: `192.168.0.${201 + i * 2}`, secondary_ip_address: `192.168.0.${202 + i * 2}`,
+      current_quantity: 4, max_capacity: 4, status: 'OFFLINE'
+    }));
 
     let lastCloudCompartmentsFetchMs = 0;
-    let lastCloudLogsFetchMs = 0;
     const CLOUD_POLL_INTERVAL_MS = 300000; // 5 minutes throttle for Supabase Egress reduction
 
     const COMPARTMENT_COLS = 'shelf_id,rack_id,mqtt_client_id,secondary_mqtt_client_id,camera_name,ip_address,secondary_ip_address,current_quantity,max_capacity,baseline_updated_at,tm_model_url,status,rssi_dbm,free_heap_bytes,last_seen_at';
-    const LOG_COLS = 'log_id,shelf_id,mqtt_client_id,trigger_action,diff_score,similarity_score,matched_box_count,scenario_label,state_delta,quantity_before,quantity_after,created_at';
+
+    // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
+    function mergeBridgeTelemetry(bridgeJson) {
+      if (!bridgeJson) return false;
+      if (Array.isArray(bridgeJson.discovered_cameras)) {
+        discoveredCamerasList = bridgeJson.discovered_cameras;
+      }
+      if (Array.isArray(bridgeJson.running_pipelines)) {
+        runningPipelinesList = bridgeJson.running_pipelines;
+        renderCctvCameras();
+      }
+
+      const bridgeComps = bridgeJson.compartments || [];
+      if (bridgeComps.length > 0) {
+        const liveMap = {};
+        bridgeComps.forEach(c => { if (c.shelf_id) liveMap[c.shelf_id] = c; });
+        const merged = (compartmentsData || []).map(c => {
+          const live = liveMap[c.shelf_id];
+          if (!live) return c;
+          return {
+            ...c,
+            status: live.status || c.status,
+            ip_address: live.ip_address || c.ip_address,
+            secondary_ip_address: live.secondary_ip_address || c.secondary_ip_address,
+            rssi_dbm: live.rssi_dbm != null ? live.rssi_dbm : c.rssi_dbm,
+            free_heap_bytes: live.free_heap_bytes != null ? live.free_heap_bytes : c.free_heap_bytes,
+            last_seen_at: live.last_seen_at || c.last_seen_at,
+            baseline_image_url: live.baseline_image_url || c.baseline_image_url,
+            baseline_image_2_url: live.baseline_image_2_url || c.baseline_image_2_url,
+            baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
+            current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
+          };
+        });
+        const seen = new Set(merged.map(c => c.shelf_id));
+        bridgeComps.forEach(bc => {
+          if (bc.shelf_id && !seen.has(bc.shelf_id)) {
+            seen.add(bc.shelf_id);
+            merged.push(bc);
+          }
+        });
+        compartmentsData = merged;
+      }
+
+      // Latest 5 actions from bridge (kept in local cache only)
+      const bridgeLogs = Array.isArray(bridgeJson.latest_5_actions) ? bridgeJson.latest_5_actions : bridgeJson.comparison_logs;
+      if (Array.isArray(bridgeLogs) && bridgeLogs.length > 0) {
+        const first = bridgeLogs[0] || {};
+        const sig = `${bridgeLogs.length}|${first.log_id || ''}|${first.created_at || ''}`;
+        if (sig !== lastLogsSig) {
+          lastLogsSig = sig;
+          comparisonLogsData = bridgeLogs.slice(0, 5);
+          saveLatestActions();
+          renderComparisonLogs(comparisonLogsData);
+        }
+      }
+
+      // Auto-process CCTV triggers
+      if (Array.isArray(bridgeJson.pending_cctv_triggers)) {
+        for (const trig of bridgeJson.pending_cctv_triggers) {
+          if (trig.trigger_id && !processedTriggerIds.has(trig.trigger_id)) {
+            processedTriggerIds.add(trig.trigger_id);
+            console.log('[CCTV Integration] Detected new CCTV intent confirmation trigger:', trig);
+            showToast(`CCTV Dwell Trigger: Running Dual-Cam TM AI for ${trig.shelf_id}...`, 'info');
+            runFullDualCamValidation(trig.shelf_id, trig.expected_action || 'BORROW', true);
+          }
+        }
+      }
+      return bridgeComps.length > 0;
+    }
 
     async function loadCompartments(forceCloud = false) {
       const now = Date.now();
@@ -2504,64 +2735,7 @@
       // Merge local bridge data if available
       try {
         const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
-        if (bridgeResp.ok) {
-          const bridgeJson = await bridgeResp.json();
-          if (Array.isArray(bridgeJson.discovered_cameras)) {
-            discoveredCamerasList = bridgeJson.discovered_cameras;
-          }
-          if (Array.isArray(bridgeJson.running_pipelines)) {
-            runningPipelinesList = bridgeJson.running_pipelines;
-            renderCctvCameras();
-          }
-          const bridgeComps = bridgeJson.compartments || [];
-          if (!compartmentsData || compartmentsData.length === 0) {
-            compartmentsData = bridgeComps;
-          } else {
-            const bridgeMap = {};
-            bridgeComps.forEach((c) => {
-              if (c.shelf_id) bridgeMap[c.shelf_id] = c;
-            });
-
-            const seenShelves = new Set();
-            compartmentsData = compartmentsData.map((c) => {
-              seenShelves.add(c.shelf_id);
-              const live = bridgeMap[c.shelf_id];
-              if (!live) return c;
-              return {
-                ...c,
-                status: live.status || c.status,
-                ip_address: live.ip_address || c.ip_address,
-                secondary_ip_address: live.secondary_ip_address || c.secondary_ip_address,
-                rssi_dbm: live.rssi_dbm != null ? live.rssi_dbm : c.rssi_dbm,
-                free_heap_bytes: live.free_heap_bytes != null ? live.free_heap_bytes : c.free_heap_bytes,
-                last_seen_at: live.last_seen_at || c.last_seen_at,
-                baseline_image_url: live.baseline_image_url || c.baseline_image_url,
-                baseline_image_2_url: live.baseline_image_2_url || c.baseline_image_2_url,
-                baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
-                current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
-              };
-            });
-
-            bridgeComps.forEach((bc) => {
-              if (bc.shelf_id && !seenShelves.has(bc.shelf_id)) {
-                seenShelves.add(bc.shelf_id);
-                compartmentsData.push(bc);
-              }
-            });
-          }
-
-          // Auto-process Hikvision CCTV triggers from run_pipeline.py
-          if (Array.isArray(bridgeJson.pending_cctv_triggers) && bridgeJson.pending_cctv_triggers.length > 0) {
-            for (const trig of bridgeJson.pending_cctv_triggers) {
-              if (trig.trigger_id && !processedTriggerIds.has(trig.trigger_id)) {
-                processedTriggerIds.add(trig.trigger_id);
-                console.log('[CCTV Integration] Detected new CCTV intent confirmation trigger:', trig);
-                showToast(`CCTV Dwell Trigger: Running Dual-Cam TM AI for ${trig.shelf_id}...`, 'info');
-                runFullDualCamValidation(trig.shelf_id, trig.expected_action || 'BORROW', true);
-              }
-            }
-          }
-        }
+        if (bridgeResp.ok) mergeBridgeTelemetry(await bridgeResp.json());
       } catch (bridgeErr) {
         // Local bridge offline
       }
@@ -2573,48 +2747,44 @@
       syncSelectedShelfTelemetry();
     }
 
-    async function loadComparisonLogs(forceCloud = false) {
-      const now = Date.now();
-      const shouldQueryCloud = forceCloud || (now - lastCloudLogsFetchMs >= CLOUD_POLL_INTERVAL_MS);
+    // Zero-Egress Local Cache: Latest 5 Action Verifications (no Supabase comparison_logs access)
+    const LATEST_ACTIONS_KEY = 'smart_storage_latest_5_actions';
+    let lastLogsSig = '';
 
-      if (shouldQueryCloud) {
-        lastCloudLogsFetchMs = now;
+    function saveLatestActions() {
+      comparisonLogsData = (comparisonLogsData || []).slice(0, 5);
+      try {
+        localStorage.setItem(LATEST_ACTIONS_KEY, JSON.stringify(comparisonLogsData));
+      } catch (_) {
         try {
-          let data = null;
-          try {
-            data = await sbRest('comparison_logs', 'GET', `?select=${LOG_COLS}&order=created_at.desc&limit=10`);
-          } catch (restErr) {
-            if (supabaseClient) {
-              const res = await supabaseClient
-                .from('comparison_logs')
-                .select(LOG_COLS)
-                .order('created_at', { ascending: false })
-                .limit(10);
-              if (!res.error && res.data) data = res.data;
-            }
-          }
-
-          if (data && Array.isArray(data) && data.length > 0) {
-            comparisonLogsData = data;
-            renderComparisonLogs(comparisonLogsData);
-            return;
-          }
-        } catch (err) {
-          console.warn('Cloud comparison logs fetch skipped/failed:', err);
-        }
+          localStorage.setItem(LATEST_ACTIONS_KEY, JSON.stringify(
+            comparisonLogsData.map(l => ({ ...l, before_image_url: null, after_image_url: null }))
+          ));
+        } catch (__) { }
       }
+    }
 
-      // Bridge fallback if DB empty, skipped, or offline
+    function loadLatestActionsFromLocal() {
+      try {
+        const raw = localStorage.getItem(LATEST_ACTIONS_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        if (Array.isArray(parsed)) comparisonLogsData = parsed.slice(0, 5);
+      } catch (_) { }
+    }
+
+    function prependLatestAction(entry) {
+      comparisonLogsData = [entry, ...(comparisonLogsData || [])].slice(0, 5);
+      saveLatestActions();
+      renderComparisonLogs(comparisonLogsData);
+    }
+
+    async function loadComparisonLogs() {
+      if (!comparisonLogsData || comparisonLogsData.length === 0) loadLatestActionsFromLocal();
       try {
         const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
-        if (bridgeResp.ok) {
-          const bridgeJson = await bridgeResp.json();
-          if (bridgeJson.comparison_logs && bridgeJson.comparison_logs.length > 0) {
-            comparisonLogsData = bridgeJson.comparison_logs;
-            renderComparisonLogs(comparisonLogsData);
-          }
-        }
-      } catch (e) {}
+        if (bridgeResp.ok) mergeBridgeTelemetry(await bridgeResp.json());
+      } catch (e) { }
+      renderComparisonLogs(comparisonLogsData || []);
     }
 
     // Zero-Supabase-Egress Routine Local Poller (runs every 2 seconds via Web Worker)
@@ -2626,66 +2796,9 @@
           bridgeStatusText.textContent = 'Local Bridge: Active';
 
           const bridgeJson = await resp.json();
-          if (Array.isArray(bridgeJson.discovered_cameras)) {
-            discoveredCamerasList = bridgeJson.discovered_cameras;
-          }
-          if (Array.isArray(bridgeJson.running_pipelines)) {
-            runningPipelinesList = bridgeJson.running_pipelines;
-            renderCctvCameras();
-          }
-
-          const bridgeComps = bridgeJson.compartments || [];
-          if (bridgeComps.length > 0) {
-            if (!compartmentsData || compartmentsData.length === 0) {
-              compartmentsData = bridgeComps;
-            } else {
-              const bridgeMap = {};
-              bridgeComps.forEach(c => { if (c.shelf_id) bridgeMap[c.shelf_id] = c; });
-              const seenShelves = new Set();
-              compartmentsData = compartmentsData.map(c => {
-                seenShelves.add(c.shelf_id);
-                const live = bridgeMap[c.shelf_id];
-                if (!live) return c;
-                return {
-                  ...c,
-                  status: live.status || c.status,
-                  ip_address: live.ip_address || c.ip_address,
-                  secondary_ip_address: live.secondary_ip_address || c.secondary_ip_address,
-                  rssi_dbm: live.rssi_dbm != null ? live.rssi_dbm : c.rssi_dbm,
-                  free_heap_bytes: live.free_heap_bytes != null ? live.free_heap_bytes : c.free_heap_bytes,
-                  last_seen_at: live.last_seen_at || c.last_seen_at,
-                  baseline_image_url: live.baseline_image_url || c.baseline_image_url,
-                  baseline_image_2_url: live.baseline_image_2_url || c.baseline_image_2_url,
-                  baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
-                  current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
-                };
-              });
-              bridgeComps.forEach(bc => {
-                if (bc.shelf_id && !seenShelves.has(bc.shelf_id)) {
-                  seenShelves.add(bc.shelf_id);
-                  compartmentsData.push(bc);
-                }
-              });
-            }
+          if (mergeBridgeTelemetry(bridgeJson)) {
             renderCompartments(compartmentsData);
             syncSelectedShelfTelemetry();
-          }
-
-          if (Array.isArray(bridgeJson.comparison_logs) && bridgeJson.comparison_logs.length > 0) {
-            comparisonLogsData = bridgeJson.comparison_logs;
-            renderComparisonLogs(comparisonLogsData);
-          }
-
-          // Auto-process Hikvision CCTV triggers from run_pipeline.py
-          if (Array.isArray(bridgeJson.pending_cctv_triggers) && bridgeJson.pending_cctv_triggers.length > 0) {
-            for (const trig of bridgeJson.pending_cctv_triggers) {
-              if (trig.trigger_id && !processedTriggerIds.has(trig.trigger_id)) {
-                processedTriggerIds.add(trig.trigger_id);
-                console.log('[CCTV Integration] Detected new CCTV intent confirmation trigger:', trig);
-                showToast(`CCTV Dwell Trigger: Running Dual-Cam TM AI for ${trig.shelf_id}...`, 'info');
-                runFullDualCamValidation(trig.shelf_id, trig.expected_action || 'BORROW', true);
-              }
-            }
           }
           return;
         }
@@ -2862,7 +2975,7 @@
 
               <div class="log-metrics-row">
                 <span>Action: <strong>${log.trigger_action || 'BORROW'}</strong></span>
-                <span>OpenCV AbsDiff: <strong>${diffText}</strong></span>
+                <span>MediaPipe Pose JS (Browser/Vercel) AbsDiff: <strong>${diffText}</strong></span>
                 <span>Inventory Shift: <strong>${log.quantity_before} &rarr; ${log.quantity_after} Boxes</strong></span>
                 <span>Logged: <strong style="color: var(--text-muted);">${timeStr}</strong></span>
               </div>
@@ -2936,20 +3049,15 @@
     // =========================================================================
     // ESP32-CAM 12-NODE HARDWARE CRUD, WIRELESS NVS & OTA SERVICE (Panel 4)
     // =========================================================================
-    const DEFAULT_12_ESP32_CAMERAS = [
-      { id: 'cam-101', device_id: 'ESP32_R1_C1_CAM1', camera_name: 'R1-C1 Back Angle (CAM 1)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 1, ip_address: '192.168.0.101', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-102', device_id: 'ESP32_R1_C1_CAM2', camera_name: 'R1-C1 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 2, ip_address: '192.168.0.102', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-103', device_id: 'ESP32_R1_C2_CAM1', camera_name: 'R1-C2 Back Angle (CAM 3)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 1, ip_address: '192.168.0.103', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-104', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 4)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.104', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-105', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 5)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.105', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-106', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 6)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.106', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-107', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 7)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.107', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-108', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 8)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.108', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-109', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 9)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.109', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-110', device_id: 'ESP32_R1_C5_CAM2', camera_name: 'R1-C5 Front Angle (CAM 10)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 2, ip_address: '192.168.0.110', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-111', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 11)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.111', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-      { id: 'cam-112', device_id: 'ESP32_R1_C6_CAM2', camera_name: 'R1-C6 Front Angle (CAM 12)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 2, ip_address: '192.168.0.112', status: 'OFFLINE', rssi_dbm: null, last_seen: null }
-    ];
+    const DEFAULT_12_ESP32_CAMERAS = Array.from({ length: 12 }, (_, n) => {
+      const s = Math.floor(n / 2) + 1, a = (n % 2) + 1;
+      return {
+        id: `cam-${201 + n}`, device_id: `ESP32_R1_C${s}_CAM${a}`,
+        camera_name: `R1-C${s} ${a === 1 ? 'Back' : 'Front'} Angle (CAM ${n + 1})`,
+        rack_id: 'RACK_01', shelf_id: `SHELF_R1_C${s}`, angle_index: a,
+        ip_address: `192.168.0.${201 + n}`, status: 'OFFLINE', rssi_dbm: null, last_seen: null
+      };
+    });
 
     let esp32CameraNodesList = [...DEFAULT_12_ESP32_CAMERAS];
     let esp32NodeSnapshotModeMap = {};
@@ -3029,11 +3137,11 @@
       return { ok: true, message: text || 'OK - Rebooting' };
     }
 
-    function captureLiveSnapshotUrl(ip, mode = 'live') {
+    function captureLiveSnapshotUrl(ip, mode = 'live', flash = 0) {
       const host = cleanCameraHost(ip);
       if (!host) return '';
       const cleanMode = mode === 'baseline' ? 'baseline' : 'live';
-      return `http://${host}/capture?mode=${cleanMode}&t=${Date.now()}`;
+      return `http://${host}/capture?mode=${cleanMode}&flash=${flash}&t=${Date.now()}`;
     }
 
     const CAMERA_COLS = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address,secondary_ip_address,status,rssi_dbm,last_seen';
@@ -3176,8 +3284,8 @@
         const cardsHtml = sortedCams.map((cam) => {
           const isOnline = String(cam.status || '').toUpperCase() === 'ONLINE';
           const mode = esp32NodeSnapshotModeMap[cam.device_id] || 'live';
-          const cb = esp32NodeCacheBustMap[cam.device_id] || Date.now();
-          const snapUrl = cam.ip_address ? `http://${cleanCameraHost(cam.ip_address)}/capture?mode=${mode}&t=${cb}` : '';
+          const cb = esp32NodeCacheBustMap[cam.device_id];
+          const snapUrl = (cam.ip_address && cb) ? `http://${cleanCameraHost(cam.ip_address)}/capture?mode=${mode}&flash=0&t=${cb}` : '';
           const isUploading = Boolean(esp32NodeOtaUploadingMap[cam.device_id]);
           const safeJson = encodeURIComponent(JSON.stringify(cam));
 
@@ -3205,11 +3313,12 @@
                   <img
                     src="${snapUrl}"
                     alt="${cam.device_id}"
+                    loading="lazy"
                     style="width: 100%; height: 100%; object-fit: cover;"
                     onerror="this.style.opacity='0.18'"
                     onload="this.style.opacity='1'"
                   />
-                ` : '<span style="font-size: 11px; color: var(--text-muted);">No IP</span>'}
+                ` : `<span style="font-size: 11px; color: var(--text-muted);">${cam.ip_address ? 'Standby &bull; Click Test Trigger' : 'No IP'}</span>`}
                 <span style="position: absolute; bottom: 4px; right: 6px; font-size: 9px; font-family: var(--font-mono); background: rgba(0,0,0,0.75); color: #e2e8f0; padding: 2px 5px; border-radius: 4px;">
                   MODE: ${mode.toUpperCase()}
                 </span>
@@ -3230,6 +3339,10 @@
                   <input type="file" accept=".bin" style="display: none;" ${isUploading ? 'disabled' : ''} onchange="uploadNodeOtaBin(event, '${cam.device_id}', '${cam.ip_address}')" />
                 </label>
               </div>
+
+              <button type="button" class="btn-action" id="otaBtn_${cam.device_id}" style="font-size: 10px; padding: 5px 6px; border-color: #f59e0b; color: #fbbf24; font-weight: 600;" ${isUploading ? 'disabled' : ''} onclick="oneClickOtaFlashNode('${cam.device_id}', '${cam.ip_address}')">
+                &#9889; 1-Click Build &amp; OTA Flash
+              </button>
 
               <button type="button" class="btn-action" style="font-size: 10px; padding: 4px 6px; color: #f87171; border-color: rgba(248, 113, 113, 0.3);" onclick="deleteEsp32CameraNode('${cam.id}', '${cam.device_id}')">
                 &#128465; Delete Node
@@ -3351,6 +3464,161 @@
       }
     }
 
+    async function initOtaInfo() {
+      try {
+        const resp = await fetch(`${getBridgeUrl()}/esp32_ota_info`, { cache: 'no-store' });
+        if (resp.ok) {
+          const data = await resp.json();
+          const input = document.getElementById('ota-repo-path-input');
+          if (input && data.repo_path && (!input.value || input.value === '../EdgeHardwareRelay-main')) {
+            input.value = data.repo_path;
+          }
+        }
+      } catch (err) {
+        console.warn('[OTA Info] Failed to fetch OTA info:', err);
+      }
+    }
+
+    async function oneClickOtaFlashNode(deviceId, ipAddress) {
+      const cleanIp = cleanCameraHost(ipAddress);
+      if (!cleanIp) {
+        showToast(`Camera ${deviceId} has no valid IP address assigned.`, 'error');
+        return;
+      }
+
+      const repoPath = (document.getElementById('ota-repo-path-input')?.value || '').trim() || null;
+      const buildFirst = document.getElementById('ota-compile-before-flash')?.checked ?? true;
+
+      esp32NodeOtaUploadingMap[deviceId] = true;
+      renderEsp32CameraManager();
+
+      try {
+        if (buildFirst) {
+          showToast(`Compiling EdgeHardwareRelay-main with PlatformIO for ${deviceId}...`, 'info');
+        } else {
+          showToast(`Preparing OTA firmware flash for ${deviceId}...`, 'info');
+        }
+
+        const resp = await fetch(`${getBridgeUrl()}/esp32_ota_flash`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ip: cleanIp,
+            ips: [cleanIp],
+            build: Boolean(buildFirst),
+            repo_path: repoPath,
+          }),
+        });
+
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok && resp.status !== 207) {
+          throw new Error(data.error || `OTA flash failed with HTTP status ${resp.status}`);
+        }
+
+        const res = (data.results && data.results[0]) || {};
+        if (res.status === 'failed') {
+          throw new Error(res.error || res.device_response || 'Device rejected firmware');
+        }
+
+        showToast(`⚡ Uploading firmware.bin -> Rebooting ${deviceId} (${cleanIp})...`, 'info');
+        showToast(`⚡ 1-Click OTA Flash succeeded for ${deviceId}! Rebooting camera...`, 'success');
+
+        // Re-probe camera status after 6s reboot window
+        setTimeout(async () => {
+          showToast(`Re-probing ${deviceId} (${cleanIp}) after OTA reboot...`, 'info');
+          try {
+            const live = await probeCameraStatus(cleanIp);
+            esp32CameraNodesList = esp32CameraNodesList.map((c) =>
+              c.device_id === deviceId ? { ...c, status: 'ONLINE', rssi_dbm: live.rssi_dbm, last_seen: new Date().toISOString() } : c
+            );
+            renderEsp32CameraManager();
+            showToast(`Camera ${deviceId} is back ONLINE after OTA reboot! (RSSI: ${live.rssi_dbm} dBm)`, 'success');
+          } catch (_) {
+            showToast(`Camera ${deviceId} rebooted, still coming online. Click Probe to refresh.`, 'info');
+            loadEsp32CameraNodes();
+          }
+        }, 6000);
+
+      } catch (err) {
+        console.error(`OTA Flash error for ${deviceId}:`, err);
+        showToast(`1-Click OTA Flash failed for ${deviceId}: ${err.message}`, 'error');
+      } finally {
+        esp32NodeOtaUploadingMap[deviceId] = false;
+        renderEsp32CameraManager();
+      }
+    }
+
+    async function flashAllOnlineEsp32Cameras() {
+      const btn = document.getElementById('otaFlashAllBtn');
+      const repoPath = (document.getElementById('ota-repo-path-input')?.value || '').trim() || null;
+      const buildFirst = document.getElementById('ota-compile-before-flash')?.checked ?? true;
+
+      // Prefer online cameras; fallback to any configured camera with an IP
+      const onlineCams = esp32CameraNodesList.filter((c) => c.ip_address && (c.status === 'ONLINE' || c.rssi_dbm != null));
+      const targetCams = onlineCams.length > 0 ? onlineCams : esp32CameraNodesList.filter((c) => c.ip_address);
+      const targetIps = [...new Set(targetCams.map((c) => cleanCameraHost(c.ip_address)).filter(Boolean))];
+
+      if (targetIps.length === 0) {
+        showToast('No cameras with valid IP addresses found to flash.', 'error');
+        return;
+      }
+
+      if (!confirm(`Build & OTA Flash firmware to ${targetIps.length} camera node(s) (${targetIps.join(', ')})?`)) {
+        return;
+      }
+
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '&#8987; Compiling EdgeHardwareRelay-main...';
+      }
+
+      try {
+        if (buildFirst) {
+          showToast(`Compiling EdgeHardwareRelay-main with PlatformIO...`, 'info');
+        }
+        showToast(`Uploading firmware.bin to ${targetIps.length} camera(s) -> Rebooting...`, 'info');
+
+        const resp = await fetch(`${getBridgeUrl()}/esp32_ota_flash`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ips: targetIps,
+            build: Boolean(buildFirst),
+            repo_path: repoPath,
+          }),
+        });
+
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok && resp.status !== 207) {
+          throw new Error(data.error || `Batch OTA flash failed with HTTP status ${resp.status}`);
+        }
+
+        const results = data.results || [];
+        const successCount = results.filter((r) => r.status === 'success').length;
+
+        if (successCount === targetIps.length) {
+          showToast(`⚡ Successfully built & flashed all ${successCount} camera(s)! Rebooting...`, 'success');
+        } else {
+          showToast(`⚡ Batch OTA flash: ${successCount}/${targetIps.length} succeeded. Rebooting cameras...`, successCount > 0 ? 'info' : 'error');
+        }
+
+        // Re-probe all cameras after 6s reboot window
+        setTimeout(async () => {
+          showToast('Re-probing all cameras after OTA reboot cycle...', 'info');
+          await probeAllEsp32CameraNodes();
+        }, 6000);
+
+      } catch (err) {
+        console.error('Batch OTA Flash error:', err);
+        showToast(`Batch OTA Flash failed: ${err.message}`, 'error');
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.innerHTML = '&#9889; Build &amp; Flash All Online Cameras';
+        }
+      }
+    }
+
     async function deleteEsp32CameraNode(id, deviceId) {
       try {
         await deleteCamera(id);
@@ -3371,9 +3639,9 @@
       if (encodedCamJson) {
         try {
           const cam = JSON.parse(decodeURIComponent(encodedCamJson));
-          const lastOctet = Number(String(cam.ip_address || '192.168.0.101').split('.').pop()) || 101;
+          const lastOctet = Number(String(cam.ip_address || '192.168.0.201').split('.').pop()) || 201;
           document.getElementById('provCamIdInput').value = cam.id || '';
-          document.getElementById('provCurrentIpInput').value = cam.ip_address || '192.168.0.101';
+          document.getElementById('provCurrentIpInput').value = cam.ip_address || '192.168.0.201';
           document.getElementById('provShelfSelect').value = cam.shelf_id || 'SHELF_R1_C1';
           document.getElementById('provAngleSelect').value = String(cam.angle_index || 1);
           document.getElementById('provDeviceIdInput').value = cam.device_id || 'ESP32_R1_C1_CAM1';
@@ -3385,7 +3653,7 @@
         }
       } else {
         document.getElementById('provCamIdInput').value = '';
-        document.getElementById('provCurrentIpInput').value = '192.168.0.101';
+        document.getElementById('provCurrentIpInput').value = '192.168.0.201';
         document.getElementById('provShelfSelect').value = 'SHELF_R1_C1';
         document.getElementById('provAngleSelect').value = '1';
         onModalShelfOrAngleChange();
@@ -3403,11 +3671,11 @@
       const angleIndex = Number(document.getElementById('provAngleSelect').value) || 1;
       const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
       const shelfIdx = Math.max(0, SHELF_IDS.indexOf(shelfId));
-      const suggestedOctet = 101 + shelfIdx * 2 + (angleIndex === 2 ? 1 : 0);
+      const suggestedOctet = 201 + shelfIdx * 2 + (angleIndex === 2 ? 1 : 0);
       const shortShelf = shelfId.replace('SHELF_', '');
       document.getElementById('provDeviceIdInput').value = `ESP32_${shortShelf}_CAM${angleIndex}`;
       document.getElementById('provIpOctetInput').value = String(suggestedOctet);
-      document.getElementById('provCameraNameInput').value = `${shortShelf.replace('_', '-')} ${angleIndex === 2 ? 'Front Angle' : 'Back Angle'} (CAM ${suggestedOctet - 100})`;
+      document.getElementById('provCameraNameInput').value = `${shortShelf.replace('_', '-')} ${angleIndex === 2 ? 'Front Angle' : 'Back Angle'} (CAM ${suggestedOctet - 200})`;
     }
 
     async function probeModalCurrentCameraIp() {
@@ -3539,7 +3807,13 @@
               if (payload.new && payload.new.shelf_id) {
                 const idx = compartmentsData.findIndex(c => c.shelf_id === payload.new.shelf_id);
                 if (idx >= 0) {
-                  compartmentsData[idx] = { ...compartmentsData[idx], ...payload.new };
+                  const prev = compartmentsData[idx];
+                  compartmentsData[idx] = {
+                    ...prev,
+                    ...payload.new,
+                    baseline_image_url: payload.new.baseline_image_url || prev.baseline_image_url,
+                    baseline_image_2_url: payload.new.baseline_image_2_url || prev.baseline_image_2_url,
+                  };
                 } else {
                   compartmentsData.push(payload.new);
                 }
@@ -3550,33 +3824,16 @@
           )
           .subscribe();
 
-        // Subscribe to public.comparison_logs inserts
-        supabaseClient
-          .channel('logs-changes')
-          .on(
-            'postgres_changes',
-            { event: 'INSERT', schema: 'public', table: 'comparison_logs' },
-            (payload) => {
-              if (payload.new) {
-                const exists = comparisonLogsData.some(l => l.log_id && l.log_id === payload.new.log_id);
-                if (!exists) {
-                  comparisonLogsData.unshift(payload.new);
-                  if (comparisonLogsData.length > 10) comparisonLogsData.length = 10;
-                  renderComparisonLogs(comparisonLogsData);
-                }
-                showToast(`New verification log for ${payload.new.shelf_id}: ${payload.new.state_delta}`, 'info');
-              }
-            }
-          )
-          .subscribe();
       } catch (err) {
         console.warn('Realtime subscription fallback to polling:', err);
       }
     }
 
     // =========================================================================
-    // PANEL 4A: MULTI-CCTV CAMERA MANAGER, RTSP TESTER & YOLO11n-POSE LAUNCHER
+    // PANEL 4A: MEDIAPIPE POSE JS (BROWSER/VERCEL) CCTV WRIST-ROI DWELL DETECTOR
+    // 100% Client-Side BlazePose Lite (modelComplexity: 0) on Vercel
     // =========================================================================
+
     const DEFAULT_3_CCTV_CAMERAS = [
       {
         cctv_id: 'CCTV_01',
@@ -3610,8 +3867,809 @@
       }
     ];
 
+    const DEFAULT_COMPARTMENT_ROIS = {
+      'SHELF_R1_C1': { x_min: 0.60, y_min: 0.19, x_max: 0.81, y_max: 0.42 }, // mirrors 385, 93, 516, 201 on 640x480
+      'SHELF_R1_C2': { x_min: 0.38, y_min: 0.19, x_max: 0.58, y_max: 0.42 },
+      'SHELF_R1_C3': { x_min: 0.16, y_min: 0.19, x_max: 0.36, y_max: 0.42 },
+      'SHELF_R1_C4': { x_min: 0.60, y_min: 0.55, x_max: 0.81, y_max: 0.85 },
+      'SHELF_R1_C5': { x_min: 0.38, y_min: 0.55, x_max: 0.58, y_max: 0.85 },
+      'SHELF_R1_C6': { x_min: 0.16, y_min: 0.55, x_max: 0.36, y_max: 0.85 }
+    };
+
+    function loadStoredRois() {
+      try {
+        const raw = localStorage.getItem('smart_storage_cctv_rois');
+        if (raw) return { ...DEFAULT_COMPARTMENT_ROIS, ...JSON.parse(raw) };
+      } catch (_) { }
+      return { ...DEFAULT_COMPARTMENT_ROIS };
+    }
+
+    let activeCctvRois = loadStoredRois();
     let cctvCamerasList = [];
     let runningPipelinesList = [];
+
+    // Compartment Dwell State Machine (mirrors behavior_classifier.py)
+    const ALL_SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
+    const compartmentTrackers = {};
+
+    function initCompartmentTrackers() {
+      for (const s of ALL_SHELF_IDS) {
+        compartmentTrackers[s] = {
+          shelfId: s,
+          state: 'IDLE', // 'IDLE' | 'DWELLING' | 'INTENT_CONFIRMED'
+          dwellStartTime: null,
+          lastSeenTime: null,
+          currentDwellDuration: 0,
+          dwellThreshold: 1.2, // seconds (NFR-04)
+          dropGracePeriod: 0.3, // 300ms grace period before drop
+          trajectoryHistory: [], // [{ x, y, time }]
+          triggerFired: false,
+          lastConfirmedAction: 'BORROW',
+          lastConfirmedConf: 0,
+          cooldownUntil: 0
+        };
+      }
+    }
+    initCompartmentTrackers();
+
+    // MediaPipe Pose Tracker instances & state
+    let mpPose = null;
+    let mpCamera = null;
+    let isPoseRunning = false;
+    let isCalibratingRoi = false;
+    let isDraggingRoi = false;
+    let calibDragStart = null;
+    let calibDragCurrent = null;
+    let simulationAnimId = null;
+    let bridgeStreamInterval = null;
+    let lastPoseFrameTime = performance.now();
+    let poseFps = 0;
+    let activeMediaStream = null;
+
+    function classifyTrajectoryAction(trajectory) {
+      if (!trajectory || trajectory.length < 5) return 'BORROW';
+      const startPt = trajectory[0];
+      const endPt = trajectory[trajectory.length - 1];
+      const dy = endPt.y - startPt.y;
+      const dx = endPt.x - startPt.x;
+      const mid = Math.floor(trajectory.length / 2);
+      const firstHalfY = trajectory.slice(0, mid).reduce((acc, p) => acc + p.y, 0) / Math.max(1, mid);
+      const secondHalfY = trajectory.slice(mid).reduce((acc, p) => acc + p.y, 0) / Math.max(1, trajectory.length - mid);
+      const netVerticalShift = secondHalfY - firstHalfY;
+      // Downward placement motion indicates RETURN; upward/outward extraction indicates BORROW
+      if (dy > 0.03 && netVerticalShift > 0.015 && Math.abs(dy) >= Math.abs(dx) * 0.4) {
+        return 'RETURN';
+      }
+      return 'BORROW';
+    }
+
+    function getMediaPipePose() {
+      if (mpPose) return mpPose;
+      if (typeof Pose === 'undefined') {
+        console.warn('[MediaPipe] Pose library is still loading...');
+        return null;
+      }
+      try {
+        mpPose = new Pose({
+          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+        });
+        mpPose.setOptions({
+          modelComplexity: 0, // Lite model for smooth in-browser performance on Vercel
+          smoothLandmarks: true,
+          enableSegmentation: false,
+          smoothSegmentation: false,
+          minDetectionConfidence: 0.5,
+          minTrackingConfidence: 0.5
+        });
+        mpPose.onResults(onPoseResults);
+        console.log('[MediaPipe] Initialized BlazePose Lite (modelComplexity: 0)');
+        return mpPose;
+      } catch (err) {
+        console.error('[MediaPipe] Error initializing Pose:', err);
+        showToast(`MediaPipe initialization error: ${err.message}`, 'error');
+        return null;
+      }
+    }
+
+    function onPoseResults(results) {
+      const canvas = document.getElementById('cctvPoseCanvas');
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      const now = performance.now();
+      const dt = now - lastPoseFrameTime;
+      lastPoseFrameTime = now;
+      if (dt > 0) {
+        const instantFps = 1000 / dt;
+        poseFps = Math.round(poseFps * 0.8 + instantFps * 0.2);
+      }
+      const fpsEl = document.getElementById('cctvFpsText');
+      if (fpsEl) fpsEl.textContent = `${poseFps} FPS`;
+
+      // Clear & Draw video frame or background
+      ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (results.image) {
+        ctx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+      } else {
+        const grad = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
+        grad.addColorStop(0, '#0b1120');
+        grad.addColorStop(1, '#020617');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+
+      // Draw Pose Landmarks & Skeleton connectors if present
+      let leftWrist = null;
+      let rightWrist = null;
+
+      if (results.poseLandmarks) {
+        if (window.drawConnectors && window.POSE_CONNECTIONS) {
+          try {
+            drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {
+              color: 'rgba(56, 189, 248, 0.4)',
+              lineWidth: 2
+            });
+          } catch (_) { }
+        } else {
+          drawBasicSkeleton(ctx, results.poseLandmarks, canvas.width, canvas.height);
+        }
+
+        // Wrist landmarks: 15 (LEFT_WRIST), 16 (RIGHT_WRIST)
+        const lw = results.poseLandmarks[15];
+        const rw = results.poseLandmarks[16];
+        if (lw && (lw.visibility === undefined || lw.visibility >= 0.45)) leftWrist = lw;
+        if (rw && (rw.visibility === undefined || rw.visibility >= 0.45)) rightWrist = rw;
+      }
+
+      // Update Wrist UI telemetry
+      const wristsEl = document.getElementById('cctvWristsText');
+      if (wristsEl) {
+        const lStr = leftWrist ? `L (${(leftWrist.x).toFixed(2)}, ${(leftWrist.y).toFixed(2)})` : 'L: --';
+        const rStr = rightWrist ? `R (${(rightWrist.x).toFixed(2)}, ${(rightWrist.y).toFixed(2)})` : 'R: --';
+        wristsEl.textContent = `${lStr} | ${rStr}`;
+      }
+
+      // Evaluate Dwell State Machine for each compartment ROI
+      let maxDwellShelf = null;
+      let maxDwellTime = 0;
+      let activeDwellState = 'IDLE';
+
+      const detectedWrists = [];
+      if (leftWrist) detectedWrists.push({ ...leftWrist, name: 'Left' });
+      if (rightWrist) detectedWrists.push({ ...rightWrist, name: 'Right' });
+
+      for (const shelfId of ALL_SHELF_IDS) {
+        const roi = activeCctvRois[shelfId] || DEFAULT_COMPARTMENT_ROIS[shelfId];
+        if (!roi) continue;
+
+        // Normalise coords if in pixels
+        const xMin = roi.x_min > 1 ? roi.x_min / canvas.width : roi.x_min;
+        const yMin = roi.y_min > 1 ? roi.y_min / canvas.height : roi.y_min;
+        const xMax = roi.x_max > 1 ? roi.x_max / canvas.width : roi.x_max;
+        const yMax = roi.y_max > 1 ? roi.y_max / canvas.height : roi.y_max;
+
+        const tracker = compartmentTrackers[shelfId];
+        if (!tracker) continue;
+
+        // Check if any wrist is inside this compartment ROI
+        let insideWrist = null;
+        for (const w of detectedWrists) {
+          if (w.x >= xMin && w.x <= xMax && w.y >= yMin && w.y <= yMax) {
+            insideWrist = w;
+            break;
+          }
+        }
+
+        // State Machine update
+        if (insideWrist) {
+          tracker.lastSeenTime = now;
+          tracker.trajectoryHistory.push({ x: insideWrist.x, y: insideWrist.y, time: now });
+          if (tracker.trajectoryHistory.length > 30) tracker.trajectoryHistory.shift();
+
+          if (tracker.state === 'IDLE') {
+            if (now >= tracker.cooldownUntil) {
+              tracker.state = 'DWELLING';
+              tracker.dwellStartTime = now;
+              tracker.currentDwellDuration = 0;
+              tracker.triggerFired = false;
+            }
+          } else if (tracker.state === 'DWELLING') {
+            tracker.currentDwellDuration = (now - tracker.dwellStartTime) / 1000;
+            if (tracker.currentDwellDuration >= tracker.dwellThreshold) {
+              tracker.state = 'INTENT_CONFIRMED';
+              tracker.lastConfirmedConf = insideWrist.visibility || 0.88;
+              tracker.lastConfirmedAction = classifyTrajectoryAction(tracker.trajectoryHistory);
+            }
+          } else if (tracker.state === 'INTENT_CONFIRMED') {
+            tracker.currentDwellDuration = (now - tracker.dwellStartTime) / 1000;
+            // Over-dwell fallback: if sustained > 3.5s without withdrawal, trigger immediately
+            if (tracker.currentDwellDuration >= 3.5 && !tracker.triggerFired) {
+              tracker.triggerFired = true;
+              dispatchDwellTrigger(shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+            }
+          }
+        } else {
+          // Wrist not inside ROI in this frame
+          const timeSinceSeen = (now - (tracker.lastSeenTime || 0)) / 1000;
+          if (tracker.state === 'INTENT_CONFIRMED' && timeSinceSeen > tracker.dropGracePeriod) {
+            if (!tracker.triggerFired) {
+              tracker.triggerFired = true;
+              dispatchDwellTrigger(shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+            }
+            tracker.state = 'IDLE';
+            tracker.dwellStartTime = null;
+            tracker.currentDwellDuration = 0;
+            tracker.triggerFired = false;
+            tracker.cooldownUntil = now + 1500; // 1.5s cooldown latch
+          } else if (tracker.state === 'DWELLING' && timeSinceSeen > tracker.dropGracePeriod) {
+            tracker.state = 'IDLE';
+            tracker.dwellStartTime = null;
+            tracker.currentDwellDuration = 0;
+            tracker.triggerFired = false;
+          }
+        }
+
+        if (tracker.currentDwellDuration > maxDwellTime) {
+          maxDwellTime = tracker.currentDwellDuration;
+          maxDwellShelf = shelfId;
+          activeDwellState = tracker.state;
+        }
+
+        // Draw Compartment ROI Box on Canvas
+        drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height);
+      }
+
+      // Draw Wrist Highlight Markers
+      for (const w of detectedWrists) {
+        const px = w.x * canvas.width;
+        const py = w.y * canvas.height;
+        ctx.beginPath();
+        ctx.arc(px, py, 8, 0, 2 * Math.PI);
+        ctx.fillStyle = '#fbbf24';
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+
+        ctx.font = '10px monospace';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(`${w.name} Wrist`, px + 12, py + 4);
+      }
+
+      // Update Dwell Status badge and meter
+      const dwellStatusEl = document.getElementById('cctvDwellStatusText');
+      const dwellMeterEl = document.getElementById('cctvPoseDwellMeter');
+      if (dwellStatusEl) {
+        if (maxDwellShelf && activeDwellState !== 'IDLE') {
+          dwellStatusEl.textContent = `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`;
+          dwellStatusEl.style.color = activeDwellState === 'INTENT_CONFIRMED' ? 'var(--success)' : 'var(--warning)';
+        } else {
+          dwellStatusEl.textContent = 'Idle (No Wrist in ROI)';
+          dwellStatusEl.style.color = 'var(--text-muted)';
+        }
+      }
+
+      if (dwellMeterEl) {
+        if (maxDwellShelf && activeDwellState === 'DWELLING') {
+          dwellMeterEl.style.display = 'inline-block';
+          dwellMeterEl.style.background = 'rgba(245, 158, 11, 0.2)';
+          dwellMeterEl.style.borderColor = '#f59e0b';
+          dwellMeterEl.style.color = '#fbbf24';
+          dwellMeterEl.textContent = `⏳ DWELLING: ${maxDwellTime.toFixed(1)}s / 1.2s`;
+        } else if (maxDwellShelf && activeDwellState === 'INTENT_CONFIRMED') {
+          dwellMeterEl.style.display = 'inline-block';
+          dwellMeterEl.style.background = 'rgba(16, 185, 129, 0.2)';
+          dwellMeterEl.style.borderColor = '#10b981';
+          dwellMeterEl.style.color = '#34d399';
+          dwellMeterEl.textContent = `✓ INTENT CONFIRMED (${compartmentTrackers[maxDwellShelf].lastConfirmedAction})`;
+        } else {
+          dwellMeterEl.style.display = 'none';
+        }
+      }
+
+      // Draw ROI Calibration drag box overlay if calibrating
+      if (isCalibratingRoi && calibDragStart && calibDragCurrent) {
+        drawCalibratingBox(ctx, canvas.width, canvas.height);
+      }
+
+      ctx.restore();
+    }
+
+    function drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, width, height) {
+      const rx = xMin * width;
+      const ry = yMin * height;
+      const rw = (xMax - xMin) * width;
+      const rh = (yMax - yMin) * height;
+
+      const isTargetCalib = isCalibratingRoi && document.getElementById('cctvCalibShelfSelect')?.value === shelfId;
+
+      let strokeColor = 'rgba(56, 189, 248, 0.7)'; // Default cyan
+      let fillColor = 'rgba(56, 189, 248, 0.08)';
+      let labelText = shelfId;
+
+      if (tracker.state === 'DWELLING') {
+        strokeColor = '#f59e0b'; // Amber
+        fillColor = 'rgba(245, 158, 11, 0.18)';
+        labelText = `${shelfId} • DWELLING ${tracker.currentDwellDuration.toFixed(1)}s / 1.2s`;
+      } else if (tracker.state === 'INTENT_CONFIRMED') {
+        strokeColor = '#10b981'; // Emerald
+        fillColor = 'rgba(16, 185, 129, 0.28)';
+        labelText = `${shelfId} • CONFIRMED: ${tracker.lastConfirmedAction}`;
+      }
+
+      if (isTargetCalib) {
+        strokeColor = '#eab308'; // Bright yellow for target calibrating shelf
+        fillColor = 'rgba(234, 179, 8, 0.15)';
+        labelText = `${shelfId} [CALIBRATING]`;
+      }
+
+      ctx.fillStyle = fillColor;
+      ctx.fillRect(rx, ry, rw, rh);
+
+      ctx.lineWidth = tracker.state !== 'IDLE' || isTargetCalib ? 3 : 1.5;
+      ctx.strokeStyle = strokeColor;
+      ctx.strokeRect(rx, ry, rw, rh);
+
+      // Label banner
+      ctx.fillStyle = strokeColor;
+      ctx.fillRect(rx, Math.max(0, ry - 18), rw, 18);
+
+      ctx.fillStyle = '#0f172a';
+      ctx.font = 'bold 10px monospace';
+      ctx.fillText(labelText, rx + 4, Math.max(12, ry - 5));
+
+      // Dwell progress bar along bottom of box if dwelling
+      if (tracker.state === 'DWELLING') {
+        const progress = Math.min(1.0, tracker.currentDwellDuration / 1.2);
+        ctx.fillStyle = '#f59e0b';
+        ctx.fillRect(rx, ry + rh - 4, rw * progress, 4);
+      }
+    }
+
+    function drawBasicSkeleton(ctx, landmarks, width, height) {
+      const connections = [
+        [11, 12], [11, 13], [13, 15], [12, 14], [14, 16],
+        [11, 23], [12, 24], [23, 24]
+      ];
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+      ctx.lineWidth = 2;
+      for (const [i, j] of connections) {
+        const a = landmarks[i];
+        const b = landmarks[j];
+        if (a && b && (a.visibility === undefined || a.visibility > 0.3) && (b.visibility === undefined || b.visibility > 0.3)) {
+          ctx.beginPath();
+          ctx.moveTo(a.x * width, a.y * height);
+          ctx.lineTo(b.x * width, b.y * height);
+          ctx.stroke();
+        }
+      }
+    }
+
+    async function dispatchDwellTrigger(shelfId, action, dwellDuration, conf) {
+      console.log(`[MediaPipe Pose] Dwell verified (>=1.2s) for ${shelfId}: Action=${action}, Dwell=${dwellDuration.toFixed(2)}s, Conf=${conf.toFixed(2)}`);
+      showToast(`🎯 CCTV Interaction Detected! ${shelfId} sustained ${dwellDuration.toFixed(1)}s dwell -> Action: ${action}`, 'warning');
+
+      const triggerEl = document.getElementById('cctvLastTriggerText');
+      if (triggerEl) {
+        triggerEl.textContent = `${shelfId} (${action}) • ${dwellDuration.toFixed(1)}s`;
+        triggerEl.style.color = '#34d399';
+      }
+
+      // Trigger the Dual-Camera Teachable Machine AI verification with 500ms post-withdrawal settle delay
+      runFullDualCamValidation(shelfId, action, true);
+
+      // Optional bridge trigger notification if running
+      try {
+        fetch(`${getBridgeUrl()}/esp32_trigger`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            shelf_id: shelfId,
+            action: action,
+            dwell_duration_seconds: Math.round(dwellDuration * 100) / 100,
+            oks_confidence: Math.round(conf * 100) / 100,
+            source: 'mediapipe_in_browser'
+          })
+        }).catch(() => { });
+      } catch (_) { }
+    }
+
+    async function toggleMediaPipeTracker() {
+      if (isPoseRunning) {
+        stopMediaPipeTracker();
+      } else {
+        await startMediaPipeTracker();
+      }
+    }
+
+    async function startMediaPipeTracker() {
+      const toggleBtn = document.getElementById('cctvPoseToggleBtn');
+      const badge = document.getElementById('cctvPoseStatusBadge');
+      const placeholder = document.getElementById('cctvTestPlaceholder');
+      const sourceSelect = document.getElementById('cctvPoseSourceSelect');
+      const selectedSource = sourceSelect ? sourceSelect.value : 'webcam';
+
+      if (badge) {
+        badge.className = 'badge badge-online';
+        badge.textContent = 'Initializing...';
+      }
+
+      const pose = getMediaPipePose();
+      if (!pose) {
+        showToast('MediaPipe Pose failed to initialize. Please check internet connection for CDN scripts.', 'error');
+        if (badge) {
+          badge.className = 'badge badge-offline';
+          badge.textContent = 'Init Failed';
+        }
+        return;
+      }
+
+      isPoseRunning = true;
+      if (placeholder) placeholder.style.display = 'none';
+      if (toggleBtn) {
+        toggleBtn.innerHTML = '&#9209; Stop Pose Tracker';
+        toggleBtn.style.borderColor = 'var(--danger)';
+        toggleBtn.style.color = 'var(--danger)';
+        toggleBtn.style.background = 'rgba(244, 63, 94, 0.08)';
+      }
+
+      if (selectedSource === 'simulation') {
+        runContinuousSimulationLoop();
+        if (badge) {
+          badge.className = 'badge badge-online';
+          badge.textContent = 'Simulation Active';
+        }
+        showToast('Started MediaPipe Pose tracking (Simulation Mode)', 'success');
+        return;
+      }
+
+      if (selectedSource === 'cctv_bridge') {
+        startCctvBridgePollingLoop();
+        if (badge) {
+          badge.className = 'badge badge-online';
+          badge.textContent = 'Bridge Stream Active';
+        }
+        showToast('Started MediaPipe Pose tracking via local bridge /test_feed', 'success');
+        return;
+      }
+
+      // Default: Webcam via getUserMedia
+      const videoEl = document.getElementById('cctvPoseVideo');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        activeMediaStream = stream;
+        videoEl.srcObject = stream;
+        await videoEl.play();
+
+        if (window.Camera) {
+          mpCamera = new Camera(videoEl, {
+            onFrame: async () => {
+              if (isPoseRunning && mpPose) {
+                await mpPose.send({ image: videoEl });
+              }
+            },
+            width: 640,
+            height: 480
+          });
+          mpCamera.start();
+        } else {
+          const loop = async () => {
+            if (!isPoseRunning) return;
+            if (videoEl.readyState >= 2 && mpPose) {
+              await mpPose.send({ image: videoEl });
+            }
+            requestAnimationFrame(loop);
+          };
+          requestAnimationFrame(loop);
+        }
+
+        if (badge) {
+          badge.className = 'badge badge-online';
+          badge.textContent = 'Webcam Tracking Active';
+        }
+        showToast('Webcam connected! Tracking wrist keypoints in real time.', 'success');
+      } catch (camErr) {
+        console.warn('Webcam access error, falling back to simulated mode:', camErr);
+        showToast(`Webcam unavailable (${camErr.message}). Switching to Simulation mode!`, 'info');
+        if (sourceSelect) sourceSelect.value = 'simulation';
+        runContinuousSimulationLoop();
+        if (badge) {
+          badge.className = 'badge badge-online';
+          badge.textContent = 'Simulation Active';
+        }
+      }
+    }
+
+    function stopMediaPipeTracker() {
+      isPoseRunning = false;
+      const toggleBtn = document.getElementById('cctvPoseToggleBtn');
+      const badge = document.getElementById('cctvPoseStatusBadge');
+      const placeholder = document.getElementById('cctvTestPlaceholder');
+      const videoEl = document.getElementById('cctvPoseVideo');
+
+      if (activeMediaStream) {
+        activeMediaStream.getTracks().forEach(t => t.stop());
+        activeMediaStream = null;
+      }
+      if (mpCamera) {
+        try { mpCamera.stop(); } catch (_) { }
+        mpCamera = null;
+      }
+      if (simulationAnimId) {
+        cancelAnimationFrame(simulationAnimId);
+        simulationAnimId = null;
+      }
+      if (bridgeStreamInterval) {
+        clearInterval(bridgeStreamInterval);
+        bridgeStreamInterval = null;
+      }
+
+      if (videoEl) {
+        videoEl.pause();
+        videoEl.srcObject = null;
+      }
+
+      if (toggleBtn) {
+        toggleBtn.innerHTML = '&#9654; Start Pose Tracker';
+        toggleBtn.style.borderColor = 'var(--success)';
+        toggleBtn.style.color = 'var(--success)';
+        toggleBtn.style.background = 'rgba(16, 185, 129, 0.08)';
+      }
+      if (badge) {
+        badge.className = 'badge badge-offline';
+        badge.textContent = 'Tracker Idle';
+      }
+      if (placeholder) placeholder.style.display = 'flex';
+
+      const canvas = document.getElementById('cctvPoseCanvas');
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      showToast('MediaPipe Pose Tracker stopped.', 'info');
+    }
+
+    function onCctvSourceChanged() {
+      if (isPoseRunning) {
+        stopMediaPipeTracker();
+        setTimeout(startMediaPipeTracker, 300);
+      }
+    }
+
+    function runSimulatedHandInteraction() {
+      if (!isPoseRunning) {
+        const sourceSelect = document.getElementById('cctvPoseSourceSelect');
+        if (sourceSelect) sourceSelect.value = 'simulation';
+        startMediaPipeTracker();
+      }
+      showToast('⚡ Running 1.3s sustained hand reach into SHELF_R1_C1 ROI...', 'info');
+
+      // Synthesize wrist motion trajectory entering SHELF_R1_C1 (x: 0.70, y: 0.30)
+      const startTime = performance.now();
+      const dwellDuration = 1350; // 1.35s (> 1.2s threshold)
+      const reachDuration = 500;  // 500ms reach-in
+      const withdrawDuration = 500; // 500ms withdraw
+
+      function simStep() {
+        if (!isPoseRunning) return;
+        const now = performance.now();
+        const elapsed = now - startTime;
+
+        let wx = 0.90;
+        let wy = 0.70;
+
+        if (elapsed < reachDuration) {
+          const t = elapsed / reachDuration;
+          wx = 0.90 - t * 0.20; // 0.90 -> 0.70
+          wy = 0.70 - t * 0.40; // 0.70 -> 0.30
+        } else if (elapsed < reachDuration + dwellDuration) {
+          const jitter = Math.sin(now * 0.01) * 0.005;
+          wx = 0.70 + jitter;
+          wy = 0.30 + jitter;
+        } else if (elapsed < reachDuration + dwellDuration + withdrawDuration) {
+          const t = (elapsed - (reachDuration + dwellDuration)) / withdrawDuration;
+          wx = 0.70 + t * 0.20;
+          wy = 0.30 + t * 0.40;
+        } else {
+          return;
+        }
+
+        const fakeResults = {
+          poseLandmarks: [
+            ...Array(15).fill({ x: 0.5, y: 0.5, visibility: 0.9 }),
+            { x: wx, y: wy, visibility: 0.92 }, // 15: LEFT_WRIST
+            { x: 0.95, y: 0.85, visibility: 0.85 } // 16: RIGHT_WRIST
+          ]
+        };
+
+        onPoseResults(fakeResults);
+
+        if (elapsed < reachDuration + dwellDuration + withdrawDuration + 350) {
+          requestAnimationFrame(simStep);
+        }
+      }
+
+      requestAnimationFrame(simStep);
+    }
+
+    function runContinuousSimulationLoop() {
+      let t = 0;
+      function loop() {
+        if (!isPoseRunning) return;
+        t += 0.02;
+        const wx = 0.70 + Math.sin(t) * 0.08;
+        const wy = 0.30 + Math.cos(t * 0.8) * 0.08;
+        const fakeResults = {
+          poseLandmarks: [
+            ...Array(15).fill({ x: 0.5, y: 0.5, visibility: 0.9 }),
+            { x: wx, y: wy, visibility: 0.90 },
+            { x: 0.90, y: 0.80, visibility: 0.85 }
+          ]
+        };
+        onPoseResults(fakeResults);
+        simulationAnimId = requestAnimationFrame(loop);
+      }
+      simulationAnimId = requestAnimationFrame(loop);
+    }
+
+    function startCctvBridgePollingLoop() {
+      const source = (document.getElementById('cctvRtspInput')?.value || '0').trim();
+      const testImg = new Image();
+      testImg.crossOrigin = 'anonymous';
+
+      bridgeStreamInterval = setInterval(async () => {
+        if (!isPoseRunning) return;
+        try {
+          const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}`, { cache: 'no-store' });
+          if (resp.ok) {
+            const data = await resp.json();
+            if (data.image && mpPose) {
+              testImg.onload = async () => {
+                if (isPoseRunning && mpPose) await mpPose.send({ image: testImg });
+              };
+              testImg.src = data.image;
+            }
+          }
+        } catch (_) { }
+      }, 150); // ~6.6 FPS bridge stream
+    }
+
+    // Interactive ROI Calibration Handlers
+    function toggleRoiCalibrationMode(forceOpen = null) {
+      isCalibratingRoi = forceOpen !== null ? forceOpen : !isCalibratingRoi;
+      const toolbar = document.getElementById('cctvCalibrationToolbar');
+      const calibBtn = document.getElementById('cctvCalibrateRoiBtn');
+      if (toolbar) toolbar.style.display = isCalibratingRoi ? 'flex' : 'none';
+      if (calibBtn) {
+        calibBtn.style.borderColor = isCalibratingRoi ? 'var(--warning)' : 'var(--primary)';
+        calibBtn.style.color = isCalibratingRoi ? 'var(--warning)' : 'var(--primary)';
+        calibBtn.innerHTML = isCalibratingRoi ? '&#10005; Exit Calibration' : '&#127919; Calibrate ROI';
+      }
+      if (isCalibratingRoi) {
+        updateCalibCoordsText();
+        showToast('ROI Calibration mode active. Drag on canvas to set box.', 'info');
+      }
+    }
+
+    function onCalibShelfChanged() {
+      updateCalibCoordsText();
+    }
+
+    function updateCalibCoordsText() {
+      const shelfSelect = document.getElementById('cctvCalibShelfSelect');
+      const textEl = document.getElementById('cctvCalibCoordsText');
+      if (!shelfSelect || !textEl) return;
+      const shelfId = shelfSelect.value;
+      const roi = activeCctvRois[shelfId] || DEFAULT_COMPARTMENT_ROIS[shelfId];
+      if (roi) {
+        textEl.textContent = `x: ${roi.x_min.toFixed(2)}–${roi.x_max.toFixed(2)}, y: ${roi.y_min.toFixed(2)}–${roi.y_max.toFixed(2)}`;
+      }
+    }
+
+    function saveCalibratedRois() {
+      try {
+        localStorage.setItem('smart_storage_cctv_rois', JSON.stringify(activeCctvRois));
+        showToast('Saved calibrated ROIs to local browser storage!', 'success');
+      } catch (err) {
+        showToast(`Failed to save ROIs: ${err.message}`, 'error');
+      }
+    }
+
+    function resetDefaultRois() {
+      activeCctvRois = { ...DEFAULT_COMPARTMENT_ROIS };
+      try {
+        localStorage.removeItem('smart_storage_cctv_rois');
+      } catch (_) { }
+      updateCalibCoordsText();
+      showToast('Reset all compartment ROIs to defaults.', 'info');
+    }
+
+    function drawCalibratingBox(ctx, width, height) {
+      const x0 = Math.min(calibDragStart.x, calibDragCurrent.x) * width;
+      const y0 = Math.min(calibDragStart.y, calibDragCurrent.y) * height;
+      const w = Math.abs(calibDragCurrent.x - calibDragStart.x) * width;
+      const h = Math.abs(calibDragCurrent.y - calibDragStart.y) * height;
+
+      ctx.save();
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(x0, y0, w, h);
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.2)';
+      ctx.fillRect(x0, y0, w, h);
+      ctx.restore();
+    }
+
+    function initCanvasRoiEventListeners() {
+      const canvas = document.getElementById('cctvPoseCanvas');
+      if (!canvas) return;
+
+      const getNormalizedPos = (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const x = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        const y = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+        return { x, y };
+      };
+
+      const onStart = (e) => {
+        if (!isCalibratingRoi) return;
+        isDraggingRoi = true;
+        calibDragStart = getNormalizedPos(e);
+        calibDragCurrent = calibDragStart;
+      };
+
+      const onMove = (e) => {
+        if (!isCalibratingRoi || !isDraggingRoi) return;
+        calibDragCurrent = getNormalizedPos(e);
+        const textEl = document.getElementById('cctvCalibCoordsText');
+        if (textEl) {
+          const xmin = Math.min(calibDragStart.x, calibDragCurrent.x);
+          const xmax = Math.max(calibDragStart.x, calibDragCurrent.x);
+          const ymin = Math.min(calibDragStart.y, calibDragCurrent.y);
+          const ymax = Math.max(calibDragStart.y, calibDragCurrent.y);
+          textEl.textContent = `x: ${xmin.toFixed(2)}–${xmax.toFixed(2)}, y: ${ymin.toFixed(2)}–${ymax.toFixed(2)}`;
+        }
+      };
+
+      const onEnd = () => {
+        if (!isCalibratingRoi || !isDraggingRoi) return;
+        isDraggingRoi = false;
+        if (!calibDragStart || !calibDragCurrent) return;
+
+        const xmin = Math.min(calibDragStart.x, calibDragCurrent.x);
+        const xmax = Math.max(calibDragStart.x, calibDragCurrent.x);
+        const ymin = Math.min(calibDragStart.y, calibDragCurrent.y);
+        const ymax = Math.max(calibDragStart.y, calibDragCurrent.y);
+
+        if (xmax - xmin >= 0.05 && ymax - ymin >= 0.05) {
+          const shelfSelect = document.getElementById('cctvCalibShelfSelect');
+          const targetShelf = shelfSelect ? shelfSelect.value : 'SHELF_R1_C1';
+          activeCctvRois[targetShelf] = {
+            x_min: Math.round(xmin * 1000) / 1000,
+            y_min: Math.round(ymin * 1000) / 1000,
+            x_max: Math.round(xmax * 1000) / 1000,
+            y_max: Math.round(ymax * 1000) / 1000
+          };
+          updateCalibCoordsText();
+          showToast(`Set calibrated ROI for ${targetShelf}!`, 'success');
+        }
+      };
+
+      canvas.addEventListener('mousedown', onStart);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onEnd);
+
+      canvas.addEventListener('touchstart', onStart, { passive: true });
+      window.addEventListener('touchmove', onMove, { passive: true });
+      window.addEventListener('touchend', onEnd, { passive: true });
+    }
 
     function buildCctvRtspFromInputs() {
       const ip = (document.getElementById('cctvIpInput').value || '192.168.0.101').trim();
@@ -3674,7 +4732,7 @@
       };
 
       try {
-        await sbRest('cctv_cameras', 'POST', '?on_conflict=cctv_id', payload, 'resolution=merge-duplicates,return=representation');
+        await sbRest('cctv_cameras', 'POST', '?on_conflict=cctv_id', payload, 'resolution=merge-duplicates,return=minimal');
         showToast(`Saved CCTV ${cctvId} to Supabase!`, 'success');
         await loadCctvCameras();
       } catch (err) {
@@ -3697,7 +4755,7 @@
               runningPipelinesList = bJson.running_pipelines;
             }
           }
-        } catch (_) {}
+        } catch (_) { }
 
         let data = null;
         try {
@@ -3732,8 +4790,6 @@
       }
 
       grid.innerHTML = cctvCamerasList.map(cam => {
-        const runningItem = runningPipelinesList.find(p => p.cctv_id === cam.cctv_id && p.running);
-        const isRunning = Boolean(runningItem);
         const maskedRtsp = cam.rtsp_url && cam.rtsp_url.includes('@')
           ? cam.rtsp_url.replace(/:[^:@]+@/, ':***@')
           : (cam.rtsp_url || '0');
@@ -3748,17 +4804,14 @@
         const encodedJson = encodeURIComponent(JSON.stringify(cam));
 
         return `
-          <div style="background: var(--surface-card); border: 1px solid ${isRunning ? 'var(--success)' : 'var(--border)'}; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; gap: 10px; box-shadow: ${isRunning ? '0 0 14px rgba(16, 185, 129, 0.2)' : 'none'};">
+          <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; gap: 10px;">
             <div>
               <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
                 <div>
                   <span style="font-size: 13px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono);">${cam.cctv_id}</span>
                   <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">${cam.camera_name || ''}</span>
                 </div>
-                ${isRunning
-                  ? `<span class="badge badge-online" style="font-size: 10px; animation: pulse 1.5s infinite;"><span class="pulse-dot"></span>PIPELINE RUNNING (PID ${runningItem.pid})</span>`
-                  : (cam.is_active ? `<span class="badge badge-online" style="font-size: 10px;">Active</span>` : `<span class="badge badge-offline" style="font-size: 10px;">Inactive</span>`)
-                }
+                ${cam.is_active ? `<span class="badge badge-online" style="font-size: 10px;">Active</span>` : `<span class="badge badge-offline" style="font-size: 10px;">Inactive</span>`}
               </div>
 
               <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); margin-bottom: 6px; word-break: break-all;">
@@ -3777,10 +4830,9 @@
               <button type="button" class="btn-action" style="font-size: 11px; padding: 5px 8px; justify-content: center; border-color: var(--primary); color: var(--primary);" onclick="calibrateCctvRoi('${cam.cctv_id}', '${cam.rtsp_url}')">
                 &#127919; Calibrate ROI
               </button>
-              ${isRunning
-                ? `<button type="button" class="btn-action" style="font-size: 11px; padding: 5px 8px; justify-content: center; border-color: var(--danger); color: var(--danger);" onclick="stopCctvPipeline('${cam.cctv_id}')">&#9209; Stop Pipeline</button>`
-                : `<button type="button" class="btn-action" style="font-size: 11px; padding: 5px 8px; justify-content: center; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);" onclick="startCctvPipeline('${cam.cctv_id}', '${cam.rtsp_url}')">&#9654; Start YOLO11-Pose</button>`
-              }
+              <button type="button" class="btn-action" style="font-size: 11px; padding: 5px 8px; justify-content: center; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);" onclick="startCctvPipeline('${cam.cctv_id}', '${cam.rtsp_url}')">
+                &#9654; Start MediaPipe Pose JS (Browser/Vercel)
+              </button>
               <div style="display: flex; gap: 4px;">
                 <button type="button" class="btn-action" style="flex: 1; font-size: 11px; padding: 5px 4px; justify-content: center;" onclick="editCctvCamera('${encodedJson}')">&#9998; Edit</button>
                 <button type="button" class="btn-action" style="font-size: 11px; padding: 5px 6px; justify-content: center; color: var(--danger);" onclick="deleteCctvCamera('${cam.cctv_id}')">&#128465;</button>
@@ -3792,10 +4844,9 @@
     }
 
     async function testCctvFeed(cctvId, rtspUrl) {
-      const overlayText = document.getElementById('cctvTestOverlayText');
       const placeholder = document.getElementById('cctvTestPlaceholder');
       const img = document.getElementById('cctvTestPreviewImg');
-      if (overlayText) overlayText.textContent = `Connecting to ${cctvId}...`;
+      showToast(`Connecting to ${cctvId}...`, 'info');
 
       try {
         const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(rtspUrl)}`, { cache: 'no-store' });
@@ -3806,75 +4857,42 @@
             img.style.display = 'block';
           }
           if (placeholder) placeholder.style.display = 'none';
-          if (overlayText) {
-            overlayText.textContent = `[${cctvId}] ${res.width}x${res.height} • ${res.latency_ms}ms`;
-          }
           showToast(`Captured snapshot from ${cctvId} in ${res.latency_ms}ms`, 'success');
         } else {
           showToast(`Test feed failed for ${cctvId}: ${res.error || 'Unknown error'}`, 'error');
-          if (overlayText) overlayText.textContent = `[${cctvId}] Feed Error`;
         }
       } catch (err) {
         showToast(`Cannot reach local bridge at ${getBridgeUrl()}: ${err.message}`, 'error');
-        if (overlayText) overlayText.textContent = `Bridge Offline`;
       }
     }
 
-    async function calibrateCctvRoi(cctvId, rtspUrl) {
-      showToast(`Launching ROI Calibrator for ${cctvId}...`, 'info');
-      try {
-        const resp = await fetch(`${getBridgeUrl()}/run_calibration`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ source: rtspUrl, cctv_id: cctvId })
-        });
-        const res = await resp.json();
-        if (resp.ok && res.status === 'launched') {
-          showToast(`ROI Calibration GUI opened on desktop for ${cctvId}!`, 'success');
-        } else {
-          showToast(`Failed to open calibration GUI: ${res.error || 'Unknown error'}`, 'error');
+    function calibrateCctvRoi(cctvId, rtspUrl) {
+      const panel = document.getElementById('cctvCameraManagerPanel');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth' });
+      toggleRoiCalibrationMode(true);
+      const cam = cctvCamerasList.find(c => c.cctv_id === cctvId);
+      if (cam && Array.isArray(cam.assigned_shelves) && cam.assigned_shelves[0]) {
+        const shelfSelect = document.getElementById('cctvCalibShelfSelect');
+        if (shelfSelect) {
+          shelfSelect.value = cam.assigned_shelves[0];
+          updateCalibCoordsText();
         }
-      } catch (err) {
-        showToast(`Bridge error: ${err.message}`, 'error');
       }
+      showToast(`Ready to calibrate ROI for ${cctvId}. Drag box on canvas above.`, 'info');
     }
 
-    async function startCctvPipeline(cctvId, rtspUrl) {
-      showToast(`Launching YOLO11n-Pose for ${cctvId}...`, 'info');
-      try {
-        const resp = await fetch(`${getBridgeUrl()}/run_pipeline`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cctv_id: cctvId, source: rtspUrl })
-        });
-        const res = await resp.json();
-        if (resp.ok && res.status === 'launched') {
-          showToast(`YOLO11n-Pose pipeline running for ${cctvId} (PID: ${res.pid})!`, 'success');
-          await loadCctvCameras();
-        } else {
-          showToast(`Failed to launch pipeline: ${res.error || 'Unknown error'}`, 'error');
-        }
-      } catch (err) {
-        showToast(`Bridge error: ${err.message}`, 'error');
-      }
+    function startCctvPipeline(cctvId, rtspUrl) {
+      const panel = document.getElementById('cctvCameraManagerPanel');
+      if (panel) panel.scrollIntoView({ behavior: 'smooth' });
+      const sourceSelect = document.getElementById('cctvPoseSourceSelect');
+      if (sourceSelect) sourceSelect.value = 'webcam';
+      startMediaPipeTracker();
+      showToast(`Running MediaPipe Pose JS (Browser/Vercel) for ${cctvId}`, 'success');
     }
 
-    async function stopCctvPipeline(cctvId) {
-      showToast(`Stopping YOLO11n-Pose for ${cctvId}...`, 'info');
-      try {
-        const resp = await fetch(`${getBridgeUrl()}/stop_pipeline`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cctv_id: cctvId })
-        });
-        const res = await resp.json();
-        if (resp.ok) {
-          showToast(`Stopped pipeline for ${cctvId}`, 'info');
-          await loadCctvCameras();
-        }
-      } catch (err) {
-        showToast(`Bridge error: ${err.message}`, 'error');
-      }
+    function stopCctvPipeline(cctvId) {
+      stopMediaPipeTracker();
+      showToast(`Stopped MediaPipe Pose JS (Browser/Vercel) for ${cctvId}`, 'info');
     }
 
     function editCctvCamera(encodedJson) {
@@ -3926,10 +4944,13 @@
     loadEsp32CameraNodes();
     setupRealtimeSubscriptions();
     checkLocalBridgeHealth();
+    initOtaInfo();
+    initCanvasRoiEventListeners();
+    updateCalibCoordsText();
 
     // Prevent Background Tab Throttling for CCTV Triggers:
     // Use an inline Web Worker interval so Chrome/Edge does not throttle /esp32_nodes polling
-    // when the dashboard tab is minimized or behind the OpenCV CCTV window.
+    // when the dashboard tab is minimized or in the background.
     (function startUnthrottledPollingWorker() {
       try {
         const workerCode = `setInterval(() => postMessage('tick'), 2000);`;
@@ -3944,6 +4965,7 @@
       }
     })();
   </script>
+
 </body>
 
 </html>

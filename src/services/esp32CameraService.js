@@ -6,7 +6,7 @@
  *  - probeCameraStatus(ip): GET http://${ip}/status (3s timeout)
  *  - pushCameraConfig(ip, payload): POST http://${ip}/config ({ device_id, rack_id, shelf_id, camera_name, ip_octet })
  *  - uploadCameraFirmware(ip, binFile): POST http://${ip}/update (FormData 'file')
- *  - captureLiveSnapshotUrl(ip, mode = 'live'): http://${ip}/capture?mode=${mode}&flash=1&t=${Date.now()}
+ *  - captureLiveSnapshotUrl(ip, mode = 'live', flash = 0): http://${ip}/capture?mode=${mode}&flash=${flash}&t=${Date.now()}
  *  - Supabase CRUD helpers: getCameras(), upsertCamera(cam), deleteCamera(id)
  */
 
@@ -170,9 +170,9 @@ export async function uploadCameraFirmware(ip, binFile) {
  * @param {'live'|'baseline'} mode
  * @returns {string}
  */
-export function captureLiveSnapshotUrl(ip, mode = 'live') {
+export function captureLiveSnapshotUrl(ip, mode = 'live', flash = 0) {
   const cleanIp = cleanIpAddress(ip);
-  return `http://${cleanIp}/capture?mode=${encodeURIComponent(mode)}&flash=1&t=${Date.now()}`;
+  return `http://${cleanIp}/capture?mode=${encodeURIComponent(mode)}&flash=${flash}&t=${Date.now()}`;
 }
 
 /**
@@ -232,7 +232,7 @@ export async function upsertCamera(cam) {
     rack_id: String(cam.rack_id || 'RACK_01').trim(),
     shelf_id: String(cam.shelf_id || 'SHELF_R1_C1').trim(),
     angle_index: Number(cam.angle_index) === 2 ? 2 : 1,
-    ip_address: cleanIpAddress(cam.ip_address || '192.168.0.101'),
+    ip_address: cleanIpAddress(cam.ip_address || '192.168.0.201'),
     status: cam.status || 'ONLINE',
     rssi_dbm: cam.rssi_dbm != null ? Number(cam.rssi_dbm) : null,
     last_seen: cam.last_seen || new Date().toISOString(),
@@ -245,7 +245,7 @@ export async function upsertCamera(cam) {
       'POST',
       '?on_conflict=device_id',
       record,
-      'resolution=merge-duplicates,return=representation'
+      'resolution=merge-duplicates,return=minimal'
     );
     if (Array.isArray(res) && res.length > 0) {
       savedRow = res[0];
@@ -311,6 +311,38 @@ export async function deleteCamera(idOrDeviceId) {
   return true;
 }
 
+/**
+ * Triggers automated PlatformIO build & OTA firmware flashing via CameraService bridge
+ * @param {string|string[]} ips
+ * @param {boolean} [buildFirst=true]
+ * @param {string|null} [repoPath=null]
+ * @returns {Promise<{status: string, firmware: object, results: Array}>}
+ */
+export async function triggerOneClickOtaFlash(ips, buildFirst = true, repoPath = null) {
+  const targetIps = Array.isArray(ips) ? ips : [ips];
+  const cleanIps = targetIps.map(cleanIpAddress).filter(Boolean);
+  if (cleanIps.length === 0) {
+    throw new Error('At least one valid ESP32-CAM IP address is required for OTA flash.');
+  }
+
+  const bridgeUrl = (typeof window !== 'undefined' && window.getBridgeUrl ? window.getBridgeUrl() : 'http://localhost:8008').replace(/\/+$/, '');
+  const resp = await fetch(`${bridgeUrl}/esp32_ota_flash`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ips: cleanIps,
+      build: Boolean(buildFirst),
+      repo_path: repoPath || undefined,
+    }),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok && resp.status !== 207) {
+    throw new Error(data.error || `OTA flash failed with HTTP status ${resp.status}`);
+  }
+  return data;
+}
+
 const esp32CameraService = {
   DEFAULT_12_ESP32_CAMERAS,
   probeCameraStatus,
@@ -320,6 +352,7 @@ const esp32CameraService = {
   getCameras,
   upsertCamera,
   deleteCamera,
+  triggerOneClickOtaFlash,
 };
 
 if (typeof window !== 'undefined') {
