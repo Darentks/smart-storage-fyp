@@ -476,9 +476,152 @@ def discover_active_esp32_cameras(subnet_prefix=None) -> list:
     return get_discovered_cameras_list()
 
 
+class _PersistentStreamReader:
+    """
+    Keeps an RTSP / Webcam cv2.VideoCapture open in a background daemon thread
+    and continuously drains frames so /test_feed returns the latest real-time frame
+    in <2ms instead of reconnecting (800-2000ms) on every HTTP request.
+    Automatically closes after 15s of inactivity.
+    """
+
+    def __init__(self, source_str: Any):
+        try:
+            self.source: Any = int(source_str)
+            self.is_webcam = True
+        except (ValueError, TypeError):
+            self.source = str(source_str)
+            self.is_webcam = False
+
+        self.masked = mask_rtsp_url(self.source)
+        self.lock = threading.Lock()
+        self.latest_frame: Any = None
+        self.latest_seq: int = 0
+        self.encoded_seq: int = -1
+        self.cached_payload: Optional[Dict[str, Any]] = None
+        self.last_access_ts: float = time.time()
+        self.running: bool = True
+        self.error_msg: Optional[str] = None
+        self.ready_event = threading.Event()
+        self.thread = threading.Thread(target=self._reader_loop, daemon=True, name=f"RTSPReader-{self.masked}")
+        self.thread.start()
+
+    def _reader_loop(self) -> None:
+        cap = None
+        try:
+            print(f"[CameraService] Opening persistent low-latency stream: {self.masked}")
+            if self.is_webcam:
+                cap = cv2.VideoCapture(self.source, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(self.source)
+            else:
+                os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay"
+                cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG) if hasattr(cv2, "CAP_FFMPEG") else cv2.VideoCapture(self.source)
+
+            if not cap or not cap.isOpened():
+                self.error_msg = f"Failed to open video source ({self.masked}). Check camera IP, power, and credentials."
+                self.running = False
+                self.ready_event.set()
+                return
+
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            fail_count = 0
+
+            while self.running:
+                if (time.time() - self.last_access_ts) > 15.0:
+                    print(f"[CameraService] Closing idle stream after 15s inactivity: {self.masked}")
+                    break
+
+                ret, frame = cap.read()
+                if not ret or frame is None:
+                    fail_count += 1
+                    if fail_count > 30:
+                        self.error_msg = f"Stream disconnected for {self.masked}"
+                        break
+                    time.sleep(0.02)
+                    continue
+
+                fail_count = 0
+                with self.lock:
+                    self.latest_frame = frame
+                    self.latest_seq += 1
+                if not self.ready_event.is_set():
+                    self.ready_event.set()
+
+                if self.is_webcam:
+                    time.sleep(0.01)
+        except Exception as exc:
+            self.error_msg = f"Exception in stream reader: {str(exc)}"
+        finally:
+            self.running = False
+            self.ready_event.set()
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+    def get_frame_payload(self) -> Dict[str, Any]:
+        t0 = time.time()
+        self.last_access_ts = t0
+
+        if not self.ready_event.is_set():
+            self.ready_event.wait(timeout=4.0)
+
+        with self.lock:
+            frame = self.latest_frame
+            seq = self.latest_seq
+            if frame is not None and seq == self.encoded_seq and self.cached_payload is not None:
+                return self.cached_payload
+
+        if frame is None:
+            return {
+                "status": "failed",
+                "error": self.error_msg or f"Failed to read frame buffer from {self.masked}.",
+                "latency_ms": round((time.time() - t0) * 1000, 1),
+                "source": self.masked,
+            }
+
+        h, w = frame.shape[:2]
+        if w > 640:
+            frame_resized = cv2.resize(frame, (640, 480), interpolation=cv2.INTER_LINEAR)
+            h, w = 480, 640
+        else:
+            frame_resized = frame
+
+        channels = frame_resized.shape[2] if len(frame_resized.shape) > 2 else 1
+        success, buffer = cv2.imencode(".jpg", frame_resized, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        latency = round((time.time() - t0) * 1000, 1)
+
+        if not success:
+            return {
+                "status": "failed",
+                "error": "Failed to encode captured frame to JPEG format.",
+                "latency_ms": latency,
+                "source": self.masked,
+            }
+
+        b64_str = base64.b64encode(buffer).decode("utf-8")
+        payload = {
+            "status": "success",
+            "latency_ms": latency,
+            "width": w,
+            "height": h,
+            "channels": channels,
+            "seq": seq,
+            "image": f"data:image/jpeg;base64,{b64_str}",
+            "source": self.masked,
+        }
+        with self.lock:
+            self.encoded_seq = seq
+            self.cached_payload = payload
+        return payload
+
+
+_PERSISTENT_STREAMS: Dict[str, _PersistentStreamReader] = {}
+_PERSISTENT_STREAMS_LOCK = threading.Lock()
+
+
 def capture_single_frame(source_str) -> Dict[str, Any]:
     """
-    Connects to an RTSP or webcam source, captures a single frame, and measures latency.
+    Returns the latest real-time frame from a persistent background RTSP/Webcam stream reader.
     """
     if not _OPENCV_AVAILABLE:
         return {
@@ -487,86 +630,14 @@ def capture_single_frame(source_str) -> Dict[str, Any]:
             "latency_ms": 0,
         }
 
-    try:
-        source = int(source_str)
-        is_webcam = True
-    except (ValueError, TypeError):
-        source = str(source_str)
-        is_webcam = False
+    key = str(source_str).strip()
+    with _PERSISTENT_STREAMS_LOCK:
+        reader = _PERSISTENT_STREAMS.get(key)
+        if reader is None or not reader.running:
+            reader = _PersistentStreamReader(source_str)
+            _PERSISTENT_STREAMS[key] = reader
 
-    masked = mask_rtsp_url(source)
-    print(f"[CameraService] Capturing on-demand test frame from: {masked}")
-
-    t_start = time.time()
-    cap = None
-
-    try:
-        if is_webcam:
-            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW) if os.name == "nt" else cv2.VideoCapture(source)
-        else:
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
-            cap = cv2.VideoCapture(source)
-
-        if not cap.isOpened():
-            latency = round((time.time() - t_start) * 1000, 1)
-            return {
-                "status": "failed",
-                "error": f"Failed to open video source ({masked}). Check camera IP, power, and credentials.",
-                "latency_ms": latency,
-                "source": masked,
-            }
-
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        ret, frame = cap.read()
-        latency = round((time.time() - t_start) * 1000, 1)
-
-        if not ret or frame is None:
-            return {
-                "status": "failed",
-                "error": f"Connection established but failed to read frame buffer from {masked}.",
-                "latency_ms": latency,
-                "source": masked,
-            }
-
-        h, w = frame.shape[:2]
-        channels = frame.shape[2] if len(frame.shape) > 2 else 1
-
-        success, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        if not success:
-            return {
-                "status": "failed",
-                "error": "Failed to encode captured frame to JPEG format.",
-                "latency_ms": latency,
-                "source": masked,
-            }
-
-        b64_str = base64.b64encode(buffer).decode("utf-8")
-        data_url = f"data:image/jpeg;base64,{b64_str}"
-
-        return {
-            "status": "success",
-            "latency_ms": latency,
-            "width": w,
-            "height": h,
-            "channels": channels,
-            "image": data_url,
-            "source": masked,
-        }
-
-    except Exception as exc:
-        latency = round((time.time() - t_start) * 1000, 1)
-        return {
-            "status": "failed",
-            "error": f"Exception during frame capture: {str(exc)}",
-            "latency_ms": latency,
-            "source": masked,
-        }
-    finally:
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
+    return reader.get_frame_payload()
 
 
 def resolve_edge_relay_repo_path(custom_path: Optional[str] = None) -> Optional[str]:
@@ -825,6 +896,14 @@ def push_ota_firmware_to_esp32(esp32_ip: str, bin_path: str, timeout: float = 45
 
 class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     """HTTP Request Handler for camera control, MQTT triggers, and ESP32 reference validation."""
+
+    def log_message(self, format: str, *args: Any) -> None:
+        if "/test_feed" in self.path or "/esp32_nodes" in self.path:
+            return
+        if len(args) >= 2:
+            sys.stderr.write(f"[CameraService HTTP] {args[0]} - {args[1]}\n")
+        else:
+            super().log_message(format, *args)
 
     def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -1450,9 +1529,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         self._send_json(404, {"error": "Endpoint not found"})
-
-    def log_message(self, format, *args):
-        sys.stderr.write(f"[CameraService HTTP] {args[0]} - {args[1]}\n")
 
 
 def esp32_http_baseline_poller():

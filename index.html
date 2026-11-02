@@ -4410,6 +4410,7 @@
         simulationAnimId = null;
       }
       if (bridgeStreamInterval) {
+        clearTimeout(bridgeStreamInterval);
         clearInterval(bridgeStreamInterval);
         bridgeStreamInterval = null;
       }
@@ -4526,33 +4527,47 @@
     let activeCctvSourceUrl = null;
 
     function startCctvBridgePollingLoop() {
+      if (bridgeStreamInterval) {
+        clearTimeout(bridgeStreamInterval);
+        clearInterval(bridgeStreamInterval);
+        bridgeStreamInterval = null;
+      }
       const source = (activeCctvSourceUrl || document.getElementById('cctvRtspInput')?.value || '0').trim();
-      let busy = false;
+      const reusableImg = new Image();
+      reusableImg.crossOrigin = 'anonymous';
+      let lastSeq = -1;
 
-      // Browsers cannot open rtsp:// directly, so the local bridge grabs CCTV frames (same path as "Test Feed")
-      // and each frame is fed to MediaPipe Pose in the browser.
-      bridgeStreamInterval = setInterval(async () => {
-        if (!isPoseRunning || busy) return;
-        busy = true;
+      async function pumpFrame() {
+        if (!isPoseRunning) return;
+        const t0 = performance.now();
         try {
           const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}`, { cache: 'no-store' });
           const data = resp.ok ? await resp.json() : null;
-          if (data && data.image && mpPose) {
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            await new Promise((resolve) => { img.onload = resolve; img.onerror = resolve; img.src = data.image; });
-            if (isPoseRunning && mpPose && img.naturalWidth) {
+          if (data && data.image && mpPose && (data.seq === undefined || data.seq !== lastSeq)) {
+            if (data.seq !== undefined) lastSeq = data.seq;
+            await new Promise((resolve) => {
+              reusableImg.onload = resolve;
+              reusableImg.onerror = resolve;
+              reusableImg.src = data.image;
+            });
+            if (isPoseRunning && mpPose && reusableImg.naturalWidth) {
               const cv = document.getElementById('cctvPoseCanvas');
-              if (cv && (cv.width !== img.naturalWidth || cv.height !== img.naturalHeight)) {
-                cv.width = img.naturalWidth;
-                cv.height = img.naturalHeight;
+              if (cv && (cv.width !== reusableImg.naturalWidth || cv.height !== reusableImg.naturalHeight)) {
+                cv.width = reusableImg.naturalWidth;
+                cv.height = reusableImg.naturalHeight;
               }
-              await mpPose.send({ image: img });
+              await mpPose.send({ image: reusableImg });
             }
           }
         } catch (_) { }
-        busy = false;
-      }, 150);
+        if (isPoseRunning) {
+          const elapsed = performance.now() - t0;
+          const nextDelay = Math.max(8, 33 - elapsed);
+          bridgeStreamInterval = setTimeout(pumpFrame, nextDelay);
+        }
+      }
+
+      pumpFrame();
     }
 
     // Interactive ROI Calibration Handlers
