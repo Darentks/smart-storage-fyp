@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
+  resolveBridgeUrl,
   probeCameraStatus,
   pushCameraConfig,
   uploadCameraFirmware,
+  triggerOneClickOtaFlash,
   captureLiveSnapshotUrl,
   getCameras,
   upsertCamera,
@@ -120,10 +122,12 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
   };
 }
 
-export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008', onNotify }) {
+export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
+  const activeBridgeUrl = (bridgeUrl || resolveBridgeUrl()).replace(/\/+$/, '');
   const [cameras, setCameras] = useState([]);
   const [loading, setLoading] = useState(true);
   const [probingAll, setProbingAll] = useState(false);
+  const [flashingAll, setFlashingAll] = useState(false);
   const [snapshotModes, setSnapshotModes] = useState({}); // { [device_id]: 'live' | 'baseline' }
   const [snapshotUrls, setSnapshotUrls] = useState({});   // { [device_id]: url }
   const [otaUploadingId, setOtaUploadingId] = useState(null);
@@ -232,7 +236,7 @@ export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008'
     }
 
     try {
-      await fetch(`${bridgeUrl.replace(/\/$/, '')}/esp32_trigger`, {
+      await fetch(`${activeBridgeUrl}/esp32_trigger`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -245,6 +249,35 @@ export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008'
       notify(`Triggered capture & MQTT state check for ${cam.device_id} (${cam.ip_address})`, 'success');
     } catch {
       notify(`Refreshed direct HTTP snapshot from ${cam.ip_address}`, 'info');
+    }
+  };
+
+  // 1-Click PlatformIO Build & Wireless OTA Flash (Single or Batch)
+  const handleOneClickOtaFlash = async (targetCam = null) => {
+    const targets = targetCam
+      ? [targetCam.ip_address]
+      : cameras.filter((c) => c.status === 'ONLINE').map((c) => c.ip_address);
+    const fallbackTargets = targets.length > 0 ? targets : cameras.map((c) => c.ip_address);
+
+    if (targetCam) setOtaUploadingId(targetCam.device_id);
+    else setFlashingAll(true);
+
+    notify(
+      targetCam
+        ? `Building PlatformIO firmware & flashing ${targetCam.device_id} (${targetCam.ip_address})...`
+        : `Building PlatformIO firmware & flashing ${fallbackTargets.length} camera node(s)...`,
+      'info'
+    );
+
+    try {
+      const res = await triggerOneClickOtaFlash(fallbackTargets, true);
+      const okCount = (res.results || []).filter((r) => r.status === 'success').length;
+      notify(`1-Click OTA Flash complete: ${okCount}/${fallbackTargets.length} node(s) updated.`, okCount > 0 ? 'success' : 'warning');
+    } catch (err) {
+      notify(`1-Click OTA Flash failed: ${err.message}`, 'error');
+    } finally {
+      if (targetCam) setOtaUploadingId(null);
+      else setFlashingAll(false);
     }
   };
 
@@ -380,7 +413,7 @@ export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008'
         const shelfCams = cameras.filter((c) => c.shelf_id === formState.shelf_id);
         const cam1Node = shelfCams.find((c) => Number(c.angle_index) === 1);
         const cam2Node = shelfCams.find((c) => Number(c.angle_index) === 2);
-        await fetch(`${bridgeUrl.replace(/\/$/, '')}/esp32_assign_ips`, {
+        await fetch(`${activeBridgeUrl}/esp32_assign_ips`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -437,6 +470,9 @@ export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008'
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <button type="button" className="btn-action" onClick={handleProbeAllCameras} disabled={probingAll}>
             {probingAll ? '🔍 Probing All...' : '🔍 Probe All 12 Nodes'}
+          </button>
+          <button type="button" className="btn-action" onClick={() => handleOneClickOtaFlash(null)} disabled={flashingAll}>
+            {flashingAll ? '🚀 Building & Flashing...' : '🚀 1-Click Build & OTA Flash All'}
           </button>
           <button type="button" className="btn-primary" onClick={() => openProvisionModal(null)}>
             ➕ Add / Provision Camera Node
@@ -581,7 +617,16 @@ export default function Esp32CameraManager({ bridgeUrl = 'http://localhost:8008'
                         <button
                           type="button"
                           className="btn-action"
-                          style={{ fontSize: 11, padding: '5px 8px', justifyContent: 'center', color: 'var(--danger)', borderColor: 'rgba(244,63,94,0.35)' }}
+                          style={{ fontSize: 11, padding: '5px 8px', justifyContent: 'center' }}
+                          disabled={otaUploadingId === cam.device_id}
+                          onClick={() => handleOneClickOtaFlash(cam)}
+                        >
+                          {otaUploadingId === cam.device_id ? '⏳ Flashing...' : '🚀 1-Click OTA'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-action"
+                          style={{ fontSize: 11, padding: '5px 8px', justifyContent: 'center', color: 'var(--danger)', borderColor: 'rgba(244,63,94,0.35)', gridColumn: 'span 2' }}
                           onClick={() => handleDeleteCamera(cam)}
                         >
                           🗑 Delete

@@ -1135,23 +1135,6 @@
                 value="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102" required />
             </div>
 
-            <!-- Assigned Shelves & Quick Preset Pills -->
-            <div class="form-group">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                <label for="cctvShelvesInput" style="font-size: 11px; font-weight: 600;">Assigned Shelves (JSON
-                  array)</label>
-                <div style="display: flex; gap: 5px;">
-                  <button type="button" class="btn-action" style="font-size: 10px; padding: 2px 6px;"
-                    onclick="setCctvShelvesPreset('[\&quot;SHELF_R1_C1\&quot;]')">&#127919; Column 1 Only:
-                    SHELF_R1_C1</button>
-                  <button type="button" class="btn-action" style="font-size: 10px; padding: 2px 6px;"
-                    onclick="setCctvShelvesPreset('[\&quot;SHELF_R1_C1\&quot;, \&quot;SHELF_R1_C2\&quot;, \&quot;SHELF_R1_C3\&quot;, \&quot;SHELF_R1_C4\&quot;, \&quot;SHELF_R1_C5\&quot;, \&quot;SHELF_R1_C6\&quot;]')">&#128452;
-                    All 6 Shelves: SHELF_R1_C1..C6</button>
-                </div>
-              </div>
-              <input type="text" id="cctvShelvesInput" class="form-control" value='["SHELF_R1_C1"]' required />
-            </div>
-
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
               <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
                 <input type="checkbox" id="cctvActiveCheck" checked />
@@ -1778,9 +1761,59 @@
       }, 3500);
     }
 
-    // Get current local bridge base
+    // Get current local bridge base (supports HTTPS / Cloudflare Tunnel / env vars / query param)
     function getBridgeUrl() {
-      return (bridgeUrlInput.value || 'http://localhost:8008').trim().replace(/\/$/, '');
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const queryBridge = params.get('bridge') || params.get('bridge_url');
+        if (queryBridge && queryBridge.trim()) {
+          const cleanQ = queryBridge.trim().replace(/\/+$/, '');
+          localStorage.setItem('smart_storage_bridge_url', cleanQ);
+          if (bridgeUrlInput && bridgeUrlInput.value !== cleanQ) bridgeUrlInput.value = cleanQ;
+          return cleanQ;
+        }
+      } catch (_) { }
+
+      const inputVal = bridgeUrlInput ? bridgeUrlInput.value.trim() : '';
+      if (inputVal && inputVal !== 'http://localhost:8008') {
+        const cleanInput = inputVal.replace(/\/+$/, '');
+        try { localStorage.setItem('smart_storage_bridge_url', cleanInput); } catch (_) { }
+        return cleanInput;
+      }
+
+      try {
+        const saved = localStorage.getItem('smart_storage_bridge_url');
+        if (saved && saved.trim()) {
+          const cleanSaved = saved.trim().replace(/\/+$/, '');
+          if (bridgeUrlInput && (!inputVal || inputVal === 'http://localhost:8008')) {
+            bridgeUrlInput.value = cleanSaved;
+          }
+          return cleanSaved;
+        }
+      } catch (_) { }
+
+      const envBridge = window.NEXT_PUBLIC_BRIDGE_URL || window.VITE_CAMERA_BRIDGE_URL || '';
+      if (envBridge && String(envBridge).trim()) {
+        return String(envBridge).trim().replace(/\/+$/, '');
+      }
+
+      return (inputVal || 'http://localhost:8008').replace(/\/+$/, '');
+    }
+
+    function getBridgeWsUrl() {
+      const base = getBridgeUrl();
+      if (base.startsWith('https://')) return base.replace(/^https:\/\//i, 'wss://');
+      if (base.startsWith('http://')) return base.replace(/^http:\/\//i, 'ws://');
+      return (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + base;
+    }
+
+    if (bridgeUrlInput) {
+      bridgeUrlInput.addEventListener('change', () => {
+        const val = bridgeUrlInput.value.trim().replace(/\/+$/, '');
+        if (val) {
+          try { localStorage.setItem('smart_storage_bridge_url', val); } catch (_) { }
+        }
+      });
     }
 
     // Check Local Bridge Health
@@ -2050,15 +2083,13 @@
       let savedCloud = false;
       let savedBridge = false;
 
-      // 1. Update in Supabase public.compartments (using return=minimal to eliminate egress)
+      // 1. Persist IPs in public.esp32_cameras (angle 1 = Back, angle 2 = Front); compartments holds no IP columns
       try {
-        await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
-          ip_address: ip1,
-          secondary_ip_address: ip2
-        }, 'return=minimal');
+        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.1`, { ip_address: ip1 }, 'return=minimal');
+        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.2`, { ip_address: ip2 }, 'return=minimal');
         savedCloud = true;
       } catch (sbErr) {
-        console.warn('[Save IPs] Supabase PATCH warning:', sbErr);
+        console.warn('[Save IPs] Supabase esp32_cameras PATCH warning:', sbErr);
       }
 
       // 2. Update in Local Python Bridge
@@ -2084,11 +2115,7 @@
         }
         return c;
       });
-      // 4. Sync Panel 4 (esp32_cameras & esp32CameraNodesList) so all panels reflect the assigned IPs
-      try {
-        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.1`, { ip_address: ip1 });
-        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.2`, { ip_address: ip2 });
-      } catch (_) { }
+      // 4. Sync Panel 4 (esp32CameraNodesList) so all panels reflect the assigned IPs (DB already patched in step 1)
       esp32CameraNodesList = (esp32CameraNodesList || []).map(cam => {
         if (cam.shelf_id === shelfId) {
           return {
@@ -2379,9 +2406,7 @@
         const newQty = tmRes.totalBoxes;
         try {
           await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
-            current_quantity: newQty,
-            baseline_image_url: null,
-            baseline_updated_at: new Date().toISOString()
+            current_quantity: newQty
           }, 'return=minimal');
 
           prependLatestAction({
@@ -2636,7 +2661,37 @@
     let lastCloudCompartmentsFetchMs = 0;
     const CLOUD_POLL_INTERVAL_MS = 300000; // 5 minutes throttle for Supabase Egress reduction
 
-    const COMPARTMENT_COLS = 'shelf_id,rack_id,mqtt_client_id,secondary_mqtt_client_id,camera_name,ip_address,secondary_ip_address,current_quantity,max_capacity,baseline_updated_at,tm_model_url,status,rssi_dbm,free_heap_bytes,last_seen_at';
+    // Minimal clean schema columns only (runtime telemetry such as status / RSSI / baselines is bridge-RAM only)
+    const COMPARTMENT_COLS = 'shelf_id,rack_id,current_quantity,max_capacity,tm_model_url';
+
+    // Joins public.esp32_cameras (angle 1 = Back, angle 2 = Front) into compartment rows and
+    // preserves in-memory runtime telemetry from the previous snapshot.
+    function mergeCloudCompartments(rows, cameraRows) {
+      const camsByShelf = {};
+      (cameraRows || []).forEach(cam => {
+        if (!cam || !cam.shelf_id) return;
+        (camsByShelf[cam.shelf_id] = camsByShelf[cam.shelf_id] || {})[Number(cam.angle_index) === 2 ? 2 : 1] = cam;
+      });
+      const prevByShelf = {};
+      (compartmentsData || []).forEach(c => { if (c && c.shelf_id) prevByShelf[c.shelf_id] = c; });
+
+      return rows.map(row => {
+        const prev = prevByShelf[row.shelf_id] || {};
+        const c1 = (camsByShelf[row.shelf_id] || {})[1];
+        const c2 = (camsByShelf[row.shelf_id] || {})[2];
+        const out = { ...prev, ...row };
+        if (c1) {
+          out.ip_address = cleanCameraHost(c1.ip_address) || prev.ip_address;
+          out.mqtt_client_id = String(c1.device_id || '').replace(/_CAM1$/i, '') || prev.mqtt_client_id;
+          out.camera_name = c1.camera_name || prev.camera_name;
+        }
+        if (c2) {
+          out.secondary_ip_address = cleanCameraHost(c2.ip_address) || prev.secondary_ip_address;
+          out.secondary_mqtt_client_id = c2.device_id || prev.secondary_mqtt_client_id;
+        }
+        return out;
+      });
+    }
 
     // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
     function mergeBridgeTelemetry(bridgeJson) {
@@ -2728,9 +2783,15 @@
           }
 
           if (data && Array.isArray(data) && data.length > 0) {
+            let cameraRows = [];
+            try {
+              cameraRows = await sbRest('esp32_cameras', 'GET', `?select=${CAMERA_COLS}&order=shelf_id.asc,angle_index.asc`) || [];
+            } catch (camErr) {
+              console.warn('esp32_cameras fetch skipped:', camErr);
+            }
             dbStatusDot.className = 'status-dot connected';
             dbStatusText.textContent = 'Cloud DB: Connected';
-            compartmentsData = data;
+            compartmentsData = mergeCloudCompartments(data, cameraRows);
           }
         } catch (err) {
           console.warn('Cloud compartments fetch skipped/failed:', err);
@@ -2786,9 +2847,17 @@
     async function loadComparisonLogs() {
       if (!comparisonLogsData || comparisonLogsData.length === 0) loadLatestActionsFromLocal();
       try {
-        const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
-        if (bridgeResp.ok) mergeBridgeTelemetry(await bridgeResp.json());
-      } catch (e) { }
+        const latestResp = await fetch(`${getBridgeUrl()}/api/comparisons/latest`, { cache: 'no-store' });
+        if (latestResp.ok) {
+          const latestList = await latestResp.json();
+          if (Array.isArray(latestList) && latestList.length > 0) {
+            comparisonLogsData = latestList.slice(0, 5);
+            saveLatestActions();
+          }
+        }
+      } catch (_) {
+        // Bridge offline or unreachable; fallback to local cache
+      }
       renderComparisonLogs(comparisonLogsData || []);
     }
 
@@ -3070,19 +3139,37 @@
     let esp32NodeOtaUploadingMap = {};
 
     function cleanCameraHost(ip) {
-      return String(ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+      return String(ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/\d+$/, '').replace(/\/+$/, '');
+    }
+
+    function shouldProxyLanThroughBridge() {
+      return window.location.protocol === 'https:';
+    }
+
+    function fileToBase64DataUrl(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = (err) => reject(err);
+        reader.readAsDataURL(file);
+      });
     }
 
     async function probeCameraStatus(ip) {
       const host = cleanCameraHost(ip);
       if (!host) throw new Error('Camera IP address is required');
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
+      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const useProxy = shouldProxyLanThroughBridge();
+      const targetUrl = useProxy
+        ? `${getBridgeUrl()}/esp32_probe?ip=${encodeURIComponent(host)}`
+        : `http://${host}/status`;
       try {
-        const res = await fetch(`http://${host}/status`, {
+        const res = await fetch(targetUrl, {
           method: 'GET',
           signal: controller.signal,
-          headers: { Accept: 'application/json' }
+          headers: { Accept: 'application/json' },
+          cache: 'no-store'
         });
         if (!res.ok) throw new Error(`HTTP ${res.status} from ${host}`);
         const data = await res.json();
@@ -3113,12 +3200,14 @@
       };
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const useProxy = shouldProxyLanThroughBridge();
+      const targetUrl = useProxy ? `${getBridgeUrl()}/esp32_nvs_config` : `http://${host}/config`;
       try {
-        const res = await fetch(`http://${host}/config`, {
+        const res = await fetch(targetUrl, {
           method: 'POST',
           signal: controller.signal,
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
+          body: JSON.stringify(useProxy ? { ip: host, config: body } : body)
         });
         if (!res.ok) throw new Error(`Failed to push NVS config (HTTP ${res.status})`);
         return await res.json();
@@ -3131,6 +3220,25 @@
       const host = cleanCameraHost(ip);
       if (!host) throw new Error('Camera IP address is required');
       if (!binFile) throw new Error('Firmware .bin file is required');
+
+      if (shouldProxyLanThroughBridge()) {
+        const fileB64 = await fileToBase64DataUrl(binFile);
+        const res = await fetch(`${getBridgeUrl()}/esp32_ota_upload`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ip: host,
+            filename: binFile.name || 'firmware.bin',
+            file_base64: fileB64
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.status === 'failed') {
+          throw new Error(data.error || `OTA upload via bridge failed (HTTP ${res.status})`);
+        }
+        return { ok: true, message: data.device_response || 'OK - Rebooting' };
+      }
+
       const formData = new FormData();
       formData.append('file', binFile, binFile.name || 'firmware.bin');
       const res = await fetch(`http://${host}/update`, {
@@ -3146,10 +3254,14 @@
       const host = cleanCameraHost(ip);
       if (!host) return '';
       const cleanMode = mode === 'baseline' ? 'baseline' : 'live';
+      if (shouldProxyLanThroughBridge()) {
+        return `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(host)}&mode=${cleanMode}&t=${Date.now()}`;
+      }
       return `http://${host}/capture?mode=${cleanMode}&flash=${flash}&t=${Date.now()}`;
     }
 
-    const CAMERA_COLS = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address,secondary_ip_address,status,rssi_dbm,last_seen';
+    // Minimal clean schema: public.esp32_cameras = static hardware mapping only (status / RSSI are runtime-only)
+    const CAMERA_COLS = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address';
 
     async function getCameras(forceRefresh = false) {
       if (!forceRefresh) {
@@ -3202,42 +3314,48 @@
     }
 
     async function upsertCamera(cam) {
+      // DB record contains ONLY schema columns; status / rssi_dbm / last_seen stay in browser memory
       const record = {
         device_id: String(cam.device_id || '').trim(),
         camera_name: String(cam.camera_name || cam.device_id || '').trim(),
         rack_id: String(cam.rack_id || 'RACK_01').trim(),
         shelf_id: String(cam.shelf_id || 'SHELF_R1_C1').trim(),
         angle_index: Number(cam.angle_index) === 2 ? 2 : 1,
-        ip_address: cleanCameraHost(cam.ip_address),
-        status: String(cam.status || 'ONLINE').toUpperCase(),
-        rssi_dbm: typeof cam.rssi_dbm === 'number' ? cam.rssi_dbm : null,
-        last_seen: cam.last_seen || new Date().toISOString()
+        ip_address: cleanCameraHost(cam.ip_address)
       };
       if (cam.id && !String(cam.id).startsWith('cam-')) {
         record.id = cam.id;
       }
       let savedRow = null;
-      if (supabaseClient) {
-        const { data, error } = await supabaseClient
-          .from('esp32_cameras')
-          .upsert(record, { onConflict: 'device_id' })
-          .select(CAMERA_COLS)
-          .single();
-        if (!error && data) savedRow = data;
-      }
-      // Also sync assigned IP into public.compartments so Panels 1, 2 & 4 stay in sync
       try {
-        const compPatch = record.angle_index === 2
-          ? { secondary_ip_address: record.ip_address, secondary_mqtt_client_id: record.device_id }
-          : { ip_address: record.ip_address, mqtt_client_id: record.device_id.replace(/_CAM1$/i, '') };
-        await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(record.shelf_id)}`, compPatch);
-      } catch (_) { }
+        if (supabaseClient) {
+          const { data, error } = await supabaseClient
+            .from('esp32_cameras')
+            .upsert(record, { onConflict: 'device_id' })
+            .select(CAMERA_COLS)
+            .single();
+          if (!error && data) savedRow = data;
+        } else {
+          const rows = await sbRest('esp32_cameras', 'POST', '?on_conflict=device_id&select=' + CAMERA_COLS, record, 'resolution=merge-duplicates,return=representation');
+          if (Array.isArray(rows) && rows[0]) savedRow = rows[0];
+        }
+      } catch (dbErr) {
+        console.warn('[upsertCamera] Supabase esp32_cameras upsert warning:', dbErr);
+      }
+
+      // Runtime fields (status/rssi/last_seen) are merged on top of the DB row, never persisted
+      const runtime = {
+        status: String(cam.status || 'ONLINE').toUpperCase(),
+        rssi_dbm: typeof cam.rssi_dbm === 'number' ? cam.rssi_dbm : null,
+        last_seen: cam.last_seen || new Date().toISOString()
+      };
+      const result = { ...cam, ...record, ...(savedRow || {}), ...runtime, ip_address: cleanCameraHost((savedRow && savedRow.ip_address) || record.ip_address) };
 
       // Update local storage cache
       try {
         const list = await getCameras();
         const idx = list.findIndex(item => item.device_id === record.device_id || (cam.id && item.id === cam.id));
-        const merged = savedRow || { id: cam.id || `cam-${Date.now()}`, ...record };
+        const merged = { id: cam.id || `cam-${Date.now()}`, ...record, ...(savedRow || {}) };
         if (idx >= 0) {
           list[idx] = { ...list[idx], ...merged };
         } else {
@@ -3246,7 +3364,7 @@
         localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(list));
       } catch (_) { }
 
-      return savedRow || { ...cam, ...record };
+      return result;
     }
 
     async function deleteCamera(id) {
@@ -3263,7 +3381,19 @@
     async function loadEsp32CameraNodes() {
       try {
         const rows = await getCameras();
-        esp32CameraNodesList = rows;
+        // DB rows carry no telemetry: keep in-memory status / RSSI from the previous snapshot
+        const prevByDevice = {};
+        (esp32CameraNodesList || []).forEach(c => { prevByDevice[c.device_id] = c; });
+        esp32CameraNodesList = rows.map(r => {
+          const prev = prevByDevice[r.device_id] || {};
+          return {
+            ...r,
+            ip_address: cleanCameraHost(r.ip_address),
+            status: prev.status || 'OFFLINE',
+            rssi_dbm: prev.rssi_dbm != null ? prev.rssi_dbm : null,
+            last_seen: prev.last_seen || null
+          };
+        });
         renderEsp32CameraManager();
       } catch (err) {
         console.warn('loadEsp32CameraNodes fallback:', err);
@@ -3290,7 +3420,7 @@
           const isOnline = String(cam.status || '').toUpperCase() === 'ONLINE';
           const mode = esp32NodeSnapshotModeMap[cam.device_id] || 'live';
           const cb = esp32NodeCacheBustMap[cam.device_id];
-          const snapUrl = (cam.ip_address && cb) ? `http://${cleanCameraHost(cam.ip_address)}/capture?mode=${mode}&flash=0&t=${cb}` : '';
+          const snapUrl = (cam.ip_address && cb) ? captureLiveSnapshotUrl(cam.ip_address, mode, 0) : '';
           const isUploading = Boolean(esp32NodeOtaUploadingMap[cam.device_id]);
           const safeJson = encodeURIComponent(JSON.stringify(cam));
 
@@ -3816,8 +3946,6 @@
                   compartmentsData[idx] = {
                     ...prev,
                     ...payload.new,
-                    baseline_image_url: payload.new.baseline_image_url || prev.baseline_image_url,
-                    baseline_image_2_url: payload.new.baseline_image_2_url || prev.baseline_image_2_url,
                   };
                 } else {
                   compartmentsData.push(payload.new);
@@ -3846,7 +3974,6 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.101',
         rtsp_url: 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102',
-        assigned_shelves: ['SHELF_R1_C1'],
         is_active: true,
         status: 'ONLINE'
       },
@@ -3856,7 +3983,6 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.102',
         rtsp_url: 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102',
-        assigned_shelves: ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'],
         is_active: false,
         status: 'OFFLINE'
       },
@@ -3866,7 +3992,6 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.103',
         rtsp_url: 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102',
-        assigned_shelves: ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'],
         is_active: false,
         status: 'OFFLINE'
       }
@@ -4716,17 +4841,11 @@
       showToast(`Generated CCTV stream source: ${rtspEl.value.includes('@') ? rtspEl.value.replace(/:[^:@]+@/, ':***@') : rtspEl.value}`, 'info');
     }
 
-    function setCctvShelvesPreset(presetJson) {
-      const el = document.getElementById('cctvShelvesInput');
-      if (el) el.value = presetJson;
-    }
-
     function resetCctvForm() {
       document.getElementById('cctvIdInput').value = 'CCTV_01';
       document.getElementById('cctvNameInput').value = 'Hikvision CCTV 1 - Left Angle (Column 1)';
       document.getElementById('cctvIpInput').value = '192.168.0.101';
       document.getElementById('cctvRtspInput').value = 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102';
-      document.getElementById('cctvShelvesInput').value = '["SHELF_R1_C1"]';
       document.getElementById('cctvActiveCheck').checked = true;
     }
 
@@ -4736,19 +4855,11 @@
       const cameraName = (document.getElementById('cctvNameInput').value || '').trim();
       const ipAddress = (document.getElementById('cctvIpInput').value || '192.168.0.101').trim();
       const rtspUrl = (document.getElementById('cctvRtspInput').value || '').trim();
-      const shelvesRaw = (document.getElementById('cctvShelvesInput').value || '["SHELF_R1_C1"]').trim();
       const isActive = document.getElementById('cctvActiveCheck').checked;
 
       if (!cctvId || !rtspUrl) {
         showToast('Please enter both CCTV ID and RTSP URL', 'error');
         return;
-      }
-
-      let parsedShelves = ['SHELF_R1_C1'];
-      try {
-        parsedShelves = JSON.parse(shelvesRaw);
-      } catch (e) {
-        parsedShelves = shelvesRaw.split(',').map(s => s.trim().replace(/['"\[\]]/g, '')).filter(Boolean);
       }
 
       const payload = {
@@ -4757,9 +4868,7 @@
         rack_id: 'RACK_01',
         ip_address: ipAddress,
         rtsp_url: rtspUrl,
-        assigned_shelves: parsedShelves,
-        is_active: isActive,
-        status: isActive ? 'ONLINE' : 'OFFLINE'
+        is_active: isActive
       };
 
       try {
@@ -4825,13 +4934,6 @@
           ? cam.rtsp_url.replace(/:[^:@]+@/, ':***@')
           : (cam.rtsp_url || '0');
 
-        let shelvesArr = [];
-        try {
-          shelvesArr = Array.isArray(cam.assigned_shelves) ? cam.assigned_shelves : JSON.parse(cam.assigned_shelves || '[]');
-        } catch (_) {
-          shelvesArr = [cam.assigned_shelves || 'SHELF_R1_C1'];
-        }
-
         const encodedJson = encodeURIComponent(JSON.stringify(cam));
 
         return `
@@ -4848,14 +4950,10 @@
               <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); margin-bottom: 6px; word-break: break-all;">
                 &#127760; ${maskedRtsp}
               </div>
-
-              <div style="display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 8px;">
-                ${shelvesArr.map(s => `<span style="font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.3); color: var(--primary); font-family: var(--font-mono);">${s}</span>`).join('')}
-              </div>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;">
-              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
                 <button type="button" class="btn-action" style="font-size: 11px; padding: 5px 8px; justify-content: center; border-color: var(--primary); color: var(--primary);" onclick="calibrateCctvRoi('${cam.cctv_id}', '${cam.rtsp_url}')">
                   &#127919; Calibrate ROI
                 </button>
@@ -4884,14 +4982,6 @@
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
       toggleRoiCalibrationMode(true);
-      const cam = cctvCamerasList.find(c => c.cctv_id === cctvId);
-      if (cam && Array.isArray(cam.assigned_shelves) && cam.assigned_shelves[0]) {
-        const shelfSelect = document.getElementById('cctvCalibShelfSelect');
-        if (shelfSelect) {
-          shelfSelect.value = cam.assigned_shelves[0];
-          updateCalibCoordsText();
-        }
-      }
       useCctvAsTrackerSource(rtspUrl);
       showToast(`Ready to calibrate ROI for ${cctvId} on its CCTV feed. Drag box on canvas above.`, 'info');
     }
@@ -4924,9 +5014,8 @@
         const cam = JSON.parse(decodeURIComponent(encodedJson));
         document.getElementById('cctvIdInput').value = cam.cctv_id || 'CCTV_01';
         document.getElementById('cctvNameInput').value = cam.camera_name || '';
-        document.getElementById('cctvIpInput').value = cam.ip_address || '192.168.0.101';
+        document.getElementById('cctvIpInput').value = cleanCameraHost(cam.ip_address) || '192.168.0.101';
         document.getElementById('cctvRtspInput').value = cam.rtsp_url || '';
-        document.getElementById('cctvShelvesInput').value = JSON.stringify(cam.assigned_shelves || ['SHELF_R1_C1']);
         document.getElementById('cctvActiveCheck').checked = cam.is_active !== false;
         document.getElementById('cctvCameraManagerPanel').scrollIntoView({ behavior: 'smooth' });
         showToast(`Loaded ${cam.cctv_id} into form`, 'info');
@@ -4956,6 +5045,22 @@
     function pollEsp32Nodes() {
       pollLocalBridgeOnly();
     }
+
+    // Unified esp32CameraService singleton exposed on window for shared CRUD + NVS + OTA parity
+    window.esp32CameraService = {
+      DEFAULT_12_ESP32_CAMERAS,
+      resolveBridgeUrl: getBridgeUrl,
+      resolveBridgeWsUrl: getBridgeWsUrl,
+      probeCameraStatus,
+      pushCameraConfig,
+      uploadCameraFirmware,
+      captureLiveSnapshotUrl,
+      getCameras,
+      upsertCamera,
+      deleteCamera,
+      triggerOneClickOtaFlash: oneClickOtaFlashNode,
+      flashAllOnlineEsp32Cameras,
+    };
 
     // Initialization
     if (tmModelUrlInput) {

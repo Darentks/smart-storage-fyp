@@ -15,20 +15,23 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*args: Any, **kwargs: Any) -> bool:
+        return False
 
 if TYPE_CHECKING:
     from supabase import Client
 
-DEFAULT_SUPABASE_URL = "https://hrufeowqpnyjfwxydocm.supabase.co"
-DEFAULT_SUPABASE_KEY = "sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt"
+DEFAULT_SUPABASE_URL = "https://tosvjwxvcuxvgtcmakta.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l"
 
 # Lightweight non-Base64 column lists to prevent Supabase Egress bloat
-COMPARTMENTS_LIGHT_COLS = (
-    "shelf_id,rack_id,mqtt_client_id,camera_name,ip_address,secondary_ip_address,"
-    "secondary_mqtt_client_id,current_quantity,max_capacity,baseline_updated_at,"
-    "tm_model_url,status,rssi_dbm,free_heap_bytes,last_seen_at,created_at"
-)
+# Minimal clean schema: public.compartments only stores inventory state
+COMPARTMENTS_LIGHT_COLS = "shelf_id,rack_id,current_quantity,max_capacity,tm_model_url"
+# public.esp32_cameras stores the static hardware mapping (IP per angle)
+ESP32_CAMERAS_COLS = "id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address"
 COMPARISON_LOGS_LIGHT_COLS = (
     "log_id,shelf_id,mqtt_client_id,trigger_action,diff_score,similarity_score,"
     "matched_box_count,scenario_label,state_delta,quantity_before,quantity_after,created_at"
@@ -186,7 +189,7 @@ def find_and_load_env() -> Optional[str]:
             loaded_path = path
             break
 
-    if loaded_path and (not os.getenv("VITE_SUPABASE_URL") and not os.getenv("SUPABASE_URL")):
+    if loaded_path and (not os.getenv("NEXT_PUBLIC_SUPABASE_URL") and not os.getenv("VITE_SUPABASE_URL") and not os.getenv("SUPABASE_URL")):
         try:
             with open(loaded_path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -207,14 +210,16 @@ def find_and_load_env() -> Optional[str]:
 
 def get_resolved_supabase_url() -> str:
     find_and_load_env()
-    url = os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
+    url = os.getenv("NEXT_PUBLIC_SUPABASE_URL") or os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL")
     return (url.strip() if url else DEFAULT_SUPABASE_URL).rstrip("/")
 
 
 def get_resolved_supabase_key() -> str:
     find_and_load_env()
     key = (
-        os.getenv("SUPABASE_KEY")
+        os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
+        or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+        or os.getenv("SUPABASE_KEY")
         or os.getenv("VITE_SUPABASE_ANON_KEY")
         or os.getenv("SUPABASE_ANON_KEY")
         or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -281,7 +286,7 @@ def get_active_camera_record() -> Optional[Dict[str, Any]]:
                     client.table(table_name)
                     .select("*")
                     .eq("is_active", True)
-                    .order("created_at", desc=False)
+                    .order("cctv_id", desc=False)
                     .limit(1)
                     .execute()
                 )
@@ -292,7 +297,7 @@ def get_active_camera_record() -> Optional[Dict[str, Any]]:
 
         # REST Fallback
         fallback = SupabaseRestFallback()
-        records = fallback.select(table_name, "?select=*&is_active=eq.true&order=created_at.asc&limit=1")
+        records = fallback.select(table_name, "?select=*&is_active=eq.true&order=cctv_id.asc&limit=1")
         if records:
             return records[0]
 
@@ -322,136 +327,72 @@ def get_active_rtsp_url(default_source: Union[int, str] = 0) -> Union[int, str]:
 # SUPABASE OPERATIONS: public.compartments & TELEMETRY
 # =============================================================================
 
+def _clean_host(ip: Any) -> str:
+    """Strips scheme, path and PostgreSQL INET CIDR suffixes (e.g. '192.168.0.201/32')."""
+    return str(ip or "").strip().split("//")[-1].split("/")[0].strip()
+
+
 def list_esp32_cameras() -> List[Dict[str, Any]]:
     """
-    READ: Fetches all registered shelf compartments & ESP32 runtime state
-    from the Supabase 'compartments' table ordered by shelf_id (excluding Base64 columns).
+    READ: Fetches shelf compartments (public.compartments) and merges the static camera mapping
+    from public.esp32_cameras (angle 1 -> ip_address / mqtt_client_id, angle 2 -> secondary_*).
+    Live telemetry (status, rssi, heap, last_seen) is NOT stored in Supabase; it lives in the bridge RAM.
     """
+    compartments: List[Dict[str, Any]] = []
+    cameras: List[Dict[str, Any]] = []
+
     client = get_supabase_client()
     if client is not None:
         try:
-            resp = client.table("compartments").select(COMPARTMENTS_LIGHT_COLS).order("shelf_id", desc=False).execute()
-            return resp.data or []
+            compartments = client.table("compartments").select(COMPARTMENTS_LIGHT_COLS).order("shelf_id", desc=False).execute().data or []
+            cameras = (
+                client.table("esp32_cameras").select(ESP32_CAMERAS_COLS)
+                .order("shelf_id", desc=False).order("angle_index", desc=False).execute().data or []
+            )
         except Exception as exc:
-            print(f"[ConfigLoader] Warning: SDK read 'compartments' failed ({exc}), trying SupabaseRestFallback.")
+            print(f"[ConfigLoader] Warning: SDK read failed ({exc}), trying SupabaseRestFallback.")
+            compartments, cameras = [], []
 
-    fallback = SupabaseRestFallback()
-    return fallback.select("compartments", f"?select={COMPARTMENTS_LIGHT_COLS}&order=shelf_id.asc")
+    if not compartments:
+        fallback = SupabaseRestFallback()
+        compartments = fallback.select("compartments", f"?select={COMPARTMENTS_LIGHT_COLS}&order=shelf_id.asc") or []
+        cameras = fallback.select(
+            "esp32_cameras", f"?select={ESP32_CAMERAS_COLS}&order=shelf_id.asc,angle_index.asc"
+        ) or []
+
+    cams_by_shelf: Dict[str, Dict[int, Dict[str, Any]]] = {}
+    for cam in cameras:
+        try:
+            cams_by_shelf.setdefault(cam.get("shelf_id"), {})[int(cam.get("angle_index") or 1)] = cam
+        except (TypeError, ValueError):
+            continue
+
+    merged: List[Dict[str, Any]] = []
+    for comp in compartments:
+        row = dict(comp)
+        shelf_cams = cams_by_shelf.get(row.get("shelf_id"), {})
+        cam1, cam2 = shelf_cams.get(1), shelf_cams.get(2)
+        if cam1:
+            row["ip_address"] = _clean_host(cam1.get("ip_address")) or None
+            row["mqtt_client_id"] = str(cam1.get("device_id") or "").replace("_CAM1", "") or None
+            row["camera_name"] = cam1.get("camera_name")
+        if cam2:
+            row["secondary_ip_address"] = _clean_host(cam2.get("ip_address")) or None
+            row["secondary_mqtt_client_id"] = cam2.get("device_id")
+        merged.append(row)
+    return merged
 
 
 def update_esp32_health_in_supabase(node_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """
-    Updates live health status, ip_address / secondary_ip_address, rssi_dbm, free_heap_bytes, and last_seen_at
-    in 'public.compartments' whenever a 30-second MQTT heartbeat arrives on 'iotlab/storage/health'.
-    Identifies the compartment by shelf_id or mqtt_client_id.
+    Minimal clean schema: status / rssi_dbm / free_heap_bytes / last_seen_at are runtime telemetry and are
+    kept only in the bridge's in-memory edge_nodes. Nothing is written to Supabase; the payload is echoed back.
     """
-    device_id = str(node_payload.get("device_id") or node_payload.get("mqtt_client_id") or "").strip()
-    shelf_id = str(node_payload.get("shelf_id") or "").strip()
-
-    # If shelf_id is missing, attempt to derive it from device_id (e.g. ESP32_R1_C1 or ESP32_R1_C1_CAM2)
-    if not shelf_id and device_id:
-        clean_dev = device_id.upper().replace("_CAM1", "").replace("_CAM2", "")
-        if clean_dev.startswith("ESP32_"):
-            shelf_id = f"SHELF_{clean_dev.replace('ESP32_', '')}"
-
-    if not device_id and not shelf_id:
-        return None
-
-    now_iso = datetime.now(timezone.utc).isoformat()
-    raw_status = str(node_payload.get("status", "ONLINE")).upper()
-    normalized_status = "ONLINE" if raw_status in ["ALIVE", "ONLINE"] else raw_status
-
-    update_fields: Dict[str, Any] = {
-        "status": normalized_status,
-        "last_seen_at": now_iso,
-    }
-
-    raw_ip = str(node_payload.get("ip_address") or node_payload.get("ip") or "").strip()
-
-    # Solution 3: Separate CAM1 vs. CAM2 IP columns on MQTT heartbeat
-    is_cam2 = device_id.upper().endswith("_CAM2")
-    if is_cam2:
-        if raw_ip:
-            update_fields["secondary_ip_address"] = raw_ip
-        if device_id:
-            update_fields["secondary_mqtt_client_id"] = device_id
-    else:
-        if raw_ip:
-            update_fields["ip_address"] = raw_ip
-        if device_id:
-            update_fields["mqtt_client_id"] = device_id
-
-    if "rssi_dbm" in node_payload and node_payload["rssi_dbm"] is not None:
-        try:
-            update_fields["rssi_dbm"] = int(node_payload["rssi_dbm"])
-        except (ValueError, TypeError):
-            pass
-    if "free_heap_bytes" in node_payload and node_payload["free_heap_bytes"] is not None:
-        try:
-            update_fields["free_heap_bytes"] = int(node_payload["free_heap_bytes"])
-        except (ValueError, TypeError):
-            pass
-
-    client = get_supabase_client()
-    if client is not None:
-        try:
-            query = client.table("compartments").update(update_fields)
-            if shelf_id:
-                query = query.eq("shelf_id", shelf_id)
-            elif is_cam2:
-                query = query.eq("secondary_mqtt_client_id", device_id)
-            elif device_id:
-                query = query.eq("mqtt_client_id", device_id)
-
-            resp = query.execute()
-            if resp.data and len(resp.data) > 0:
-                return resp.data[0]
-
-            # Auto-insert if node row doesn't exist yet (primary node only)
-            if shelf_id and not is_cam2:
-                insert_fields = dict(update_fields)
-                insert_fields["shelf_id"] = shelf_id
-                insert_fields["mqtt_client_id"] = device_id or f"ESP32_{shelf_id.replace('SHELF_', '')}"
-                insert_fields.setdefault("rack_id", node_payload.get("rack_id", "RACK_01"))
-                insert_fields.setdefault("camera_name", node_payload.get("camera_name", f"ESP32 Node ({shelf_id})"))
-                insert_fields.setdefault("current_quantity", 4)
-                insert_fields.setdefault("max_capacity", 4)
-                insert_resp = client.table("compartments").insert(insert_fields).execute()
-                return insert_resp.data[0] if insert_resp.data else None
-
-            return None
-        except Exception as exc:
-            print(f"[ConfigLoader] Health telemetry SDK sync skipped ({exc}), trying SupabaseRestFallback.")
-
-    # REST Fallback
-    fallback = SupabaseRestFallback()
-    if shelf_id:
-        query_param = f"?shelf_id=eq.{urllib.parse.quote(str(shelf_id))}"
-    elif is_cam2:
-        query_param = f"?secondary_mqtt_client_id=eq.{urllib.parse.quote(str(device_id))}"
-    else:
-        query_param = f"?mqtt_client_id=eq.{urllib.parse.quote(str(device_id))}"
-
-    updated = fallback.update("compartments", query_param, update_fields, prefer="return=minimal")
-    if updated:
-        return updated[0]
-
-    if shelf_id and not is_cam2:
-        insert_fields = dict(update_fields)
-        insert_fields["shelf_id"] = shelf_id
-        insert_fields["mqtt_client_id"] = device_id or f"ESP32_{shelf_id.replace('SHELF_', '')}"
-        insert_fields.setdefault("rack_id", node_payload.get("rack_id", "RACK_01"))
-        insert_fields.setdefault("camera_name", node_payload.get("camera_name", f"ESP32 Node ({shelf_id})"))
-        insert_fields.setdefault("current_quantity", 4)
-        insert_fields.setdefault("max_capacity", 4)
-        inserted = fallback.insert("compartments", insert_fields)
-        return inserted[0] if inserted else None
-
-    return None
+    return dict(node_payload) if node_payload else None
 
 
 # =============================================================================
-# SUPABASE OPERATIONS: 30s BASELINE & TEACHABLE MACHINE INVENTORY DELTA
+# SUPABASE OPERATIONS: TEACHABLE MACHINE INVENTORY DELTA
 # =============================================================================
 
 def update_compartment_baseline_in_supabase(
@@ -461,27 +402,10 @@ def update_compartment_baseline_in_supabase(
     baseline_image_2_url: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Updates baseline_updated_at = now(), status = 'ONLINE', and optionally ip_address
-    in public.compartments using Prefer: return=minimal (never uploads Base64 strings).
+    Minimal clean schema: 30s baselines are RAM-only (reference_validator baseline_cache).
+    No database write occurs; returns a lightweight local record.
     """
-    shelf_id = shelf_id.strip()
-    now_iso = datetime.now(timezone.utc).isoformat()
-    update_data: Dict[str, Any] = {
-        "baseline_updated_at": now_iso,
-        "status": "ONLINE",
-        "last_seen_at": now_iso,
-    }
-    if ip_address:
-        update_data["ip_address"] = str(ip_address).strip()
-
-    _supabase_rest(
-        method="PATCH",
-        table="compartments",
-        query=f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}",
-        payload=update_data,
-        prefer="return=minimal",
-    )
-    return update_data
+    return {"shelf_id": shelf_id.strip(), "ip_address": _clean_host(ip_address) or None}
 
 
 def apply_inventory_delta_in_supabase(
@@ -529,12 +453,7 @@ def apply_inventory_delta_in_supabase(
     now_iso = datetime.now(timezone.utc).isoformat()
     derived_action = "BORROW" if quantity_after < quantity_before else "RETURN"
 
-    update_data: Dict[str, Any] = {
-        "current_quantity": quantity_after,
-        "baseline_updated_at": now_iso,
-        "last_seen_at": now_iso,
-        "status": "ONLINE",
-    }
+    update_data: Dict[str, Any] = {"current_quantity": quantity_after}
     _supabase_rest(
         method="PATCH",
         table="compartments",
@@ -560,41 +479,16 @@ def apply_inventory_delta_in_supabase(
         "quantity_after": quantity_after,
         "created_at": now_iso,
     }
-    _supabase_rest(
-        method="POST",
-        table="comparison_logs",
-        payload=db_log_record,
-        prefer="return=minimal",
-    )
-
+    # Comparison logging is handled strictly in local in-memory deque (maxlen=5) in camera_service.py
     local_log = dict(db_log_record)
     local_log["before_image_url"] = comparison_result.get("before_image_url") or comparison_result.get("before_image")
     local_log["after_image_url"] = comparison_result.get("after_image_url") or comparison_result.get("after_image")
     return local_log
 
 
-def list_comparison_logs(limit: int = 10) -> List[Dict[str, Any]]:
+def list_comparison_logs(limit: int = 5) -> List[Dict[str, Any]]:
     """
-    Fetches recent rows from public.comparison_logs ordered by created_at desc (excluding Base64 columns).
+    Deprecated database query: comparison logs are now stored strictly in the
+    local in-memory deque (maxlen=5) in camera_service.py (GET /api/comparisons/latest).
     """
-    safe_limit = min(max(1, int(limit)), 10)
-    client = get_supabase_client()
-    if client is not None:
-        try:
-            resp = (
-                client.table("comparison_logs")
-                .select(COMPARISON_LOGS_LIGHT_COLS)
-                .neq("state_delta", "NO_CHANGE")
-                .order("created_at", desc=True)
-                .limit(safe_limit)
-                .execute()
-            )
-            return resp.data or []
-        except Exception as exc:
-            print(f"[ConfigLoader] Warning: SDK read 'comparison_logs' failed ({exc}), trying SupabaseRestFallback.")
-
-    fallback = SupabaseRestFallback()
-    return fallback.select(
-        "comparison_logs",
-        f"?select={COMPARISON_LOGS_LIGHT_COLS}&state_delta=neq.NO_CHANGE&order=created_at.desc&limit={safe_limit}",
-    )
+    return []

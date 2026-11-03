@@ -29,7 +29,58 @@ export const DEFAULT_12_ESP32_CAMERAS = [
 ];
 
 function cleanIpAddress(ip) {
-  return String(ip || '').replace(/^https?:\/\//i, '').replace(/\/.*$/, '').trim();
+  return String(ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/\d+$/, '').replace(/\/.*$/, '').trim();
+}
+
+/**
+ * Resolves the local CameraService bridge URL (supporting HTTPS / Cloudflare Tunnel / env vars)
+ * to avoid Mixed Content blocking when hosted on Vercel HTTPS.
+ */
+export function resolveBridgeUrl() {
+  if (typeof window !== 'undefined') {
+    if (typeof window.getBridgeUrl === 'function') {
+      const u = window.getBridgeUrl();
+      if (u) return String(u).replace(/\/+$/, '');
+    }
+    try {
+      const saved = localStorage.getItem('smart_storage_bridge_url');
+      if (saved && saved.trim()) return saved.trim().replace(/\/+$/, '');
+    } catch (e) {}
+    if (window.NEXT_PUBLIC_BRIDGE_URL) return String(window.NEXT_PUBLIC_BRIDGE_URL).replace(/\/+$/, '');
+    if (window.VITE_CAMERA_BRIDGE_URL) return String(window.VITE_CAMERA_BRIDGE_URL).replace(/\/+$/, '');
+  }
+  try {
+    if (typeof import.meta !== 'undefined' && import.meta.env) {
+      const viteUrl = import.meta.env.VITE_CAMERA_BRIDGE_URL || import.meta.env.NEXT_PUBLIC_BRIDGE_URL;
+      if (viteUrl) return String(viteUrl).replace(/\/+$/, '');
+    }
+  } catch (e) {}
+  if (typeof process !== 'undefined' && process.env) {
+    const envUrl = process.env.NEXT_PUBLIC_BRIDGE_URL || process.env.VITE_CAMERA_BRIDGE_URL;
+    if (envUrl) return String(envUrl).replace(/\/+$/, '');
+  }
+  return 'http://localhost:8008';
+}
+
+export function resolveBridgeWsUrl() {
+  const httpUrl = resolveBridgeUrl();
+  if (httpUrl.startsWith('https://')) return httpUrl.replace(/^https:\/\//i, 'wss://');
+  if (httpUrl.startsWith('http://')) return httpUrl.replace(/^http:\/\//i, 'ws://');
+  return `ws://${httpUrl}`;
+}
+
+function shouldProxyLanThroughBridge() {
+  if (typeof window === 'undefined') return false;
+  return window.location?.protocol === 'https:';
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = (err) => reject(err);
+    reader.readAsDataURL(file);
+  });
 }
 
 async function supabaseRestRequest(table, method = 'GET', query = '', body = null, prefer = 'return=minimal') {
@@ -63,10 +114,14 @@ export async function probeCameraStatus(ip) {
   if (!cleanIp) throw new Error('IP address is required to probe camera status.');
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 3000);
+  const timeoutId = setTimeout(() => controller.abort(), 3500);
+  const useBridgeProxy = shouldProxyLanThroughBridge();
+  const targetUrl = useBridgeProxy
+    ? `${resolveBridgeUrl()}/esp32_probe?ip=${encodeURIComponent(cleanIp)}`
+    : `http://${cleanIp}/status`;
 
   try {
-    const resp = await fetch(`http://${cleanIp}/status`, {
+    const resp = await fetch(targetUrl, {
       method: 'GET',
       signal: controller.signal,
       cache: 'no-store',
@@ -96,7 +151,7 @@ export async function probeCameraStatus(ip) {
 
 /**
  * Pushes updated identity and static IP configuration to the ESP32-CAM's onboard NVS
- * via POST http://${ip}/config and triggers an automatic reboot.
+ * via POST http://${ip}/config (or via bridge /esp32_nvs_config on HTTPS) and triggers an automatic reboot.
  * @param {string} ip
  * @param {{device_id: string, rack_id: string, shelf_id: string, camera_name?: string, ip_octet: number}} payload
  */
@@ -105,19 +160,22 @@ export async function pushCameraConfig(ip, payload) {
   if (!cleanIp) throw new Error('Target camera IP is required.');
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 4500);
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  const nvsBody = {
+    device_id: payload.device_id,
+    rack_id: payload.rack_id || 'RACK_01',
+    shelf_id: payload.shelf_id,
+    camera_name: payload.camera_name || `${payload.shelf_id} (${payload.device_id})`,
+    ip_octet: Number(payload.ip_octet),
+  };
+  const useBridgeProxy = shouldProxyLanThroughBridge();
+  const targetUrl = useBridgeProxy ? `${resolveBridgeUrl()}/esp32_nvs_config` : `http://${cleanIp}/config`;
 
   try {
-    const resp = await fetch(`http://${cleanIp}/config`, {
+    const resp = await fetch(targetUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        device_id: payload.device_id,
-        rack_id: payload.rack_id || 'RACK_01',
-        shelf_id: payload.shelf_id,
-        camera_name: payload.camera_name || `${payload.shelf_id} (${payload.device_id})`,
-        ip_octet: Number(payload.ip_octet),
-      }),
+      body: JSON.stringify(useBridgeProxy ? { ip: cleanIp, config: nvsBody } : nvsBody),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -136,6 +194,7 @@ export async function pushCameraConfig(ip, payload) {
 
 /**
  * Uploads compiled firmware (.bin) to the ESP32-CAM via POST http://${ip}/update
+ * (or via bridge /esp32_ota_upload when running on Vercel HTTPS)
  * @param {string} ip
  * @param {File} binFile
  */
@@ -143,6 +202,24 @@ export async function uploadCameraFirmware(ip, binFile) {
   const cleanIp = cleanIpAddress(ip);
   if (!cleanIp) throw new Error('Camera IP address is required for OTA update.');
   if (!binFile) throw new Error('Please select a valid .bin firmware file.');
+
+  if (shouldProxyLanThroughBridge()) {
+    const b64 = await fileToBase64(binFile);
+    const resp = await fetch(`${resolveBridgeUrl()}/esp32_ota_upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ip: cleanIp,
+        filename: binFile.name || 'firmware.bin',
+        file_base64: b64,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data.status === 'failed') {
+      throw new Error(data.error || `OTA Firmware upload via bridge failed (${resp.status})`);
+    }
+    return data;
+  }
 
   const formData = new FormData();
   formData.append('file', binFile, binFile.name || 'firmware.bin');
@@ -172,6 +249,9 @@ export async function uploadCameraFirmware(ip, binFile) {
  */
 export function captureLiveSnapshotUrl(ip, mode = 'live', flash = 0) {
   const cleanIp = cleanIpAddress(ip);
+  if (shouldProxyLanThroughBridge()) {
+    return `${resolveBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(cleanIp)}&mode=${encodeURIComponent(mode)}&t=${Date.now()}`;
+  }
   return `http://${cleanIp}/capture?mode=${encodeURIComponent(mode)}&flash=${flash}&t=${Date.now()}`;
 }
 
@@ -192,7 +272,7 @@ export async function getCameras(forceRefresh = false) {
   }
 
   try {
-    const cols = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address,secondary_ip_address,status,rssi_dbm,last_seen';
+    const cols = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address';
     const rows = await supabaseRestRequest(
       'esp32_cameras',
       'GET',
@@ -221,8 +301,8 @@ export async function getCameras(forceRefresh = false) {
 }
 
 /**
- * Inserts or updates an ESP32-CAM node in Supabase `public.esp32_cameras`
- * and syncs its IP into `public.compartments`
+ * Inserts or updates an ESP32-CAM node in Supabase `public.esp32_cameras` (static mapping columns only).
+ * status / rssi_dbm / last_seen are runtime telemetry: merged into the returned object, never persisted.
  * @param {Object} cam
  */
 export async function upsertCamera(cam) {
@@ -233,6 +313,8 @@ export async function upsertCamera(cam) {
     shelf_id: String(cam.shelf_id || 'SHELF_R1_C1').trim(),
     angle_index: Number(cam.angle_index) === 2 ? 2 : 1,
     ip_address: cleanIpAddress(cam.ip_address || '192.168.0.201'),
+  };
+  const runtime = {
     status: cam.status || 'ONLINE',
     rssi_dbm: cam.rssi_dbm != null ? Number(cam.rssi_dbm) : null,
     last_seen: cam.last_seen || new Date().toISOString(),
@@ -243,9 +325,9 @@ export async function upsertCamera(cam) {
     const res = await supabaseRestRequest(
       'esp32_cameras',
       'POST',
-      '?on_conflict=device_id',
+      '?on_conflict=device_id&select=id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address',
       record,
-      'resolution=merge-duplicates,return=minimal'
+      'resolution=merge-duplicates,return=representation'
     );
     if (Array.isArray(res) && res.length > 0) {
       savedRow = res[0];
@@ -254,34 +336,27 @@ export async function upsertCamera(cam) {
     console.warn('[esp32CameraService] upsertCamera Supabase table fallback:', err.message);
   }
 
-  // Also sync into public.compartments so Panel 1 & Panel 2 stay in sync
-  try {
-    const compPatch = record.angle_index === 2
-      ? { secondary_ip_address: record.ip_address, secondary_mqtt_client_id: record.device_id }
-      : { ip_address: record.ip_address, mqtt_client_id: record.device_id.replace(/_CAM1$/i, '') };
-    await supabaseRestRequest(
-      'compartments',
-      'PATCH',
-      `?shelf_id=eq.${encodeURIComponent(record.shelf_id)}`,
-      compPatch
-    );
-  } catch (e) {}
+  const result = {
+    id: cam.id || `cam-${Date.now()}`,
+    ...record,
+    ...(savedRow || {}),
+    ...runtime,
+    ip_address: cleanIpAddress((savedRow && savedRow.ip_address) || record.ip_address),
+  };
 
-  // Update local cache
+  // Update local cache (DB columns only)
   try {
     const list = await getCameras();
     const idx = list.findIndex(item => item.device_id === record.device_id || (cam.id && item.id === cam.id));
-    const merged = savedRow || { id: cam.id || `cam-${Date.now()}`, ...record };
+    const merged = { id: result.id, ...record, ...(savedRow || {}) };
     if (idx >= 0) {
       list[idx] = { ...list[idx], ...merged };
     } else {
       list.push(merged);
     }
     localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(list));
-    return merged;
-  } catch (e) {
-    return savedRow || { id: cam.id || `cam-${Date.now()}`, ...record };
-  }
+  } catch (e) {}
+  return result;
 }
 
 /**
@@ -325,7 +400,7 @@ export async function triggerOneClickOtaFlash(ips, buildFirst = true, repoPath =
     throw new Error('At least one valid ESP32-CAM IP address is required for OTA flash.');
   }
 
-  const bridgeUrl = (typeof window !== 'undefined' && window.getBridgeUrl ? window.getBridgeUrl() : 'http://localhost:8008').replace(/\/+$/, '');
+  const bridgeUrl = resolveBridgeUrl();
   const resp = await fetch(`${bridgeUrl}/esp32_ota_flash`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -345,6 +420,8 @@ export async function triggerOneClickOtaFlash(ips, buildFirst = true, repoPath =
 
 const esp32CameraService = {
   DEFAULT_12_ESP32_CAMERAS,
+  resolveBridgeUrl,
+  resolveBridgeWsUrl,
   probeCameraStatus,
   pushCameraConfig,
   uploadCameraFirmware,
