@@ -8,9 +8,24 @@ import os
 import time
 from typing import Any
 import numpy as np
-import cv2
-import torch
-from ultralytics import YOLO
+cv2: Any
+try:
+    import cv2 as _cv2_module
+    cv2 = _cv2_module
+except ImportError:
+    cv2 = None
+torch: Any
+try:
+    import torch as _torch_module
+    torch = _torch_module
+except ImportError:
+    torch = None
+YOLO: Any
+try:
+    from ultralytics import YOLO as _YOLO_class
+    YOLO = _YOLO_class
+except ImportError:
+    YOLO = None
 
 
 def _to_numpy(val: Any) -> np.ndarray:
@@ -69,8 +84,7 @@ class PoseEstimator:
         self.oks_threshold = oks_threshold
         if device is None or device == "auto":
             try:
-                import torch
-                self.device = "0" if torch.cuda.is_available() else "cpu"
+                self.device = "0" if (torch is not None and torch.cuda.is_available()) else "cpu"
             except Exception:
                 self.device = "cpu"
         else:

@@ -11,7 +11,12 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional, Tuple, Union
-import cv2
+cv2: Any
+try:
+    import cv2 as _cv2_module
+    cv2 = _cv2_module
+except ImportError:
+    cv2 = None
 from .pose_estimator import PoseEstimator
 from .spatial_mapper import SpatialMapper
 from .behavior_classifier import BehaviorClassifier

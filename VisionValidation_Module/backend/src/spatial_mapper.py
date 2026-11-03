@@ -8,7 +8,12 @@ Complies with FR-02 (Dynamic ROI Mapping), NFR-06 (Maintainability), and NFR-07 
 import json
 import os
 from typing import Any, Dict, List, Optional
-import cv2
+cv2: Any
+try:
+    import cv2 as _cv2_module
+    cv2 = _cv2_module
+except ImportError:
+    cv2 = None
 
 
 class SpatialMapper:

@@ -31,7 +31,10 @@ import sys
 import json
 import time
 from typing import Any, Optional
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # type: ignore
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.spatial_mapper import SpatialMapper

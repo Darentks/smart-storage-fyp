@@ -11,7 +11,12 @@ import re
 import threading
 import time
 from typing import Any, Optional, Tuple, Union
-import cv2
+cv2: Any
+try:
+    import cv2 as _cv2_module
+    cv2 = _cv2_module
+except ImportError:
+    cv2 = None
 
 
 class VideoProcessor:
@@ -35,7 +40,7 @@ class VideoProcessor:
         self.auto_reconnect = auto_reconnect
         self.max_consecutive_drops = max_consecutive_drops
 
-        self.cap: Optional[cv2.VideoCapture] = None
+        self.cap: Optional[Any] = None
         self.is_streaming = False
         self.consecutive_drops = 0
         self.is_rtsp = False

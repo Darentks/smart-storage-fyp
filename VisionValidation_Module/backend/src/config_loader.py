@@ -363,14 +363,18 @@ def list_esp32_cameras() -> List[Dict[str, Any]]:
     cams_by_shelf: Dict[str, Dict[int, Dict[str, Any]]] = {}
     for cam in cameras:
         try:
-            cams_by_shelf.setdefault(cam.get("shelf_id"), {})[int(cam.get("angle_index") or 1)] = cam
+            shelf_key = str(cam.get("shelf_id") or "").strip()
+            if not shelf_key:
+                continue
+            cams_by_shelf.setdefault(shelf_key, {})[int(cam.get("angle_index") or 1)] = cam
         except (TypeError, ValueError):
             continue
 
     merged: List[Dict[str, Any]] = []
     for comp in compartments:
         row = dict(comp)
-        shelf_cams = cams_by_shelf.get(row.get("shelf_id"), {})
+        shelf_key = str(row.get("shelf_id") or "").strip()
+        shelf_cams = cams_by_shelf.get(shelf_key, {})
         cam1, cam2 = shelf_cams.get(1), shelf_cams.get(2)
         if cam1:
             row["ip_address"] = _clean_host(cam1.get("ip_address")) or None

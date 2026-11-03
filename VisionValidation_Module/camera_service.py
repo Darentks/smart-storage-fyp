@@ -20,6 +20,7 @@ Runs a lightweight HTTP server on port 8008 providing:
 """
 
 import base64
+from collections import deque
 import concurrent.futures
 import glob
 import json
@@ -27,8 +28,10 @@ import os
 import re
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -98,11 +101,13 @@ RUNNING_PIPELINES: Dict[str, Dict[str, Any]] = {}
 LAST_SHELF_TRIGGER_TS: Dict[str, float] = {}
 MULTI_CCTV_DEBOUNCE_SEC = 6.0
 
-# In-memory cache for Supabase compartments and comparison logs to eliminate redundant egress
+# In-memory cache for Supabase compartments and local ring buffer for comparison logs (cap: 5)
 SUPABASE_COMPARTMENTS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
-SUPABASE_LOGS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
+LATEST_COMPARISONS_DEQUE: deque = deque(maxlen=5)
 SUPABASE_CACHE_TTL_SEC: float = 300.0
 LAST_CLOUD_BASELINE_SYNC_TS: Dict[str, float] = {}
+BRIDGE_PUBLIC_URL: str = (os.getenv("NEXT_PUBLIC_BRIDGE_URL") or os.getenv("VITE_CAMERA_BRIDGE_URL") or "").strip().rstrip("/")
+BRIDGE_SSL_ENABLED: bool = False
 
 
 def get_cached_compartments(force_refresh: bool = False) -> list:
@@ -119,18 +124,9 @@ def get_cached_compartments(force_refresh: bool = False) -> list:
     return SUPABASE_COMPARTMENTS_CACHE["data"]
 
 
-def get_cached_comparison_logs(force_refresh: bool = False, limit: int = 10) -> list:
-    """Returns cached comparison logs from Supabase, refreshing only after TTL or when forced."""
-    now = time.time()
-    if force_refresh or (now - SUPABASE_LOGS_CACHE["fetched_at"] >= SUPABASE_CACHE_TTL_SEC) or not SUPABASE_LOGS_CACHE["data"]:
-        try:
-            data = list_comparison_logs(limit)
-            if data:
-                SUPABASE_LOGS_CACHE["data"] = data
-                SUPABASE_LOGS_CACHE["fetched_at"] = now
-        except Exception as e:
-            print(f"[CameraService Cache] Comparison logs refresh warning: {e}")
-    return SUPABASE_LOGS_CACHE["data"]
+def get_cached_comparison_logs(force_refresh: bool = False, limit: int = 5) -> list:
+    """Returns the latest comparison logs from the in-memory ring buffer (max 5 items, zero DB egress)."""
+    return list(LATEST_COMPARISONS_DEQUE)[: max(1, min(limit, 5))]
 
 MQTT_BROKER = os.getenv("MQTT_BROKER", "localhost")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
@@ -435,7 +431,7 @@ def discover_active_esp32_cameras(subnet_prefix=None) -> list:
     online_found = []
 
     def _probe_ip(ip_str: str):
-        clean_ip = ip_str.replace("http://", "").replace("/", "").strip()
+        clean_ip = ip_str.split("//")[-1].split("/")[0].strip()
         if not clean_ip:
             return None
         url = f"http://{clean_ip}/status"
@@ -804,7 +800,7 @@ def push_ota_firmware_to_esp32(esp32_ip: str, bin_path: str, timeout: float = 45
     via POST http://{clean_ip}/update and returns:
     {"status", "ip", "http_status", "elapsed_ms", "device_response"}
     """
-    clean_ip = str(esp32_ip).replace("http://", "").replace("/", "").strip()
+    clean_ip = str(esp32_ip).split("//")[-1].split("/")[0].strip()
     if not clean_ip:
         return {
             "status": "failed",
@@ -912,7 +908,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 
-    def _send_json(self, status_code: int, payload: dict):
+    def _send_json(self, status_code: int, payload: Any):
         self.send_response(status_code)
         self.send_header("Content-Type", "application/json")
         self._send_cors_headers()
@@ -1060,16 +1056,24 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 {"cctv_id": k, "pid": v["proc"].pid, "source": v["source"], "running": (v["proc"].poll() is None)}
                 for k, v in list(RUNNING_PIPELINES.items()) if v.get("proc") and v["proc"].poll() is None
             ]
+            proto = "https" if BRIDGE_SSL_ENABLED else "http"
             self._send_json(200, {
                 "status": "ok",
                 "service": "Smart Storage Local Camera Control & MQTT Telemetry Service",
+                "protocol": proto,
+                "bridge_url": BRIDGE_PUBLIC_URL or f"{proto}://localhost:8008",
                 "opencv_available": _OPENCV_AVAILABLE,
                 "mqtt_connected": mqtt_bridge.is_connected,
                 "mqtt_broker": f"{mqtt_bridge.broker_address}:{mqtt_bridge.port}",
                 "active_esp32_nodes": len(mqtt_bridge.edge_nodes),
                 "running_pipelines": active_pipes,
+                "latest_comparisons_count": len(LATEST_COMPARISONS_DEQUE),
                 "port": 8008,
             })
+            return
+
+        if path in ["/api/comparisons/latest", "/comparisons/latest"]:
+            self._send_json(200, list(LATEST_COMPARISONS_DEQUE))
             return
 
         if path == "/test_feed":
@@ -1082,7 +1086,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/esp32_nodes":
             nodes = get_merged_compartments_and_nodes()
-            logs = get_cached_comparison_logs(force_refresh=False, limit=10)
+            logs = list(LATEST_COMPARISONS_DEQUE)
             discovered = get_discovered_cameras_list(nodes)
 
             # Expose pending CCTV triggers (retain recent items within last 60s, max 20)
@@ -1103,6 +1107,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "discovered_cameras": discovered,
                 "recent_responses": list(reversed(mqtt_bridge.recent_responses[-15:])),
                 "comparison_logs": logs,
+                "latest_5_actions": logs,
                 "pending_cctv_triggers": pending,
                 "running_pipelines": active_pipes,
             })
@@ -1128,8 +1133,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             else:
                 esp32_ref_manager.vision_boost_mode = "auto"
 
-            clean_ip1 = str(esp32_ip).replace("http://", "").replace("/", "").strip() if (esp32_ip and str(esp32_ip).strip()) else None
-            clean_ip2 = str(esp32_ip2).replace("http://", "").replace("/", "").strip() if (esp32_ip2 and str(esp32_ip2).strip()) else None
+            clean_ip1 = str(esp32_ip).split("//")[-1].split("/")[0].strip() if (esp32_ip and str(esp32_ip).strip()) else None
+            clean_ip2 = str(esp32_ip2).split("//")[-1].split("/")[0].strip() if (esp32_ip2 and str(esp32_ip2).strip()) else None
 
             if clean_ip1 or clean_ip2:
                 prev_entry = ACTIVE_ESP32_IPS.get(shelf_id)
@@ -1203,6 +1208,26 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             info = compile_and_locate_firmware(force_build=False, custom_repo_path=custom_repo)
             self._send_json(200, info)
             return
+
+        if path == "/esp32_probe":
+            raw_ip = query.get("ip", [""])[0]
+            clean_ip = str(raw_ip).replace("http://", "").replace("https://", "").split("/")[0].strip()
+            if not clean_ip:
+                self._send_json(400, {"status": "failed", "error": "Missing ip parameter"})
+                return
+            t0 = time.time()
+            try:
+                req = urllib.request.Request(f"http://{clean_ip}/status", headers={"User-Agent": "SmartStorageBridgeProbe/1.0"})
+                with urllib.request.urlopen(req, timeout=2.5) as resp:
+                    raw = resp.read().decode("utf-8", errors="ignore")
+                    data = json.loads(raw)
+                    data["latency_ms"] = int((time.time() - t0) * 1000)
+                    data["status"] = "ONLINE"
+                    self._send_json(200, data)
+                    return
+            except Exception as exc:
+                self._send_json(502, {"status": "OFFLINE", "ip_address": clean_ip, "error": str(exc)})
+                return
 
         self._send_json(404, {"error": "Endpoint not found"})
 
@@ -1317,8 +1342,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # ASSIGN DUAL CAMERA IPs TO SHELF: Immediately update ACTIVE_ESP32_IPS and Supabase public.compartments
         if path == "/esp32_assign_ips":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
-            raw_ip1 = str(body.get("ip_address") or body.get("ip") or "192.168.0.201").replace("http://", "").replace("/", "").strip()
-            raw_ip2 = str(body.get("secondary_ip_address") or body.get("ip2") or "192.168.0.202").replace("http://", "").replace("/", "").strip()
+            raw_ip1 = str(body.get("ip_address") or body.get("ip") or "192.168.0.201").split("//")[-1].split("/")[0].strip()
+            raw_ip2 = str(body.get("secondary_ip_address") or body.get("ip2") or "192.168.0.202").split("//")[-1].split("/")[0].strip()
 
             ACTIVE_ESP32_IPS[shelf_id] = {
                 "ip1": raw_ip1,
@@ -1464,9 +1489,13 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             if predicted_box_count is not None:
                 PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
 
-                # ONLY write to Supabase and refresh cache if box count actually changed (delta != 0)
-                if comp_res.get("delta", 0) != 0:
-                    derived_action = "BORROW" if comp_res.get("delta", 0) < 0 else "RETURN"
+                delta_val = int(comp_res.get("delta", 0))
+                derived_action = "BORROW" if delta_val < 0 else ("RETURN" if delta_val > 0 else expected_action)
+                before_img = comp_res.get("before_image_url") or esp32_ref_manager.baseline_cache.get(shelf_id, {}).get("data_url")
+                after_img = after_image or comp_res.get("after_image_url")
+
+                # ONLY update current_quantity in Supabase if box count actually changed (delta != 0)
+                if delta_val != 0:
                     log_entry = apply_inventory_delta_in_supabase(
                         shelf_id=shelf_id,
                         mqtt_client_id=mqtt_client_id,
@@ -1474,14 +1503,93 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         comparison_result=comp_res,
                     )
                     get_cached_compartments(force_refresh=True)
-                    get_cached_comparison_logs(force_refresh=True)
+
+                if not log_entry:
+                    log_entry = {
+                        "log_id": f"val-{int(time.time() * 1000)}",
+                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                        "shelf_id": shelf_id,
+                        "rack_id": spatial_mapper.rack_id,
+                        "mqtt_client_id": mqtt_client_id,
+                        "trigger_action": derived_action,
+                        "diff_score": comp_res.get("diff_score", 0.0),
+                        "similarity_score": comp_res.get("similarity_score", 0.0),
+                        "matched_box_count": comp_res.get("matched_box_count", predicted_box_count),
+                        "scenario_label": comp_res.get("scenario_label") or scenario_label or f"{predicted_box_count} Boxes",
+                        "state_delta": delta_val,
+                        "quantity_before": comp_res.get("quantity_before", curr_qty),
+                        "quantity_after": comp_res.get("quantity_after", predicted_box_count),
+                    }
+                log_entry["before_image_url"] = before_img
+                log_entry["after_image_url"] = after_img
+                LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
 
             self._send_json(200, {
                 "status": "success",
                 "comparison": comp_res,
                 "log": log_entry,
+                "latest_comparisons": list(LATEST_COMPARISONS_DEQUE),
             })
             return
+
+        # PROXY NVS CONFIG PUSH TO ESP32-CAM (Avoids Vercel HTTPS -> LAN HTTP Mixed Content)
+        if path == "/esp32_nvs_config":
+            raw_ip = body.get("ip") or body.get("ip_address") or ""
+            clean_ip = str(raw_ip).replace("http://", "").replace("https://", "").split("/")[0].strip()
+            if not clean_ip:
+                self._send_json(400, {"status": "failed", "error": "Missing target camera IP"})
+                return
+            nvs_payload = body.get("config") if isinstance(body.get("config"), dict) else {
+                k: v for k, v in body.items() if k not in ("ip", "ip_address")
+            }
+            try:
+                encoded = json.dumps(nvs_payload).encode("utf-8")
+                req = urllib.request.Request(
+                    f"http://{clean_ip}/config",
+                    data=encoded,
+                    method="POST",
+                    headers={"Content-Type": "application/json", "User-Agent": "SmartStorageBridgeNVS/1.0"},
+                )
+                with urllib.request.urlopen(req, timeout=5.0) as resp:
+                    raw = resp.read().decode("utf-8", errors="ignore")
+                    try:
+                        res_json = json.loads(raw)
+                    except Exception:
+                        res_json = {"status": "ok", "raw": raw}
+                    self._send_json(resp.status, res_json)
+                    return
+            except Exception as exc:
+                self._send_json(502, {"status": "failed", "ip": clean_ip, "error": f"Failed to push NVS config to {clean_ip}: {exc}"})
+                return
+
+        # PROXY MANUAL .BIN OTA UPLOAD TO ESP32-CAM (Avoids Vercel HTTPS -> LAN HTTP Mixed Content)
+        if path == "/esp32_ota_upload":
+            raw_ip = body.get("ip") or body.get("ip_address") or ""
+            clean_ip = str(raw_ip).replace("http://", "").replace("https://", "").split("/")[0].strip()
+            file_b64 = body.get("file_base64") or body.get("firmware_base64") or ""
+            if not clean_ip or not file_b64:
+                self._send_json(400, {"status": "failed", "error": "Missing ip or file_base64 payload"})
+                return
+            if "," in file_b64:
+                file_b64 = file_b64.split(",", 1)[1]
+            tmp_path = None
+            try:
+                fw_bytes = base64.b64decode(file_b64)
+                with tempfile.NamedTemporaryFile(prefix="esp32_ota_", suffix=".bin", delete=False) as tf:
+                    tf.write(fw_bytes)
+                    tmp_path = tf.name
+                res = push_ota_firmware_to_esp32(clean_ip, tmp_path, timeout=45.0)
+                self._send_json(200 if res.get("status") == "success" else 502, res)
+                return
+            except Exception as exc:
+                self._send_json(500, {"status": "failed", "ip": clean_ip, "error": str(exc)})
+                return
+            finally:
+                if tmp_path and os.path.isfile(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
 
         # 1-CLICK PLATFORMIO BUILD & WIRELESS OTA FLASH (Batch or Single)
         if path == "/esp32_ota_flash":
@@ -1572,7 +1680,7 @@ def esp32_http_baseline_poller():
                 if not raw_ip1 or not str(raw_ip1).strip():
                     continue
 
-                clean_ip = str(raw_ip1).replace("http://", "").replace("/", "").strip()
+                clean_ip = str(raw_ip1).split("//")[-1].split("/")[0].strip()
                 status_url = f"http://{clean_ip}/status"
                 rssi_dbm = None
                 online = False
@@ -1594,7 +1702,7 @@ def esp32_http_baseline_poller():
 
                 # 2. If reachable (or for baseline refresh), fetch baseline & sync Supabase
                 now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                sec_ip = str(raw_ip2).replace("http://", "").replace("/", "").strip() if raw_ip2 else None
+                sec_ip = str(raw_ip2).split("//")[-1].split("/")[0].strip() if raw_ip2 else None
                 if not sec_ip:
                     for comp_row in db_compartments:
                         if comp_row.get("shelf_id") == shelf_id:
@@ -1705,7 +1813,33 @@ def ensure_local_tm_model_cached(model_id: str = "0cQO4TjOm") -> None:
             pass
 
 
-def run_service(host="0.0.0.0", port=8008):
+def _resolve_ssl_cert_and_key(ssl_cert: Optional[str] = None, ssl_key: Optional[str] = None):
+    """Locates local SSL cert and key from CLI flags, env vars, or standard mkcert filenames."""
+    cert = ssl_cert or os.getenv("SSL_CERT_FILE") or ""
+    key = ssl_key or os.getenv("SSL_KEY_FILE") or ""
+    if cert and key and os.path.isfile(cert) and os.path.isfile(key):
+        return cert, key
+
+    search_dirs = [
+        os.path.abspath(os.path.dirname(__file__)),
+        os.path.abspath(os.path.join(os.path.dirname(__file__), "..")),
+    ]
+    candidate_pairs = [
+        ("localhost.pem", "localhost-key.pem"),
+        ("localhost+2.pem", "localhost+2-key.pem"),
+        ("cert.pem", "key.pem"),
+    ]
+    for d in search_dirs:
+        for c_name, k_name in candidate_pairs:
+            c_path = os.path.join(d, c_name)
+            k_path = os.path.join(d, k_name)
+            if os.path.isfile(c_path) and os.path.isfile(k_path):
+                return c_path, k_path
+    return None, None
+
+
+def run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_key: Optional[str] = None):
+    global BRIDGE_SSL_ENABLED
     threading.Thread(target=ensure_local_tm_model_cached, daemon=True, name="TMModelCacheWorker").start()
     mqtt_bridge.connect_broker(timeout=1.5)
 
@@ -1716,22 +1850,35 @@ def run_service(host="0.0.0.0", port=8008):
 
     server_address = (host, port)
     httpd = ThreadingHTTPServer(server_address, CameraServiceRequestHandler)
+
+    cert_path, key_path = _resolve_ssl_cert_and_key(ssl_cert, ssl_key)
+    if cert_path and key_path:
+        try:
+            ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ssl_ctx.load_cert_chain(certfile=cert_path, keyfile=key_path)
+            httpd.socket = ssl_ctx.wrap_socket(httpd.socket, server_side=True)
+            BRIDGE_SSL_ENABLED = True
+            print(f"[CameraService] HTTPS/TLS enabled using cert={cert_path}")
+        except Exception as ssl_err:
+            print(f"[CameraService] Warning: Failed to load SSL cert/key ({ssl_err}); falling back to HTTP.")
+
+    proto = "https" if BRIDGE_SSL_ENABLED else "http"
     print("=================================================================")
     print(f"  SMART STORAGE CAMERA CONTROL & TELEMETRY SERVICE (:{port})")
-    print(f"  Available at: http://localhost:{port}/")
+    print(f"  Available at: {proto}://localhost:{port}/")
+    if BRIDGE_PUBLIC_URL:
+        print(f"  Public / Cloudflare Tunnel URL: {BRIDGE_PUBLIC_URL}")
     print("  Endpoints:")
     print("    - GET    /status                  : Service & MQTT health status")
+    print("    - GET    /api/comparisons/latest  : In-memory ring buffer (latest 5 actions)")
     print("    - GET    /test_feed               : Capture single CCTV test snapshot")
     print("    - GET    /esp32_nodes             : Shelf ROI, 30s baselines, & comparison logs")
     print("    - GET    /esp32_preview           : Live test snapshot from ESP32 camera")
-    print("    - POST   /run_calibration         : Launch desktop OpenCV ROI calibrator")
-    print("    - POST   /esp32_trigger           : Dispatch CAPTURE_STATE or CAPTURE_REFERENCE")
-    print("    - GET    /esp32_reference_samples : List stored reference samples")
-    print("    - POST   /esp32_reference_samples : Save reference sample for tested angles")
-    print("    - DELETE /esp32_reference_samples : Remove reference sample")
-    print("    - POST   /esp32_validate          : Run hybrid comparison against baseline")
-    print("    - GET    /esp32_ota_info          : Check PlatformIO repo & compiled firmware.bin")
+    print("    - GET    /esp32_probe             : Proxy status probe to ESP32-CAM over LAN")
+    print("    - POST   /esp32_nvs_config        : Proxy NVS config update to ESP32-CAM")
+    print("    - POST   /esp32_ota_upload        : Proxy manual .bin OTA upload to ESP32-CAM")
     print("    - POST   /esp32_ota_flash         : 1-Click PlatformIO build & wireless OTA flash")
+    print("    - POST   /esp32_validate          : Run hybrid comparison against baseline")
     print("=================================================================")
 
     try:
@@ -1745,10 +1892,13 @@ def run_service(host="0.0.0.0", port=8008):
 
 
 if __name__ == "__main__":
-    port = 8008
-    if len(sys.argv) > 1:
-        try:
-            port = int(sys.argv[1])
-        except ValueError:
-            pass
-    run_service(port=port)
+    import argparse
+    parser = argparse.ArgumentParser(description="Smart Storage Local Camera Service Bridge")
+    parser.add_argument("port_pos", nargs="?", type=int, default=None, help="Optional positional port (default 8008)")
+    parser.add_argument("--port", type=int, default=8008, help="Port to listen on (default 8008)")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host address to bind")
+    parser.add_argument("--ssl-cert", type=str, default=None, help="Path to SSL certificate PEM file (e.g. mkcert localhost.pem)")
+    parser.add_argument("--ssl-key", type=str, default=None, help="Path to SSL private key PEM file (e.g. mkcert localhost-key.pem)")
+    args, _ = parser.parse_known_args()
+    listen_port = args.port_pos if args.port_pos is not None else args.port
+    run_service(host=args.host, port=listen_port, ssl_cert=args.ssl_cert, ssl_key=args.ssl_key)

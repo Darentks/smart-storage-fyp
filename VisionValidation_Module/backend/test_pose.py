@@ -9,7 +9,10 @@ import os
 import sys
 import time
 import json
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None  # type: ignore
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
