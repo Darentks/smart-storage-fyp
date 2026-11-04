@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Storage &bull; 30s Baseline &amp; ESP32-CAM Inventory Monitor</title>
   <!-- Supabase JS Client via CDN -->
-  <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- TensorFlow.js & Google Teachable Machine Image Library -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
@@ -617,7 +616,7 @@
       z-index: 2;
     }
 
-    /* Panel 3: MediaPipe Pose JS (Browser/Vercel) Comparison Logs */
+    /* Panel 3: YOLO11n-Pose ONNX (Vercel Web) Comparison Logs */
     .logs-list {
       display: flex;
       flex-direction: column;
@@ -760,10 +759,7 @@
       }
     }
   </style>
-  <!-- MediaPipe Pose JS (Browser/Vercel) -->
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js"></script>
 </head>
 
 <body>
@@ -1009,15 +1005,15 @@
       </div>
     </section>
 
-    <!-- Panel 3: MediaPipe Pose JS (Browser/Vercel) Before (30s Baseline) vs. After Comparison Log -->
+    <!-- Panel 3: YOLO11n-Pose ONNX (Vercel Web) Before (30s Baseline) vs. After Comparison Log -->
     <section class="panel">
       <div class="panel-header"
         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div>
-          <h2 class="panel-title">&#128248; Panel 3 &bull; MediaPipe Pose JS (Browser/Vercel) Before (30s Baseline) vs. After (Post-Trigger)
+          <h2 class="panel-title">&#128248; Panel 3 &bull; YOLO11n-Pose ONNX (Vercel Web) Before (30s Baseline) vs. After (Post-Trigger)
             Comparison Logs</h2>
           <p class="panel-desc">Every physical inventory interaction verification recorded in
-            <code>public.comparison_logs</code>.
+            the latest five actions in local storage.
           </p>
         </div>
         <div style="display: flex; align-items: center; gap: 10px;">
@@ -1037,14 +1033,14 @@
       </div>
     </section>
 
-    <!-- Panel 4A: MediaPipe Pose JS (Browser/Vercel) CCTV Manager -->
+    <!-- Panel 4A: YOLO11n-Pose ONNX (Vercel Web) CCTV Manager -->
     <section class="panel" id="cctvCameraManagerPanel" style="margin-top: 24px;">
       <div id="cctvCamerasSection"></div>
       <div class="panel-header"
         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
         <div>
-          <h2 class="panel-title">&#128249; Panel 4A &bull; MediaPipe Pose JS (Browser/Vercel) CCTV Manager (<code>public.cctv_cameras</code>)</h2>
-          <p class="panel-desc">Run 100% client-side MediaPipe Pose JS (Browser/Vercel) (<code>modelComplexity: 0</code>) in-browser on Vercel without desktop Python. Tracks wrist keypoints, detects sustained ROI dwell (&ge; 1.2s), and triggers dual-camera AI verification.</p>
+          <h2 class="panel-title">&#128249; Panel 4A &bull; YOLO11n-Pose ONNX (Vercel Web) CCTV Manager (<code>public.cctv_cameras</code>)</h2>
+          <p class="panel-desc">Run 100% client-side YOLO11n-Pose ONNX (Vercel Web) in-browser on Vercel without desktop Python. Tracks wrist keypoints, detects sustained ROI dwell (&ge; 1.2s), and triggers dual-camera AI verification.</p>
         </div>
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <button type="button" class="btn-action" onclick="loadCctvCameras()">
@@ -1147,12 +1143,12 @@
           </form>
         </div>
 
-        <!-- Right Column: In-Browser MediaPipe Pose CCTV Wrist-ROI Dwell Detector -->
+        <!-- Right Column: In-Browser YOLO11n-Pose ONNX CCTV Wrist-ROI Dwell Detector -->
         <div id="cctvViewerColumn"
           style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 13px; font-weight: 700; color: var(--text-primary);">&#9889; MediaPipe Pose
+              <span style="font-size: 13px; font-weight: 700; color: var(--text-primary);">&#9889; YOLO11n-Pose ONNX
                 Wrist-ROI Dwell Detector</span>
               <span class="badge badge-offline" id="cctvPoseStatusBadge" style="font-size: 10px;">Tracker Idle</span>
             </div>
@@ -1239,7 +1235,7 @@
             <div id="cctvTestPlaceholder" class="snapshot-placeholder"
               style="position: absolute; inset: 0; pointer-events: none; background: rgba(11, 17, 32, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 20px;">
               <span style="font-size: 28px;">&#128249;</span>
-              <span style="font-size: 12px; color: var(--text-muted); max-width: 320px;">Click <strong>&quot;&#127919; Calibrate ROI&quot;</strong> or <strong>&quot;&#9654; Start MediaPipe Pose JS&quot;</strong> to stream the CCTV feed full-screen on this canvas.</span>
+              <span style="font-size: 12px; color: var(--text-muted); max-width: 320px;">Click <strong>&quot;&#127919; Calibrate ROI&quot;</strong> or <strong>&quot;&#9654; Start YOLO11n-Pose ONNX JS&quot;</strong> to stream the CCTV feed full-screen on this canvas.</span>
             </div>
           </div>
 
@@ -1403,6 +1399,7 @@
     // =========================================================================
     // SUPABASE CLIENT & CONFIGURATION
     // =========================================================================
+    const ALL_SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
     const SUPABASE_URL = 'https://tosvjwxvcuxvgtcmakta.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l';
 
@@ -1838,12 +1835,12 @@
       }
     }
 
-    // In-Browser MediaPipe ROI Calibrator Launcher
+    // In-Browser YOLO ROI Calibrator Launcher
     function launchLocalCalibrator() {
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
       toggleRoiCalibrationMode(true);
-      showToast('Switched to In-Browser MediaPipe ROI Calibrator!', 'info');
+      showToast('Switched to In-Browser YOLO ROI Calibrator!', 'info');
     }
 
     // =========================================================================
@@ -1879,10 +1876,11 @@
     // PANEL 2: DUAL-CAMERA SETUP, IP SELECTOR DROPDOWNS & LIVE PREVIEW
     // =========================================================================
     const PLATFORMIO_CAMERA_IP_PRESETS = [
-      ...Array.from({ length: 12 }, (_, n) => {
+      ...ALL_SHELF_IDS.flatMap((shelfId, i) => [1, 2].map(angle => {
+        const n = i * 2 + angle - 1;
         const ip = `192.168.0.${201 + n}`;
-        return { ip, label: `CAM ${n + 1} \u2014 SHELF_R1_C${Math.floor(n / 2) + 1} ${n % 2 ? 'Front' : 'Back'} Angle [${ip}]` };
-      }),
+        return { ip, label: `CAM ${n + 1} \u2014 ${shelfId} ${n % 2 ? 'Front' : 'Back'} Angle [${ip}]` };
+      })),
       { ip: "esp32_r1_c1_cam1.local", label: "mDNS Hostname \u2014 CAM 1 Back [esp32_r1_c1_cam1.local]" },
       { ip: "esp32_r1_c1_cam2.local", label: "mDNS Hostname \u2014 CAM 2 Front [esp32_r1_c1_cam2.local]" }
     ];
@@ -2650,8 +2648,8 @@
     // FETCH COMPARTMENTS & COMPARISON LOGS
     // =========================================================================
     const processedTriggerIds = new Set();
-    const DEFAULT_6_COMPARTMENTS = Array.from({ length: 6 }, (_, i) => ({
-      shelf_id: `SHELF_R1_C${i + 1}`, rack_id: 'RACK_01',
+    const DEFAULT_6_COMPARTMENTS = ALL_SHELF_IDS.map((shelfId, i) => ({
+      shelf_id: shelfId, rack_id: 'RACK_01',
       mqtt_client_id: `ESP32_R1_C${i + 1}`, secondary_mqtt_client_id: `ESP32_R1_C${i + 1}_CAM2`,
       camera_name: `ESP32 Dual Node R1-C${i + 1}`,
       ip_address: `192.168.0.${201 + i * 2}`, secondary_ip_address: `192.168.0.${202 + i * 2}`,
@@ -2662,7 +2660,7 @@
     const CLOUD_POLL_INTERVAL_MS = 300000; // 5 minutes throttle for Supabase Egress reduction
 
     // Minimal clean schema columns only (runtime telemetry such as status / RSSI / baselines is bridge-RAM only)
-    const COMPARTMENT_COLS = 'shelf_id,rack_id,current_quantity,max_capacity,tm_model_url';
+    const COMPARTMENT_COLS = 'shelf_id,rack_id,current_quantity,max_capacity,tm_model_url,esp32_cameras(id,device_id,camera_name,angle_index,ip_address)';
 
     // Joins public.esp32_cameras (angle 1 = Back, angle 2 = Front) into compartment rows and
     // preserves in-memory runtime telemetry from the previous snapshot.
@@ -2677,8 +2675,9 @@
 
       return rows.map(row => {
         const prev = prevByShelf[row.shelf_id] || {};
-        const c1 = (camsByShelf[row.shelf_id] || {})[1];
-        const c2 = (camsByShelf[row.shelf_id] || {})[2];
+        const cameras = row.esp32_cameras || Object.values(camsByShelf[row.shelf_id] || {});
+        const c1 = cameras.find(cam => Number(cam.angle_index) === 1);
+        const c2 = cameras.find(cam => Number(cam.angle_index) === 2);
         const out = { ...prev, ...row };
         if (c1) {
           out.ip_address = cleanCameraHost(c1.ip_address) || prev.ip_address;
@@ -2783,15 +2782,9 @@
           }
 
           if (data && Array.isArray(data) && data.length > 0) {
-            let cameraRows = [];
-            try {
-              cameraRows = await sbRest('esp32_cameras', 'GET', `?select=${CAMERA_COLS}&order=shelf_id.asc,angle_index.asc`) || [];
-            } catch (camErr) {
-              console.warn('esp32_cameras fetch skipped:', camErr);
-            }
             dbStatusDot.className = 'status-dot connected';
             dbStatusText.textContent = 'Cloud DB: Connected';
-            compartmentsData = mergeCloudCompartments(data, cameraRows);
+            compartmentsData = mergeCloudCompartments(data, []);
           }
         } catch (err) {
           console.warn('Cloud compartments fetch skipped/failed:', err);
@@ -3049,7 +3042,7 @@
 
               <div class="log-metrics-row">
                 <span>Action: <strong>${log.trigger_action || 'BORROW'}</strong></span>
-                <span>MediaPipe Pose JS (Browser/Vercel) AbsDiff: <strong>${diffText}</strong></span>
+                <span>YOLO11n-Pose ONNX (Vercel Web) AbsDiff: <strong>${diffText}</strong></span>
                 <span>Inventory Shift: <strong>${log.quantity_before} &rarr; ${log.quantity_after} Boxes</strong></span>
                 <span>Logged: <strong style="color: var(--text-muted);">${timeStr}</strong></span>
               </div>
@@ -3123,15 +3116,15 @@
     // =========================================================================
     // ESP32-CAM 12-NODE HARDWARE CRUD, WIRELESS NVS & OTA SERVICE (Panel 4)
     // =========================================================================
-    const DEFAULT_12_ESP32_CAMERAS = Array.from({ length: 12 }, (_, n) => {
-      const s = Math.floor(n / 2) + 1, a = (n % 2) + 1;
+    const DEFAULT_12_ESP32_CAMERAS = ALL_SHELF_IDS.flatMap((shelfId, i) => [1, 2].map(a => {
+      const s = i + 1, n = i * 2 + a - 1;
       return {
         id: `cam-${201 + n}`, device_id: `ESP32_R1_C${s}_CAM${a}`,
         camera_name: `R1-C${s} ${a === 1 ? 'Back' : 'Front'} Angle (CAM ${n + 1})`,
-        rack_id: 'RACK_01', shelf_id: `SHELF_R1_C${s}`, angle_index: a,
+        rack_id: 'RACK_01', shelf_id: shelfId, angle_index: a,
         ip_address: `192.168.0.${201 + n}`, status: 'OFFLINE', rssi_dbm: null, last_seen: null
       };
-    });
+    }));
 
     let esp32CameraNodesList = [...DEFAULT_12_ESP32_CAMERAS];
     let esp32NodeSnapshotModeMap = {};
@@ -3323,9 +3316,6 @@
         angle_index: Number(cam.angle_index) === 2 ? 2 : 1,
         ip_address: cleanCameraHost(cam.ip_address)
       };
-      if (cam.id && !String(cam.id).startsWith('cam-')) {
-        record.id = cam.id;
-      }
       let savedRow = null;
       try {
         if (supabaseClient) {
@@ -3963,8 +3953,8 @@
     }
 
     // =========================================================================
-    // PANEL 4A: MEDIAPIPE POSE JS (BROWSER/VERCEL) CCTV WRIST-ROI DWELL DETECTOR
-    // 100% Client-Side BlazePose Lite (modelComplexity: 0) on Vercel
+    // PANEL 4A: YOLO11N-POSE ONNX (VERCEL WEB) CCTV WRIST-ROI DWELL DETECTOR
+    // 100% client-side YOLO11n-Pose ONNX on Vercel
     // =========================================================================
 
     const DEFAULT_3_CCTV_CAMERAS = [
@@ -3983,8 +3973,7 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.102',
         rtsp_url: 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102',
-        is_active: false,
-        status: 'OFFLINE'
+        is_active: false
       },
       {
         cctv_id: 'CCTV_03',
@@ -3992,8 +3981,7 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.103',
         rtsp_url: 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102',
-        is_active: false,
-        status: 'OFFLINE'
+        is_active: false
       }
     ];
 
@@ -4019,7 +4007,6 @@
     let runningPipelinesList = [];
 
     // Compartment Dwell State Machine (mirrors behavior_classifier.py)
-    const ALL_SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
     const compartmentTrackers = {};
 
     function initCompartmentTrackers() {
@@ -4042,9 +4029,8 @@
     }
     initCompartmentTrackers();
 
-    // MediaPipe Pose Tracker instances & state
-    let mpPose = null;
-    let mpCamera = null;
+    // YOLO11n-Pose ONNX Tracker instances & state
+    let poseAnimationId = null;
     let isPoseRunning = false;
     let isCalibratingRoi = false;
     let isDraggingRoi = false;
@@ -4073,31 +4059,68 @@
       return 'BORROW';
     }
 
-    function getMediaPipePose() {
-      if (mpPose) return mpPose;
-      if (typeof Pose === 'undefined') {
-        console.warn('[MediaPipe] Pose library is still loading...');
-        return null;
+    let yoloOrtSession = null;
+    let yoloSessionPromise = null;
+    const YOLO_MODEL_PATHS = ['/models/yolo11n-pose.onnx', '/VisionValidation_Module/backend/models/yolo11n-pose.onnx'];
+    const YOLO_INPUT_SIZE = 320;
+    const yoloOffscreen = Object.assign(document.createElement('canvas'), { width: 320, height: 320 });
+    const yoloOffCtx = yoloOffscreen.getContext('2d', { willReadFrequently: true });
+
+    async function getYoloPoseSession() {
+      if (yoloOrtSession) return yoloOrtSession;
+      if (yoloSessionPromise) return yoloSessionPromise;
+      yoloSessionPromise = (async () => {
+        if (!window.ort) throw new Error('ONNX Runtime did not load. Check the CDN connection.');
+        ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/';
+        ort.env.wasm.numThreads = 1;
+        for (const path of YOLO_MODEL_PATHS) {
+          try {
+            yoloOrtSession = await ort.InferenceSession.create(path, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+            return yoloOrtSession;
+          } catch (error) { console.warn('[YOLO ONNX]', path, error.message); }
+        }
+        throw new Error('Missing /models/yolo11n-pose.onnx. Run the ONNX export step.');
+      })();
+      try { return await yoloSessionPromise; }
+      finally { yoloSessionPromise = null; }
+    }
+
+    async function runYoloPoseOnSource(sourceEl) {
+      const session = await getYoloPoseSession();
+      yoloOffCtx.drawImage(sourceEl, 0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE);
+      const pixels = yoloOffCtx.getImageData(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE).data;
+      const area = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
+      const input = new Float32Array(3 * area);
+      for (let i = 0; i < area; i++) {
+        input[i] = pixels[i * 4] / 255;
+        input[area + i] = pixels[i * 4 + 1] / 255;
+        input[2 * area + i] = pixels[i * 4 + 2] / 255;
       }
+      const tensor = new ort.Tensor('float32', input, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
+      let outputs;
       try {
-        mpPose = new Pose({
-          locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-        });
-        mpPose.setOptions({
-          modelComplexity: 0, // Lite model for smooth in-browser performance on Vercel
-          smoothLandmarks: true,
-          enableSegmentation: false,
-          smoothSegmentation: false,
-          minDetectionConfidence: 0.5,
-          minTrackingConfidence: 0.5
-        });
-        mpPose.onResults(onPoseResults);
-        console.log('[MediaPipe] Initialized BlazePose Lite (modelComplexity: 0)');
-        return mpPose;
-      } catch (err) {
-        console.error('[MediaPipe] Error initializing Pose:', err);
-        showToast(`MediaPipe initialization error: ${err.message}`, 'error');
-        return null;
+        outputs = await session.run({ [session.inputNames[0]]: tensor });
+        const output = outputs[session.outputNames[0]];
+        if (output.dims.length !== 3 || output.dims[1] !== 56) throw new Error('Expected YOLO pose output [1,56,anchors]. Export without NMS.');
+        const anchors = output.dims[2], data = output.data;
+        let best = -1, score = 0.45;
+        for (let a = 0; a < anchors; a++) {
+          if (data[4 * anchors + a] > score) { score = data[4 * anchors + a]; best = a; }
+        }
+        const landmarks = Array.from({ length: 33 }, () => ({ x: 0, y: 0, visibility: 0 }));
+        if (best >= 0) {
+          [5, 6, 7, 8, 9, 10, 11, 12].forEach((keypoint, i) => {
+            landmarks[[11, 12, 13, 14, 15, 16, 23, 24][i]] = {
+              x: data[(5 + keypoint * 3) * anchors + best] / YOLO_INPUT_SIZE,
+              y: data[(6 + keypoint * 3) * anchors + best] / YOLO_INPUT_SIZE,
+              visibility: data[(7 + keypoint * 3) * anchors + best]
+            };
+          });
+        }
+        onPoseResults({ image: sourceEl, poseLandmarks: best >= 0 ? landmarks : null });
+      } finally {
+        tensor.dispose();
+        if (outputs) Object.values(outputs).forEach(output => output.dispose());
       }
     }
 
@@ -4378,7 +4401,7 @@
     }
 
     async function dispatchDwellTrigger(shelfId, action, dwellDuration, conf) {
-      console.log(`[MediaPipe Pose] Dwell verified (>=1.2s) for ${shelfId}: Action=${action}, Dwell=${dwellDuration.toFixed(2)}s, Conf=${conf.toFixed(2)}`);
+      console.log(`[YOLO11n-Pose ONNX] Dwell verified (>=1.2s) for ${shelfId}: Action=${action}, Dwell=${dwellDuration.toFixed(2)}s, Conf=${conf.toFixed(2)}`);
       showToast(`🎯 CCTV Interaction Detected! ${shelfId} sustained ${dwellDuration.toFixed(1)}s dwell -> Action: ${action}`, 'warning');
 
       const triggerEl = document.getElementById('cctvLastTriggerText');
@@ -4400,7 +4423,7 @@
             action: action,
             dwell_duration_seconds: Math.round(dwellDuration * 100) / 100,
             oks_confidence: Math.round(conf * 100) / 100,
-            source: 'mediapipe_in_browser'
+            source: 'yolo_onnx_in_browser'
           })
         }).catch(() => { });
       } catch (_) { }
@@ -4426,9 +4449,10 @@
         badge.textContent = 'Initializing...';
       }
 
-      const pose = getMediaPipePose();
-      if (!pose) {
-        showToast('MediaPipe Pose failed to initialize. Please check internet connection for CDN scripts.', 'error');
+      try {
+        if (selectedSource !== 'simulation') await getYoloPoseSession();
+      } catch (error) {
+        showToast(error.message, 'error');
         if (badge) {
           badge.className = 'badge badge-offline';
           badge.textContent = 'Init Failed';
@@ -4451,7 +4475,7 @@
           badge.className = 'badge badge-online';
           badge.textContent = 'Simulation Active';
         }
-        showToast('Started MediaPipe Pose tracking (Simulation Mode)', 'success');
+        showToast('Started YOLO11n-Pose ONNX tracking (Simulation Mode)', 'success');
         return;
       }
 
@@ -4461,7 +4485,7 @@
           badge.className = 'badge badge-online';
           badge.textContent = 'Bridge Stream Active';
         }
-        showToast('Started MediaPipe Pose tracking via local bridge /test_feed', 'success');
+        showToast('Started YOLO11n-Pose ONNX tracking via local bridge /test_feed', 'success');
         return;
       }
 
@@ -4476,27 +4500,18 @@
         videoEl.srcObject = stream;
         await videoEl.play();
 
-        if (window.Camera) {
-          mpCamera = new Camera(videoEl, {
-            onFrame: async () => {
-              if (isPoseRunning && mpPose) {
-                await mpPose.send({ image: videoEl });
-              }
-            },
-            width: 640,
-            height: 480
-          });
-          mpCamera.start();
-        } else {
-          const loop = async () => {
-            if (!isPoseRunning) return;
-            if (videoEl.readyState >= 2 && mpPose) {
-              await mpPose.send({ image: videoEl });
-            }
-            requestAnimationFrame(loop);
-          };
-          requestAnimationFrame(loop);
-        }
+        const loop = async () => {
+          if (!isPoseRunning) return;
+          try {
+            if (videoEl.readyState >= 2) await runYoloPoseOnSource(videoEl);
+          } catch (error) {
+            stopMediaPipeTracker();
+            showToast('YOLO inference failed: ' + error.message, 'error');
+            return;
+          }
+          if (isPoseRunning) poseAnimationId = requestAnimationFrame(loop);
+        };
+        poseAnimationId = requestAnimationFrame(loop);
 
         if (badge) {
           badge.className = 'badge badge-online';
@@ -4526,9 +4541,9 @@
         activeMediaStream.getTracks().forEach(t => t.stop());
         activeMediaStream = null;
       }
-      if (mpCamera) {
-        try { mpCamera.stop(); } catch (_) { }
-        mpCamera = null;
+      if (poseAnimationId !== null) {
+        cancelAnimationFrame(poseAnimationId);
+        poseAnimationId = null;
       }
       if (simulationAnimId) {
         cancelAnimationFrame(simulationAnimId);
@@ -4562,7 +4577,7 @@
         const ctx = canvas.getContext('2d');
         if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
-      showToast('MediaPipe Pose Tracker stopped.', 'info');
+      showToast('YOLO11n-Pose ONNX Tracker stopped.', 'info');
     }
 
     function onCctvSourceChanged() {
@@ -4648,7 +4663,7 @@
       simulationAnimId = requestAnimationFrame(loop);
     }
 
-    // RTSP URL of the CCTV currently selected for tracking (set by "Start MediaPipe" / "Calibrate ROI" on a CCTV card)
+    // RTSP URL of the CCTV currently selected for tracking (set by "Start YOLO" / "Calibrate ROI" on a CCTV card)
     let activeCctvSourceUrl = null;
 
     function startCctvBridgePollingLoop() {
@@ -4668,20 +4683,20 @@
         try {
           const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}`, { cache: 'no-store' });
           const data = resp.ok ? await resp.json() : null;
-          if (data && data.image && mpPose && (data.seq === undefined || data.seq !== lastSeq)) {
+          if (data && data.image && (data.seq === undefined || data.seq !== lastSeq)) {
             if (data.seq !== undefined) lastSeq = data.seq;
             await new Promise((resolve) => {
               reusableImg.onload = resolve;
               reusableImg.onerror = resolve;
               reusableImg.src = data.image;
             });
-            if (isPoseRunning && mpPose && reusableImg.naturalWidth) {
+            if (isPoseRunning && reusableImg.naturalWidth) {
               const cv = document.getElementById('cctvPoseCanvas');
               if (cv && (cv.width !== reusableImg.naturalWidth || cv.height !== reusableImg.naturalHeight)) {
                 cv.width = reusableImg.naturalWidth;
                 cv.height = reusableImg.naturalHeight;
               }
-              await mpPose.send({ image: reusableImg });
+              await runYoloPoseOnSource(reusableImg);
             }
           }
         } catch (_) { }
@@ -4899,7 +4914,7 @@
 
         let data = null;
         try {
-          data = await sbRest('cctv_cameras', 'GET', '?select=*&order=cctv_id.asc');
+          data = await sbRest('cctv_cameras', 'GET', '?select=cctv_id,camera_name,rack_id,ip_address,rtsp_url,is_active&order=cctv_id.asc');
         } catch (dbErr) {
           console.warn('Supabase cctv_cameras read failed, checking fallback:', dbErr);
         }
@@ -4963,7 +4978,7 @@
                 </div>
               </div>
               <button type="button" class="btn-action" style="width: 100%; font-size: 11px; padding: 6px 8px; justify-content: center; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 700;" onclick="startCctvPipeline('${cam.cctv_id}', '${cam.rtsp_url}')">
-                &#9654; Start MediaPipe Pose JS (Browser/Vercel)
+                &#9654; Start YOLO11n-Pose ONNX (Vercel Web)
               </button>
             </div>
           </div>
@@ -5001,12 +5016,12 @@
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
       useCctvAsTrackerSource(rtspUrl);
-      showToast(`Running MediaPipe Pose JS (Browser/Vercel) on ${cctvId} CCTV feed`, 'success');
+      showToast(`Running YOLO11n-Pose ONNX (Vercel Web) on ${cctvId} CCTV feed`, 'success');
     }
 
     function stopCctvPipeline(cctvId) {
       stopMediaPipeTracker();
-      showToast(`Stopped MediaPipe Pose JS (Browser/Vercel) for ${cctvId}`, 'info');
+      showToast(`Stopped YOLO11n-Pose ONNX (Vercel Web) for ${cctvId}`, 'info');
     }
 
     function editCctvCamera(encodedJson) {

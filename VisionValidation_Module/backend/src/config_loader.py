@@ -24,8 +24,8 @@ except ImportError:
 if TYPE_CHECKING:
     from supabase import Client
 
-DEFAULT_SUPABASE_URL = "https://tosvjwxvcuxvgtcmakta.supabase.co"
-DEFAULT_SUPABASE_KEY = "sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l"
+DEFAULT_SUPABASE_URL = "https://hrufeowqpnyjfwxydocm.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt"
 
 # Lightweight non-Base64 column lists to prevent Supabase Egress bloat
 # Minimal clean schema: public.compartments only stores inventory state
@@ -277,14 +277,14 @@ def build_hikvision_rtsp_url(
 
 
 def get_active_camera_record() -> Optional[Dict[str, Any]]:
-    """Queries the first active CCTV camera from Supabase table 'cctv_cameras' (or legacy 'cameras')."""
+    """Queries the first active CCTV camera from Supabase table 'cctv_cameras' ."""
     client = get_supabase_client()
-    for table_name in ("cctv_cameras", "cameras"):
+    for table_name in ("cctv_cameras",):
         if client is not None:
             try:
                 response = (
                     client.table(table_name)
-                    .select("*")
+                    .select("cctv_id,camera_name,rack_id,ip_address,rtsp_url,is_active")
                     .eq("is_active", True)
                     .order("cctv_id", desc=False)
                     .limit(1)
@@ -297,7 +297,7 @@ def get_active_camera_record() -> Optional[Dict[str, Any]]:
 
         # REST Fallback
         fallback = SupabaseRestFallback()
-        records = fallback.select(table_name, "?select=*&is_active=eq.true&order=cctv_id.asc&limit=1")
+        records = fallback.select(table_name, "?select=cctv_id,camera_name,rack_id,ip_address,rtsp_url,is_active&is_active=eq.true&order=cctv_id.asc&limit=1")
         if records:
             return records[0]
 
@@ -421,7 +421,7 @@ def apply_inventory_delta_in_supabase(
 ) -> Optional[Dict[str, Any]]:
     """
     Applies inventory deduction (-1 / +1) in public.compartments ONLY when delta != 0,
-    and inserts a lightweight row (without Base64 images) into public.comparison_logs.
+    and returns a log for the camera service to retain in RAM.
     """
     shelf_id = shelf_id.strip()
     mqtt_client_id = mqtt_client_id.strip()
