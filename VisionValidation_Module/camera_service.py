@@ -39,6 +39,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Add backend directory to sys.path
@@ -105,6 +106,7 @@ MULTI_CCTV_DEBOUNCE_SEC = 6.0
 SUPABASE_COMPARTMENTS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
 LATEST_COMPARISONS_DEQUE: deque = deque(maxlen=5)
 SUPABASE_CACHE_TTL_SEC: float = 300.0
+HEARTBEAT_TTL = 45.0
 LAST_CLOUD_BASELINE_SYNC_TS: Dict[str, float] = {}
 BRIDGE_PUBLIC_URL: str = (os.getenv("NEXT_PUBLIC_BRIDGE_URL") or os.getenv("VITE_CAMERA_BRIDGE_URL") or "").strip().rstrip("/")
 BRIDGE_SSL_ENABLED: bool = False
@@ -138,6 +140,29 @@ mqtt_bridge = MQTTClientNode(
     sync_supabase=True,
     esp32_validator=esp32_ref_manager,
 )
+
+
+def node_is_online(node):
+    return bool(node) and node.get("status", "ONLINE") != "OFFLINE" and time.time() - node.get("last_seen_ts", 0) <= HEARTBEAT_TTL
+
+
+def record_probe_result(ip, data=None):
+    """Update individual camera liveness without treating old heartbeats as current."""
+    now = time.time()
+    matching_ids = [key for key, node in list(mqtt_bridge.edge_nodes.items()) if node.get("ip_address") == ip]
+    if data:
+        device_id = data.get("device_id") or data.get("mqtt_client_id") or ip
+        if device_id not in matching_ids:
+            matching_ids.append(device_id)
+    for device_id in matching_ids:
+        node = dict(mqtt_bridge.edge_nodes.get(device_id, {}))
+        if data:
+            node.update(data)
+            node.update(ip_address=ip, status="ONLINE", last_seen_ts=now,
+                        last_seen_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)))
+        else:
+            node["status"] = "OFFLINE"
+        mqtt_bridge.edge_nodes[device_id] = node
 
 
 def get_merged_compartments_and_nodes():
@@ -182,7 +207,7 @@ def get_merged_compartments_and_nodes():
             override_ip1 = None
             override_ip2 = None
 
-        status = "ONLINE" if (live_row or live_cam2_row) else db_row.get("status", "OFFLINE")
+        status = "ONLINE" if (node_is_online(live_row) or node_is_online(live_cam2_row)) else "OFFLINE"
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
         baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
         baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
@@ -238,7 +263,7 @@ def get_merged_compartments_and_nodes():
         override_ip1 = active_override.get("ip1") if isinstance(active_override, dict) else (active_override if isinstance(active_override, str) else None)
         override_ip2 = active_override.get("ip2") if isinstance(active_override, dict) else None
 
-        status = "ONLINE" if (live_row or live_cam2_row) else db_row.get("status", "OFFLINE")
+        status = "ONLINE" if (node_is_online(live_row) or node_is_online(live_cam2_row)) else "OFFLINE"
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
         baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
         baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
@@ -334,7 +359,7 @@ def get_discovered_cameras_list(compartments_list=None) -> list:
             "shelf_id": node.get("shelf_id") or "SHELF_R1_C1",
             "ip_address": ip,
             "rssi_dbm": node.get("rssi_dbm"),
-            "status": "ONLINE",
+            "status": "ONLINE" if node_is_online(node) else "OFFLINE",
             "angle": angle,
             "last_seen_at": node.get("last_seen_at"),
         }
@@ -353,7 +378,7 @@ def get_discovered_cameras_list(compartments_list=None) -> list:
                 "shelf_id": shelf_id,
                 "ip_address": ip1,
                 "rssi_dbm": comp.get("rssi_dbm"),
-                "status": comp.get("status", "SAVED"),
+                "status": "ONLINE" if any(node_is_online(node) and node.get("ip_address") == ip1 for node in list(mqtt_bridge.edge_nodes.values())) else "OFFLINE",
                 "angle": "BACK",
                 "last_seen_at": comp.get("last_seen_at"),
             }
@@ -363,7 +388,7 @@ def get_discovered_cameras_list(compartments_list=None) -> list:
                 "shelf_id": shelf_id,
                 "ip_address": ip2,
                 "rssi_dbm": None,
-                "status": comp.get("status", "SAVED"),
+                "status": "ONLINE" if any(node_is_online(node) and node.get("ip_address") == ip2 for node in list(mqtt_bridge.edge_nodes.values())) else "OFFLINE",
                 "angle": "FRONT",
                 "last_seen_at": comp.get("last_seen_at"),
             }
@@ -455,11 +480,13 @@ def discover_active_esp32_cameras(subnet_prefix=None) -> list:
                         "status": "ONLINE",
                         "angle": angle,
                         "last_seen_at": now_iso,
+                        "last_seen_ts": time.time(),
                     }
                     mqtt_bridge.edge_nodes[dev_id] = node_info
                     return node_info
         except Exception:
             pass
+        record_probe_result(clean_ip)
         return None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=24) as executor:
@@ -1026,21 +1053,20 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         # Serve offline local Teachable Machine model assets (/models/tm_0cQO4TjOm/*)
         if path.startswith("/models/"):
-            rel_path = os.path.normpath(path.lstrip("/"))
-            if not rel_path.startswith(".."):
-                model_candidates = [
-                    os.path.abspath(os.path.join(os.path.dirname(__file__), "..", rel_path)),
-                    os.path.abspath(os.path.join(os.path.dirname(__file__), rel_path)),
-                ]
-                # If requested TM asset is not yet cached locally, attempt on-demand download
-                if not any(os.path.isfile(mp) for mp in model_candidates):
-                    ensure_local_tm_model_cached()
+            filename = urllib.parse.unquote(path[len("/models/"):])
+            model_bases = [(Path(__file__).parent.parent / "models").resolve(),
+                           (Path(__file__).parent / "models").resolve()]
+            model_candidates = [(base / filename).resolve() for base in model_bases]
+            if not all(target.is_relative_to(base) for base, target in zip(model_bases, model_candidates)):
+                self._send_json(403, {"error": "Model path is outside the models directory"})
+                return
+            if any(target.is_file() for target in model_candidates):
                 for mp in model_candidates:
                     if os.path.isfile(mp):
                         try:
                             with open(mp, "rb") as mf:
                                 data_bytes = mf.read()
-                            ctype = "application/json" if mp.endswith(".json") else "application/octet-stream"
+                            ctype = "application/json" if mp.suffix == ".json" else "application/octet-stream"
                             self.send_response(200)
                             self.send_header("Content-Type", ctype)
                             self.send_header("Content-Length", str(len(data_bytes)))
@@ -1050,6 +1076,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             return
                         except Exception:
                             pass
+            self._send_json(403, {"error": "Model asset not found"})
+            return
 
         if path in ["/", "/status", "/health"]:
             active_pipes = [
@@ -1122,12 +1150,48 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/esp32_snapshot_raw":
+            host = str(query.get("ip", [""])[0]).split("//")[-1].split("/")[0].strip()
+            mode = query.get("mode", ["live"])[0]
+            try:
+                duty = max(0, min(255, int(query.get("flash", ["0"])[0])))
+                if not host or not re.fullmatch(r"[A-Za-z0-9.:-]+", host) or mode not in ("live", "baseline"):
+                    raise ValueError("Invalid snapshot IP or mode")
+            except (TypeError, ValueError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            try:
+                req = urllib.request.Request(f"http://{host}/capture?mode={mode}&duty={duty}",
+                                             headers={"User-Agent": "SmartStorageSnapshot/1.0"})
+                with urllib.request.urlopen(req, timeout=5.0) as response:
+                    image_bytes = response.read()
+                if not image_bytes.startswith(b"\xff\xd8"):
+                    raise ValueError("Camera did not return a JPEG image")
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(image_bytes)))
+                self._send_cors_headers()
+                self.end_headers()
+                self.wfile.write(image_bytes)
+            except Exception as exc:
+                record_probe_result(host)
+                self._send_json(502, {"status": "failed", "error": str(exc)})
+            return
+
         if path == "/esp32_preview":
             t0 = time.time()
             esp32_ip = query.get("ip", [None])[0]
             esp32_ip2 = query.get("ip2", [None])[0]
             shelf_id = query.get("shelf_id", ["SHELF_R1_C1"])[0]
             boost = query.get("boost", ["auto"])[0]
+            try:
+                duty = int(query["duty"][0]) if "duty" in query else None
+                flash = int(query["flash"][0]) if "flash" in query else None
+                if duty is not None and not 0 <= duty <= 255:
+                    raise ValueError("duty must be between 0 and 255")
+            except (ValueError, TypeError) as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
             if boost in ("auto", "high", "off"):
                 esp32_ref_manager.vision_boost_mode = boost
             else:
@@ -1152,6 +1216,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     esp32_ip1=esp32_ip,
                     esp32_ip2=esp32_ip2,
                     mode="live",
+                    flash=flash,
+                    duty=duty,
+                    boost_mode=boost,
                 )
                 latency_ms = int((time.time() - t0) * 1000)
 
@@ -1178,7 +1245,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 })
                 return
 
-            frame_bgr, data_url = esp32_ref_manager.fetch_esp32_http_frame(esp32_ip=esp32_ip, mode="live")
+            frame_bgr, data_url = esp32_ref_manager.fetch_esp32_frame(esp32_ip=esp32_ip, mode="live", flash=flash, duty=duty, boost_mode=boost)
             latency_ms = int((time.time() - t0) * 1000)
 
             # If no baseline image exists yet for this shelf, populate it with this live frame
@@ -1223,9 +1290,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     data = json.loads(raw)
                     data["latency_ms"] = int((time.time() - t0) * 1000)
                     data["status"] = "ONLINE"
+                    record_probe_result(clean_ip, data)
                     self._send_json(200, data)
                     return
             except Exception as exc:
+                record_probe_result(clean_ip)
                 self._send_json(502, {"status": "OFFLINE", "ip_address": clean_ip, "error": str(exc)})
                 return
 
@@ -1471,6 +1540,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+            previous_baseline = esp32_ref_manager.baseline_cache.get(shelf_id)
             comp_res = esp32_ref_manager.compare_with_30s_baseline_and_references(
                 mqtt_client_id=mqtt_client_id,
                 shelf_id=shelf_id,
@@ -1485,28 +1555,36 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 tm_confidence=float(tm_confidence) if tm_confidence is not None else None,
             )
 
-            log_entry = None
+            log_entry: Optional[Dict[str, Any]] = None
             if predicted_box_count is not None:
-                PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
-
                 delta_val = int(comp_res.get("delta", 0))
                 derived_action = "BORROW" if delta_val < 0 else ("RETURN" if delta_val > 0 else expected_action)
-                before_img = comp_res.get("before_image_url") or esp32_ref_manager.baseline_cache.get(shelf_id, {}).get("data_url")
-                after_img = after_image or comp_res.get("after_image_url")
+                before_img = comp_res.get("before_image") or comp_res.get("before_image_url")
+                after_img = after_image or comp_res.get("after_image") or comp_res.get("after_image_url")
 
                 # ONLY update current_quantity in Supabase if box count actually changed (delta != 0)
                 if delta_val != 0:
-                    log_entry = apply_inventory_delta_in_supabase(
+                    delta_res = apply_inventory_delta_in_supabase(
                         shelf_id=shelf_id,
                         mqtt_client_id=mqtt_client_id,
                         trigger_action=derived_action,
                         comparison_result=comp_res,
+                        current_quantity_hint=curr_qty,
                     )
+                    if delta_res is False:
+                        if previous_baseline is None:
+                            esp32_ref_manager.baseline_cache.pop(shelf_id, None)
+                        else:
+                            esp32_ref_manager.baseline_cache[shelf_id] = previous_baseline
+                        self._send_json(502, {"status": "failed", "error": "Inventory update was not confirmed by the database"})
+                        return
+                    if isinstance(delta_res, dict):
+                        log_entry = delta_res
                     get_cached_compartments(force_refresh=True)
 
-                if not log_entry:
+                if not isinstance(log_entry, dict):
                     log_entry = {
-                        "log_id": f"val-{int(time.time() * 1000)}",
+                        "log_id": str(uuid.uuid4()),
                         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                         "shelf_id": shelf_id,
                         "rack_id": spatial_mapper.rack_id,
@@ -1516,13 +1594,14 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         "similarity_score": comp_res.get("similarity_score", 0.0),
                         "matched_box_count": comp_res.get("matched_box_count", predicted_box_count),
                         "scenario_label": comp_res.get("scenario_label") or scenario_label or f"{predicted_box_count} Boxes",
-                        "state_delta": delta_val,
+                        "state_delta": "ITEM_REMOVED" if delta_val < 0 else ("ITEM_RETURNED" if delta_val > 0 else "NO_CHANGE"),
                         "quantity_before": comp_res.get("quantity_before", curr_qty),
                         "quantity_after": comp_res.get("quantity_after", predicted_box_count),
                     }
                 log_entry["before_image_url"] = before_img
                 log_entry["after_image_url"] = after_img
                 LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
+                PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
 
             self._send_json(200, {
                 "status": "success",
@@ -1722,8 +1801,11 @@ def esp32_http_baseline_poller():
                         "status": "ONLINE",
                         "angle": "BACK",
                         "last_seen_at": now_iso,
+                        "last_seen_ts": time.time(),
                     }
                     mqtt_bridge.edge_nodes[dev_id1] = node_health
+                else:
+                    record_probe_result(clean_ip)
 
                 # Also probe secondary camera (CAM 2 Front Angle)
                 online_cam2 = False
@@ -1754,8 +1836,11 @@ def esp32_http_baseline_poller():
                         "status": "ONLINE",
                         "angle": "FRONT",
                         "last_seen_at": now_iso,
+                        "last_seen_ts": time.time(),
                     }
                     mqtt_bridge.edge_nodes[dev_id2] = node_health2
+                elif sec_ip:
+                    record_probe_result(sec_ip)
 
                 # Keep 30s baseline strictly in local RAM (sync_supabase=False) to prevent Base64 egress
                 if online or online_cam2:

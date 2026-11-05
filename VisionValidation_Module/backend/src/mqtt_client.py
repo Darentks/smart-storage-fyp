@@ -130,6 +130,7 @@ class MQTTClientNode:
             device_id = payload.get("device_id") or payload.get("mqtt_client_id")
             if device_id:
                 payload["last_seen_at"] = now_iso
+                payload["last_seen_ts"] = time.time()
                 payload["mqtt_client_id"] = device_id
                 self.edge_nodes[device_id] = payload
                 print(
@@ -159,6 +160,7 @@ class MQTTClientNode:
                     "rssi_dbm": payload.get("rssi_dbm"),
                     "free_heap_bytes": payload.get("free_heap_bytes"),
                     "last_seen_at": now_iso,
+                    "last_seen_ts": time.time(),
                     "shelf_id": shelf_id,
                     "status": "ONLINE",
                 })
@@ -214,6 +216,7 @@ class MQTTClientNode:
                 if device_id not in self.edge_nodes:
                     self.edge_nodes[device_id] = {}
                 self.edge_nodes[device_id]["last_seen_at"] = now_iso
+                self.edge_nodes[device_id]["last_seen_ts"] = time.time()
                 self.edge_nodes[device_id]["status"] = "ONLINE"
                 if shelf_id:
                     self.edge_nodes[device_id]["shelf_id"] = shelf_id

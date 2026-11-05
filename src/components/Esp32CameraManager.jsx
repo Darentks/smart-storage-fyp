@@ -63,10 +63,12 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
   }
 
   let bestBack = null;
+  let backSum = 0;
   let backCount = 0;
   try {
     const backPreds = await tmModel.predict(backImgEl);
     const backOnly = backPreds.filter((p) => /^back_(\d+)/i.test(String(p.className || '').trim()));
+    backSum = backOnly.reduce((sum, prediction) => sum + prediction.probability, 0);
     if (backOnly.length > 0) {
       bestBack = backOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
       const m = String(bestBack.className).trim().match(/^back_(\d+)/i);
@@ -77,10 +79,12 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
   }
 
   let bestFront = null;
+  let frontSum = 0;
   let frontCount = 0;
   try {
     const frontPreds = await tmModel.predict(frontImgEl);
     const frontOnly = frontPreds.filter((p) => /^front_(\d+)/i.test(String(p.className || '').trim()));
+    frontSum = frontOnly.reduce((sum, prediction) => sum + prediction.probability, 0);
     if (frontOnly.length > 0) {
       bestFront = frontOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
       const m = String(bestFront.className).trim().match(/^front_(\d+)/i);
@@ -90,7 +94,7 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
     console.warn('[TM] Front camera predict failed:', e);
   }
 
-  if (!bestBack || !bestFront) {
+  if (!bestBack || !bestFront || backSum < 0.25 || frontSum < 0.25 || bestBack.probability < 0.20 || bestFront.probability < 0.20) {
     return {
       backClass: bestBack ? bestBack.className : 'Back_Unmatched',
       backCount: 0,
@@ -138,13 +142,13 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
   const [savingProvision, setSavingProvision] = useState(false);
   const [formState, setFormState] = useState({
     id: null,
-    current_ip: '192.168.0.101',
+    current_ip: '192.168.0.201',
     device_id: 'ESP32_R1_C1_CAM1',
     camera_name: 'R1-C1 Back Angle (CAM 1)',
     rack_id: 'RACK_01',
     shelf_id: 'SHELF_R1_C1',
     angle_index: 1,
-    ip_octet: 101,
+    ip_octet: 201,
     rssi_dbm: null,
   });
 
@@ -284,10 +288,10 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
   // Open Modal for Add or Edit/Reassign NVS
   const openProvisionModal = (cam = null) => {
     if (cam) {
-      const lastOctet = parseInt(String(cam.ip_address || '192.168.0.101').split('.').pop(), 10) || 101;
+      const lastOctet = parseInt(String(cam.ip_address || '192.168.0.201').split('.').pop(), 10) || 201;
       setFormState({
         id: cam.id || null,
-        current_ip: cam.ip_address || '192.168.0.101',
+        current_ip: cam.ip_address || '192.168.0.201',
         device_id: cam.device_id || 'ESP32_R1_C1_CAM1',
         camera_name: cam.camera_name || `${cam.shelf_id} Angle ${cam.angle_index || 1}`,
         rack_id: cam.rack_id || 'RACK_01',
@@ -299,13 +303,13 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
     } else {
       setFormState({
         id: null,
-        current_ip: '192.168.0.101',
+        current_ip: '192.168.0.201',
         device_id: 'ESP32_R1_C1_CAM1',
         camera_name: 'R1-C1 Back Angle (CAM 1)',
         rack_id: 'RACK_01',
         shelf_id: 'SHELF_R1_C1',
         angle_index: 1,
-        ip_octet: 101,
+        ip_octet: 201,
         rssi_dbm: null,
       });
     }
@@ -315,11 +319,11 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
   // Auto-generate device_id and ip_octet when shelf_id or angle_index changes in modal
   const handleShelfOrAngleChange = (newShelf, newAngle) => {
     const shelfIdx = SHELF_OPTIONS.indexOf(newShelf);
-    const computedOctet = shelfIdx >= 0 ? 101 + shelfIdx * 2 + (Number(newAngle) === 2 ? 1 : 0) : formState.ip_octet;
+    const computedOctet = shelfIdx >= 0 ? 201 + shelfIdx * 2 + (Number(newAngle) === 2 ? 1 : 0) : formState.ip_octet;
     const shortShelf = newShelf.replace('SHELF_', '');
     const computedDeviceId = `ESP32_${shortShelf}_CAM${newAngle}`;
     const angleLabel = Number(newAngle) === 2 ? 'Front Angle' : 'Back Angle';
-    const camNum = computedOctet - 100;
+    const camNum = computedOctet - 200;
 
     setFormState((prev) => ({
       ...prev,
@@ -353,7 +357,7 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
     e.preventDefault();
     setSavingProvision(true);
 
-    const subnetParts = String(formState.current_ip || '192.168.0.101').trim().split('.');
+    const subnetParts = String(formState.current_ip || '192.168.0.201').trim().split('.');
     const prefix = subnetParts.length === 4 ? subnetParts.slice(0, 3).join('.') : '192.168.0';
     const targetIp = `${prefix}.${formState.ip_octet}`;
 
@@ -381,7 +385,9 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
         });
         notify(`Pushed NVS identity (${formState.device_id} -> ${targetIp}) & rebooting ESP32-CAM!`, 'success');
       } catch (nvsErr) {
-        notify(`NVS push skipped (${nvsErr.message}); saving record to database.`, 'warning');
+        notify(`NVS configuration failed: ${nvsErr.message}`, 'error');
+      setSavingProvision(false);
+      return;
       }
     }
 
@@ -727,7 +733,7 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
               </div>
 
               <div className="form-group">
-                <label>Target Static IP Octet (101–112)</label>
+                <label>Target Static IP Octet (201–212)</label>
                 <input
                   type="number"
                   min={101}

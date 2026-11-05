@@ -250,7 +250,7 @@ export async function uploadCameraFirmware(ip, binFile) {
 export function captureLiveSnapshotUrl(ip, mode = 'live', flash = 0) {
   const cleanIp = cleanIpAddress(ip);
   if (shouldProxyLanThroughBridge()) {
-    return `${resolveBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(cleanIp)}&mode=${encodeURIComponent(mode)}&t=${Date.now()}`;
+    return `${resolveBridgeUrl()}/esp32_snapshot_raw?ip=${encodeURIComponent(cleanIp)}&mode=${encodeURIComponent(mode)}&flash=${flash}&t=${Date.now()}`;
   }
   return `http://${cleanIp}/capture?mode=${encodeURIComponent(mode)}&flash=${flash}&t=${Date.now()}`;
 }
@@ -322,18 +322,20 @@ export async function upsertCamera(cam) {
 
   let savedRow = null;
   try {
+    const existing = cam.id && !String(cam.id).startsWith('cam-');
     const res = await supabaseRestRequest(
       'esp32_cameras',
-      'POST',
-      '?on_conflict=device_id&select=id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address',
+      existing ? 'PATCH' : 'POST',
+      existing ? '?id=eq.' + encodeURIComponent(cam.id) : '?on_conflict=device_id&select=id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address',
       record,
-      'resolution=merge-duplicates,return=representation'
+      existing ? 'return=representation' : 'resolution=merge-duplicates,return=representation'
     );
+    if (!Array.isArray(res) || !res[0]) throw new Error('Camera save returned no database record');
     if (Array.isArray(res) && res.length > 0) {
       savedRow = res[0];
     }
   } catch (err) {
-    console.warn('[esp32CameraService] upsertCamera Supabase table fallback:', err.message);
+    throw new Error('Camera save failed: ' + err.message);
   }
 
   const result = {

@@ -12,7 +12,7 @@ import json
 try:
     import cv2
 except ImportError:
-    cv2 = None  # type: ignore
+    cv2 = None
 
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -38,7 +38,12 @@ def on_intent_trigger(event_payload):
     print("=" * 60 + "\n")
 
 
-def main():
+def main() -> int:
+    opencv = cv2
+    if opencv is None:
+        print("OpenCV is required for the pose viewer. Install opencv-python in the selected Python environment.", file=sys.stderr)
+        return 1
+
     print("=" * 65)
     print("   SMART STORAGE FYP - YOLO11-POSE & DYNAMIC ROI VALIDATION")
     print("=" * 65)
@@ -79,10 +84,11 @@ def main():
         print(f"[-] ERROR: Could not open camera {mask_rtsp_url(str(camera_source))}.")
         print("    -> Check if another app is using the webcam.")
         print("    -> Run 'python calibrate_roi.py' or check device permissions.")
-        return
+        video.release_stream()
+        mqtt_node.disconnect()
+        return 1
 
     window_name = "Smart Storage FYP - YOLO11-Pose & Dynamic ROI Tracking"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
     print("\n[+] System running!")
     print("    -> Reach into any colored shelf box with your hand.")
@@ -96,9 +102,14 @@ def main():
     alert_time = 0.0
 
     try:
+        opencv.namedWindow(window_name, opencv.WINDOW_NORMAL)
         while True:
             ret, frame = video.capture_frame()
             if not ret or frame is None:
+                if time.time() - video.last_frame_timestamp > 0.3:
+                    behavior_classifier.reset_dwell_tracking()
+                if opencv.waitKey(20) & 0xFF in (ord("q"), 27):
+                    break
                 continue
 
             t_start = time.perf_counter()
@@ -126,21 +137,21 @@ def main():
 
             # 5. Render HUD diagnostic bar
             h, w = annotated.shape[:2]
-            cv2.rectangle(annotated, (0, 0), (w, 38), (25, 25, 25), -1)
+            opencv.rectangle(annotated, (0, 0), (w, 38), (25, 25, 25), -1)
 
             inf_ms = pose_estimator.last_inference_time_ms
             hud_str = f"FPS: {video.fps:.1f} | Latency: {inf_ms:.1f}ms | People: {len(detections)} | Privacy: {'ON' if privacy_mode else 'OFF'}"
-            cv2.putText(annotated, hud_str, (12, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+            opencv.putText(annotated, hud_str, (12, 24), opencv.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, opencv.LINE_AA)
 
             # Alert notification pill
             if alert_banner and time.time() < alert_time:
-                cv2.rectangle(annotated, (20, h - 45), (min(w - 20, 520), h - 12), (0, 180, 0), -1)
-                cv2.rectangle(annotated, (20, h - 45), (min(w - 20, 520), h - 12), (255, 255, 255), 1)
-                cv2.putText(annotated, alert_banner, (30, h - 22), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, cv2.LINE_AA)
+                opencv.rectangle(annotated, (20, h - 45), (min(w - 20, 520), h - 12), (0, 180, 0), -1)
+                opencv.rectangle(annotated, (20, h - 45), (min(w - 20, 520), h - 12), (255, 255, 255), 1)
+                opencv.putText(annotated, alert_banner, (30, h - 22), opencv.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 1, opencv.LINE_AA)
 
-            cv2.imshow(window_name, annotated)
+            opencv.imshow(window_name, annotated)
 
-            key = cv2.waitKey(1) & 0xFF
+            key = opencv.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
             elif key == ord('p'):
@@ -153,9 +164,10 @@ def main():
     finally:
         video.release_stream()
         mqtt_node.disconnect()
-        cv2.destroyAllWindows()
+        opencv.destroyAllWindows()
         print("[+] Test terminated cleanly.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

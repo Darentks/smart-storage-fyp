@@ -34,7 +34,7 @@ from typing import Any, Optional
 try:
     import cv2
 except ImportError:
-    cv2 = None  # type: ignore
+    cv2 = None
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.spatial_mapper import SpatialMapper
@@ -141,17 +141,18 @@ def spawn_center_compartment(frame_w=640, frame_h=480):
 def mouse_callback(event, x, y, flags, param):
     global selected_idx, drawing_new, dragging_box, active_handle, hover_handle
     global drag_offset, start_pt, current_pt, spatial_mapper
-    if spatial_mapper is None:
+    opencv = cv2
+    if spatial_mapper is None or opencv is None:
         return
 
     # Update hover state when not dragging
-    if event == cv2.EVENT_MOUSEMOVE and not dragging_box and active_handle == -1 and not drawing_new:
+    if event == opencv.EVENT_MOUSEMOVE and not dragging_box and active_handle == -1 and not drawing_new:
         current_pt = (x, y)
         hover_handle = -1
         if 0 <= selected_idx < len(spatial_mapper.compartments):
             hover_handle = find_handle_under_cursor(x, y, spatial_mapper.compartments[selected_idx])
 
-    if event == cv2.EVENT_LBUTTONDOWN:
+    if event == opencv.EVENT_LBUTTONDOWN:
         start_pt = (x, y)
         current_pt = (x, y)
 
@@ -190,7 +191,7 @@ def mouse_callback(event, x, y, flags, param):
             selected_idx = -1
             drawing_new = True
 
-    elif event == cv2.EVENT_MOUSEMOVE:
+    elif event == opencv.EVENT_MOUSEMOVE:
         current_pt = (x, y)
 
         if drawing_new:
@@ -233,7 +234,7 @@ def mouse_callback(event, x, y, flags, param):
             c["x_max"] = int(new_x1 + w)
             c["y_max"] = int(new_y1 + h)
 
-    elif event == cv2.EVENT_LBUTTONUP:
+    elif event == opencv.EVENT_LBUTTONUP:
         if drawing_new:
             drawing_new = False
             add_new_compartment(start_pt[0], start_pt[1], current_pt[0], current_pt[1])
@@ -251,8 +252,13 @@ def mouse_callback(event, x, y, flags, param):
             set_status(f"Resized {c['shelf_id']} to {w}x{h}px. Press [S] to save.", (0, 255, 0))
 
 
-def main():
+def main() -> int:
     global spatial_mapper, is_frozen, frozen_frame, selected_idx
+
+    opencv = cv2
+    if opencv is None:
+        print("OpenCV is required for ROI calibration. Install opencv-python in the selected Python environment.", file=sys.stderr)
+        return 1
 
     parser = argparse.ArgumentParser(description="Interactive Dynamic ROI Calibration Canvas")
     parser.add_argument("--source", default=None, help="Camera index or RTSP URL")
@@ -296,147 +302,156 @@ def main():
     video = VideoProcessor(source=cam_idx, width=640, height=480)
     if not video.is_streaming:
         print("[-] Could not open camera.")
-        return
+        video.release_stream()
+        mqtt_notifier.disconnect()
+        return 1
 
     window_name = f"Dynamic ROI Calibration Canvas [{cctv_id}] - Smart Storage FYP"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.setMouseCallback(window_name, mouse_callback)
+    try:
+        opencv.namedWindow(window_name, opencv.WINDOW_NORMAL)
+        opencv.setMouseCallback(window_name, mouse_callback)
 
-    set_status(f"Loaded {len(spatial_mapper.compartments)} ROIs for {cctv_id}. Click any box to edit its shape/size.", (0, 255, 255))
+        set_status(f"Loaded {len(spatial_mapper.compartments)} ROIs for {cctv_id}. Click any box to edit its shape/size.", (0, 255, 255))
 
-    while True:
-        if not is_frozen or frozen_frame is None:
-            ret, frame = video.capture_frame()
-            if not ret or frame is None:
+        while True:
+            if not is_frozen or frozen_frame is None:
+                ret, frame = video.capture_frame()
+                if ret and frame is not None:
+                    frozen_frame = frame.copy()
+            current_frame = frozen_frame
+            if current_frame is None:
+                if opencv.waitKey(20) & 0xFF in (ord("q"), 27):
+                    break
                 continue
-            frozen_frame = frame.copy()
-        else:
-            frame = frozen_frame.copy()
+            frame = current_frame.copy()
 
-        canvas = frame.copy()
-        h, w = canvas.shape[:2]
+            canvas = frame.copy()
+            h, w = canvas.shape[:2]
 
-        # 1. Render all configured compartments
-        for i, comp in enumerate(spatial_mapper.compartments):
-            x1, y1, x2, y2 = comp["x_min"], comp["y_min"], comp["x_max"], comp["y_max"]
-            is_sel = (i == selected_idx)
+            # 1. Render all configured compartments
+            for i, comp in enumerate(spatial_mapper.compartments):
+                x1, y1, x2, y2 = comp["x_min"], comp["y_min"], comp["x_max"], comp["y_max"]
+                is_sel = (i == selected_idx)
 
-            # Colors: Selected = Amber/Yellow, Normal = Blue/Cyan
-            color = (0, 220, 255) if is_sel else (255, 140, 0)
-            thickness = 3 if is_sel else 2
+                # Colors: Selected = Amber/Yellow, Normal = Blue/Cyan
+                color = (0, 220, 255) if is_sel else (255, 140, 0)
+                thickness = 3 if is_sel else 2
 
-            # Semi-transparent fill
-            overlay = canvas.copy()
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
-            cv2.addWeighted(overlay, 0.25 if is_sel else 0.10, canvas, 0.75 if is_sel else 0.90, 0, canvas)
+                # Semi-transparent fill
+                overlay = canvas.copy()
+                opencv.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+                opencv.addWeighted(overlay, 0.25 if is_sel else 0.10, canvas, 0.75 if is_sel else 0.90, 0, canvas)
 
-            # Outline border
-            cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness)
+                # Outline border
+                opencv.rectangle(canvas, (x1, y1), (x2, y2), color, thickness)
 
-            # Header pill
-            bw = x2 - x1
-            bh = y2 - y1
-            label = f" {comp['shelf_id']} [{bw}x{bh}] "
-            (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-            tag_y1 = max(45, y1 - th - 8)
-            cv2.rectangle(canvas, (x1, tag_y1), (x1 + tw + 6, tag_y1 + th + 8), color, -1)
-            cv2.putText(canvas, label, (x1 + 3, tag_y1 + th + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, cv2.LINE_AA)
+                # Header pill
+                bw = x2 - x1
+                bh = y2 - y1
+                label = f" {comp['shelf_id']} [{bw}x{bh}] "
+                (tw, th), _ = opencv.getTextSize(label, opencv.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+                tag_y1 = max(45, y1 - th - 8)
+                opencv.rectangle(canvas, (x1, tag_y1), (x1 + tw + 6, tag_y1 + th + 8), color, -1)
+                opencv.putText(canvas, label, (x1 + 3, tag_y1 + th + 4), opencv.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 1, opencv.LINE_AA)
 
-            # Draw 8 Control Handles if this compartment is selected
-            if is_sel:
-                handles = get_handles_for_box(comp)
-                for h_idx, (hx, hy) in enumerate(handles):
-                    is_h_active = (active_handle == h_idx)
-                    is_h_hover = (hover_handle == h_idx)
+                # Draw 8 Control Handles if this compartment is selected
+                if is_sel:
+                    handles = get_handles_for_box(comp)
+                    for h_idx, (hx, hy) in enumerate(handles):
+                        is_h_active = (active_handle == h_idx)
+                        is_h_hover = (hover_handle == h_idx)
 
-                    h_color = (0, 255, 0) if (is_h_active or is_h_hover) else (0, 255, 255)
-                    h_radius = 8 if (is_h_active or is_h_hover) else 6
+                        h_color = (0, 255, 0) if (is_h_active or is_h_hover) else (0, 255, 255)
+                        h_radius = 8 if (is_h_active or is_h_hover) else 6
 
-                    cv2.circle(canvas, (hx, hy), h_radius, h_color, -1)
-                    cv2.circle(canvas, (hx, hy), h_radius + 1, (0, 0, 0), 1)
+                        opencv.circle(canvas, (hx, hy), h_radius, h_color, -1)
+                        opencv.circle(canvas, (hx, hy), h_radius + 1, (0, 0, 0), 1)
 
-        # 2. Render new box currently being drawn
-        if drawing_new and start_pt[0] != -1:
-            rx1, rx2 = min(start_pt[0], current_pt[0]), max(start_pt[0], current_pt[0])
-            ry1, ry2 = min(start_pt[1], current_pt[1]), max(start_pt[1], current_pt[1])
-            cv2.rectangle(canvas, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
-            cv2.putText(canvas, f"New Box: {rx2 - rx1}x{ry2 - ry1}px", (rx1, max(55, ry1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, cv2.LINE_AA)
+            # 2. Render new box currently being drawn
+            if drawing_new and start_pt[0] != -1:
+                rx1, rx2 = min(start_pt[0], current_pt[0]), max(start_pt[0], current_pt[0])
+                ry1, ry2 = min(start_pt[1], current_pt[1]), max(start_pt[1], current_pt[1])
+                opencv.rectangle(canvas, (rx1, ry1), (rx2, ry2), (0, 255, 0), 2)
+                opencv.putText(canvas, f"New Box: {rx2 - rx1}x{ry2 - ry1}px", (rx1, max(55, ry1 - 8)), opencv.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1, opencv.LINE_AA)
 
-        # 3. Top diagnostic header banner
-        banner = canvas.copy()
-        cv2.rectangle(banner, (0, 0), (w, 44), (20, 20, 20), -1)
-        cv2.addWeighted(banner, 0.88, canvas, 0.12, 0, canvas)
+            # 3. Top diagnostic header banner
+            banner = canvas.copy()
+            opencv.rectangle(banner, (0, 0), (w, 44), (20, 20, 20), -1)
+            opencv.addWeighted(banner, 0.88, canvas, 0.12, 0, canvas)
 
-        status_disp = status_msg if time.time() < status_expiry else "Click to select | Drag handles to resize | [S]: Save"
-        curr_color = status_color if time.time() < status_expiry else (200, 200, 200)
+            status_disp = status_msg if time.time() < status_expiry else "Click to select | Drag handles to resize | [S]: Save"
+            curr_color = status_color if time.time() < status_expiry else (200, 200, 200)
 
-        sel_name = spatial_mapper.compartments[selected_idx]['shelf_id'] if 0 <= selected_idx < len(spatial_mapper.compartments) else "None"
-        cv2.putText(canvas, f"Selected: [{sel_name}] | {status_disp}", (12, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, curr_color, 1, cv2.LINE_AA)
-        cv2.putText(canvas, "[Click]:Select [Handles]:Resize [S]:SAVE [Q]:Exit", (12, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)
+            sel_name = spatial_mapper.compartments[selected_idx]['shelf_id'] if 0 <= selected_idx < len(spatial_mapper.compartments) else "None"
+            opencv.putText(canvas, f"Selected: [{sel_name}] | {status_disp}", (12, 18), opencv.FONT_HERSHEY_SIMPLEX, 0.42, curr_color, 1, opencv.LINE_AA)
+            opencv.putText(canvas, "[Click]:Select [Handles]:Resize [S]:SAVE [Q]:Exit", (12, 36), opencv.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, opencv.LINE_AA)
 
-        cv2.imshow(window_name, canvas)
-        key = cv2.waitKey(20) & 0xFF
+            opencv.imshow(window_name, canvas)
+            key = opencv.waitKey(20) & 0xFF
 
-        if key in [ord('q'), 27]:
-            break
-        elif key in [ord(' '), ord('c')]:
-            is_frozen = not is_frozen
-            set_status("Frame FROZEN for editing." if is_frozen else "LIVE camera feed resumed.")
-        elif key in [9]:  # TAB key: cycle to next compartment
-            if len(spatial_mapper.compartments) > 0:
-                selected_idx = (selected_idx + 1) % len(spatial_mapper.compartments)
-                sel_id = spatial_mapper.compartments[selected_idx]['shelf_id']
-                set_status(f"Selected {sel_id} (Compartment {selected_idx + 1} of {len(spatial_mapper.compartments)})")
-        elif ord('1') <= key <= ord('9'):  # Number keys: select shelf 1 to 9
-            num_idx = key - ord('1')
-            if num_idx < len(spatial_mapper.compartments):
-                selected_idx = num_idx
-                sel_id = spatial_mapper.compartments[selected_idx]['shelf_id']
-                set_status(f"Selected {sel_id}")
-        elif key in [ord('a'), ord('A')]:
-            # Spawn new compartment box
-            spawn_center_compartment(frame_w=w, frame_h=h)
-        elif key in [ord('s'), ord('S'), 13]:  # 'S' or ENTER: Save
-            # Save to both per-CCTV config and master roi_config.json
-            spatial_mapper.config_file = cctv_config_path
-            spatial_mapper.save_roi_config()
-            spatial_mapper.config_file = base_config_path
-            spatial_mapper.save_roi_config()
-            spatial_mapper.config_file = cctv_config_path
-            mqtt_notifier.notify_roi_reload(reason="ROI_CALIBRATED")
-            set_status(f"SAVED TO {os.path.basename(cctv_config_path)} & roi_config.json!", (0, 255, 0), duration=6.0)
-        elif key in [ord('r'), ord('R')]:  # Reload
-            spatial_mapper.config_file = active_load_path
-            spatial_mapper.load_roi_config()
-            selected_idx = 0 if len(spatial_mapper.compartments) > 0 else -1
-            set_status(f"Reloaded saved configuration from {os.path.basename(active_load_path)}.", (0, 255, 255))
-        elif key in [ord('x'), ord('X'), 8]:  # 'X' or Backspace: Delete selected
-            if 0 <= selected_idx < len(spatial_mapper.compartments):
-                removed = spatial_mapper.compartments.pop(selected_idx)
-                selected_idx = min(selected_idx, len(spatial_mapper.compartments) - 1)
-                set_status(f"Deleted {removed['shelf_id']}. Press [S] to save.", (0, 165, 255))
-        elif key in [ord('+'), ord('=')]:  # Expand size
-            if 0 <= selected_idx < len(spatial_mapper.compartments):
-                c = spatial_mapper.compartments[selected_idx]
-                c["x_min"] = max(0, c["x_min"] - 5)
-                c["y_min"] = max(45, c["y_min"] - 5)
-                c["x_max"] = min(w, c["x_max"] + 5)
-                c["y_max"] = min(h, c["y_max"] + 5)
-                set_status(f"Expanded size of {c['shelf_id']}. Press [S] to save.")
-        elif key in [ord('-'), ord('_')]:  # Shrink size
-            if 0 <= selected_idx < len(spatial_mapper.compartments):
-                c = spatial_mapper.compartments[selected_idx]
-                if (c["x_max"] - c["x_min"]) > 30 and (c["y_max"] - c["y_min"]) > 30:
-                    c["x_min"] += 5
-                    c["y_min"] += 5
-                    c["x_max"] -= 5
-                    c["y_max"] -= 5
-                    set_status(f"Shrunk size of {c['shelf_id']}. Press [S] to save.")
+            if key in [ord('q'), 27]:
+                break
+            elif key in [ord(' '), ord('c')]:
+                is_frozen = not is_frozen
+                set_status("Frame FROZEN for editing." if is_frozen else "LIVE camera feed resumed.")
+            elif key in [9]:  # TAB key: cycle to next compartment
+                if len(spatial_mapper.compartments) > 0:
+                    selected_idx = (selected_idx + 1) % len(spatial_mapper.compartments)
+                    sel_id = spatial_mapper.compartments[selected_idx]['shelf_id']
+                    set_status(f"Selected {sel_id} (Compartment {selected_idx + 1} of {len(spatial_mapper.compartments)})")
+            elif ord('1') <= key <= ord('9'):  # Number keys: select shelf 1 to 9
+                num_idx = key - ord('1')
+                if num_idx < len(spatial_mapper.compartments):
+                    selected_idx = num_idx
+                    sel_id = spatial_mapper.compartments[selected_idx]['shelf_id']
+                    set_status(f"Selected {sel_id}")
+            elif key in [ord('a'), ord('A')]:
+                # Spawn new compartment box
+                spawn_center_compartment(frame_w=w, frame_h=h)
+            elif key in [ord('s'), ord('S'), 13]:  # 'S' or ENTER: Save
+                # Save to both per-CCTV config and master roi_config.json
+                spatial_mapper.config_file = cctv_config_path
+                spatial_mapper.save_roi_config()
+                spatial_mapper.config_file = base_config_path
+                spatial_mapper.save_roi_config()
+                spatial_mapper.config_file = cctv_config_path
+                active_load_path = cctv_config_path
+                mqtt_notifier.notify_roi_reload(reason="ROI_CALIBRATED")
+                set_status(f"SAVED TO {os.path.basename(cctv_config_path)} & roi_config.json!", (0, 255, 0), duration=6.0)
+            elif key in [ord('r'), ord('R')]:  # Reload
+                spatial_mapper.config_file = active_load_path
+                spatial_mapper.load_roi_config()
+                selected_idx = 0 if len(spatial_mapper.compartments) > 0 else -1
+                set_status(f"Reloaded saved configuration from {os.path.basename(active_load_path)}.", (0, 255, 255))
+            elif key in [ord('x'), ord('X'), 8]:  # 'X' or Backspace: Delete selected
+                if 0 <= selected_idx < len(spatial_mapper.compartments):
+                    removed = spatial_mapper.compartments.pop(selected_idx)
+                    selected_idx = min(selected_idx, len(spatial_mapper.compartments) - 1)
+                    set_status(f"Deleted {removed['shelf_id']}. Press [S] to save.", (0, 165, 255))
+            elif key in [ord('+'), ord('=')]:  # Expand size
+                if 0 <= selected_idx < len(spatial_mapper.compartments):
+                    c = spatial_mapper.compartments[selected_idx]
+                    c["x_min"] = max(0, c["x_min"] - 5)
+                    c["y_min"] = max(45, c["y_min"] - 5)
+                    c["x_max"] = min(w, c["x_max"] + 5)
+                    c["y_max"] = min(h, c["y_max"] + 5)
+                    set_status(f"Expanded size of {c['shelf_id']}. Press [S] to save.")
+            elif key in [ord('-'), ord('_')]:  # Shrink size
+                if 0 <= selected_idx < len(spatial_mapper.compartments):
+                    c = spatial_mapper.compartments[selected_idx]
+                    if (c["x_max"] - c["x_min"]) > 30 and (c["y_max"] - c["y_min"]) > 30:
+                        c["x_min"] += 5
+                        c["y_min"] += 5
+                        c["x_max"] -= 5
+                        c["y_max"] -= 5
+                        set_status(f"Shrunk size of {c['shelf_id']}. Press [S] to save.")
 
-    video.release_stream()
-    mqtt_notifier.disconnect()
-    cv2.destroyAllWindows()
+    finally:
+        video.release_stream()
+        mqtt_notifier.disconnect()
+        opencv.destroyAllWindows()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

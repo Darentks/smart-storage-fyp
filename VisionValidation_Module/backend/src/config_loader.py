@@ -10,11 +10,12 @@ Handles:
 import json
 import os
 import re
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -24,8 +25,8 @@ except ImportError:
 if TYPE_CHECKING:
     from supabase import Client
 
-DEFAULT_SUPABASE_URL = "https://hrufeowqpnyjfwxydocm.supabase.co"
-DEFAULT_SUPABASE_KEY = "sb_publishable_zGEkwPhOLtDiNzSJXhB0wA_WDrgr0Gt"
+DEFAULT_SUPABASE_URL = "https://tosvjwxvcuxvgtcmakta.supabase.co"
+DEFAULT_SUPABASE_KEY = "sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l"
 
 # Lightweight non-Base64 column lists to prevent Supabase Egress bloat
 # Minimal clean schema: public.compartments only stores inventory state
@@ -374,7 +375,7 @@ def list_esp32_cameras() -> List[Dict[str, Any]]:
     for comp in compartments:
         row = dict(comp)
         shelf_key = str(row.get("shelf_id") or "").strip()
-        shelf_cams = cams_by_shelf.get(shelf_key, {})
+        shelf_cams: Dict[int, Dict[str, Any]] = cams_by_shelf.get(shelf_key) or {}
         cam1, cam2 = shelf_cams.get(1), shelf_cams.get(2)
         if cam1:
             row["ip_address"] = _clean_host(cam1.get("ip_address")) or None
@@ -418,7 +419,7 @@ def apply_inventory_delta_in_supabase(
     trigger_action: str,
     comparison_result: Dict[str, Any],
     current_quantity_hint: Optional[int] = None,
-) -> Optional[Dict[str, Any]]:
+) -> Union[Dict[str, Any], Literal[False], None]:
     """
     Applies inventory deduction (-1 / +1) in public.compartments ONLY when delta != 0,
     and returns a log for the camera service to retain in RAM.
@@ -458,17 +459,22 @@ def apply_inventory_delta_in_supabase(
     derived_action = "BORROW" if quantity_after < quantity_before else "RETURN"
 
     update_data: Dict[str, Any] = {"current_quantity": quantity_after}
-    _supabase_rest(
+    saved_rows = _supabase_rest(
         method="PATCH",
         table="compartments",
         query=f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}",
         payload=update_data,
-        prefer="return=minimal",
+        prefer="return=representation",
     )
+    if not isinstance(saved_rows, list) or not saved_rows:
+        return False
+    if not any(row.get("shelf_id") == shelf_id and row.get("current_quantity") == quantity_after for row in saved_rows):
+        return False
     print(f"[ConfigLoader] Updated {shelf_id} inventory: {quantity_before} -> {quantity_after} ({state_delta}).")
 
     scenario_label = comparison_result.get("matched_scenario_label") or comparison_result.get("scenario_label")
     db_log_record: Dict[str, Any] = {
+        "log_id": str(uuid.uuid4()),
         "shelf_id": shelf_id,
         "mqtt_client_id": mqtt_client_id,
         "trigger_action": derived_action,
@@ -478,7 +484,7 @@ def apply_inventory_delta_in_supabase(
         "similarity_score": float(similarity_score) if similarity_score is not None else None,
         "matched_box_count": int(matched_box_count),
         "scenario_label": scenario_label,
-        "state_delta": state_delta,
+        "state_delta": "ITEM_REMOVED" if quantity_after < quantity_before else "ITEM_RETURNED",
         "quantity_before": quantity_before,
         "quantity_after": quantity_after,
         "created_at": now_iso,

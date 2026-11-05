@@ -327,6 +327,8 @@ class ESP32ReferenceManager:
         timeout: float = 3.0,
         box_count_fallback: int = 4,
         flash: Optional[int] = None,
+        duty: Optional[int] = None,
+        boost_mode: Optional[str] = None,
     ) -> Tuple[Any, str]:
         """
         Fetches an image from http://{esp32_ip}/capture?mode={mode}.
@@ -336,6 +338,8 @@ class ESP32ReferenceManager:
             clean_ip = esp32_ip.replace("http://", "").replace("/", "").strip()
             flash_val = flash if flash is not None else 1
             url = f"http://{clean_ip}/capture?mode={mode}&flash={flash_val}&t={int(time.time() * 1000)}"
+            if duty is not None:
+                url += f"&duty={max(0, min(255, int(duty)))}"
             try:
                 req = urllib.request.Request(
                     url,
@@ -349,7 +353,7 @@ class ESP32ReferenceManager:
                     arr = np.asarray(bytearray(raw_bytes), dtype=np.uint8)
                     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                     if frame is not None:
-                        frame = enhance_low_light_frame(frame, boost_mode=self.vision_boost_mode)
+                        frame = enhance_low_light_frame(frame, boost_mode=boost_mode or self.vision_boost_mode)
                         data_url = encode_bgr_to_data_url(frame)
                         return frame, data_url
             except Exception:
@@ -371,6 +375,8 @@ class ESP32ReferenceManager:
         mode: str = "live",
         timeout: float = 3.5,
         flash: Optional[int] = None,
+        duty: Optional[int] = None,
+        boost_mode: Optional[str] = None,
     ) -> Tuple[Any, str, Optional[str], Optional[str]]:
         """
         Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=0,
@@ -382,6 +388,8 @@ class ESP32ReferenceManager:
             clean = ip.replace("http://", "").replace("/", "").strip()
             flash_val = flash if flash is not None else 1
             f_url = f"http://{clean}/capture?mode={mode}&flash={flash_val}&t={int(time.time() * 1000)}"
+            if duty is not None:
+                f_url += f"&duty={max(0, min(255, int(duty)))}"
             for attempt in range(2):
                 req_timeout = timeout if attempt == 0 else 2.0
                 try:
@@ -394,7 +402,7 @@ class ESP32ReferenceManager:
                         arr = np.asarray(bytearray(raw), dtype=np.uint8)
                         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR) if _OPENCV_AVAILABLE else None
                         if frame is not None:
-                            frame = enhance_low_light_frame(frame, boost_mode=self.vision_boost_mode)
+                            frame = enhance_low_light_frame(frame, boost_mode=boost_mode or self.vision_boost_mode)
                             return frame, encode_bgr_to_data_url(frame)
                 except Exception as exc:
                     if attempt == 0:
@@ -665,5 +673,7 @@ class ESP32ReferenceManager:
             "state_delta": state_delta,
             "delta": delta,
             "tm_validated": target_tm_count is not None,
+            "quantity_before": current_quantity,
+            "quantity_after": matched_box_count if matched_box_count is not None else current_quantity,
         }
 

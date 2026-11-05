@@ -269,3 +269,13 @@ class BehaviorClassifier:
         """Returns the dictionary of state snapshots for all compartments."""
         return {sid: tracker.get_status_info() for sid, tracker in self.trackers.items()}
 
+    def reset_dwell_tracking(self):
+        """Cancel unverified interactions when fresh camera evidence is lost."""
+        for tracker in self.trackers.values():
+            tracker.state = tracker.STATE_IDLE
+            tracker.dwell_start_time = None
+            tracker.last_seen_time = None
+            tracker.current_dwell_duration = 0.0
+            tracker.trigger_fired = False
+            tracker.trajectory_history.clear()
+

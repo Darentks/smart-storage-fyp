@@ -51,7 +51,10 @@ class VideoProcessor:
         self._latest_ret: bool = False
         self._frame_seq: int = 0
         self._last_read_seq: int = -1
+        self._last_frame_hash = None
+        self.is_file = os.path.isfile(str(source))
         self._reader_running: bool = False
+        self._reader_generation = 0
         self._reader_thread: Optional[threading.Thread] = None
 
         # FPS Tracking
@@ -77,6 +80,12 @@ class VideoProcessor:
     def connect(self) -> bool:
         """Initializes the VideoCapture connection and starts the low-latency reader thread."""
         self._stop_reader_thread()
+        self.is_file = os.path.isfile(str(self.source))
+        with self._lock:
+            self._latest_frame = None
+            self._latest_ret = False
+            self._last_read_seq = -1
+            self._last_frame_hash = None
 
         if self.cap is not None:
             try:
@@ -138,7 +147,7 @@ class VideoProcessor:
 
         # Start background frame-draining thread so RTSP never lags behind real-time
         self._reader_running = True
-        self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True, name="RTSPFrameDrainer")
+        self._reader_thread = threading.Thread(target=self._reader_loop, args=(self._reader_generation,), daemon=True, name="RTSPFrameDrainer")
         self._reader_thread.start()
 
         print(f"[VideoProcessor] Connected to video source ({masked_source}) [Zero-Latency Thread Active].")
@@ -146,26 +155,39 @@ class VideoProcessor:
 
     def _stop_reader_thread(self) -> None:
         self._reader_running = False
+        self._reader_generation += 1
         if self._reader_thread is not None and self._reader_thread.is_alive():
             self._reader_thread.join(timeout=1.0)
         self._reader_thread = None
 
-    def _reader_loop(self) -> None:
+    def _reader_loop(self, generation=None) -> None:
         """Continuously grabs frames from VideoCapture so the OS/FFmpeg buffer never accumulates lag."""
-        while self._reader_running and self.cap is not None:
+        generation = self._reader_generation if generation is None else generation
+        cap, is_file = self.cap, self.is_file
+        fps = cap.get(cv2.CAP_PROP_FPS) if is_file else 0
+        frame_period = 1.0 / fps if fps and fps > 0 else 1.0 / 25.0
+        next_frame_at = time.perf_counter() + frame_period
+        while self._reader_running and generation == self._reader_generation and cap is not None:
             try:
-                if not self.cap.isOpened():
+                if is_file:
+                    time.sleep(max(0.0, next_frame_at - time.perf_counter()))
+                    next_frame_at = max(next_frame_at + frame_period, time.perf_counter())
+                if not cap.isOpened():
                     time.sleep(0.05)
                     continue
                 # grab() + retrieve() drains queued packets at maximum speed
-                grabbed = self.cap.grab()
+                grabbed = cap.grab()
+                if generation != self._reader_generation:
+                    return
                 if not grabbed:
                     with self._lock:
                         self._latest_ret = False
                     time.sleep(0.02)
                     continue
 
-                ret, frame = self.cap.retrieve()
+                ret, frame = cap.retrieve()
+                if generation != self._reader_generation:
+                    return
                 if ret and frame is not None:
                     if self.target_width > 0 and self.target_height > 0:
                         h, w = frame.shape[:2]
@@ -216,11 +238,11 @@ class VideoProcessor:
 
         with self._lock:
             ret = self._latest_ret
+            fresh_sequence = self._frame_seq != self._last_read_seq
             frame = self._latest_frame.copy() if (self._latest_frame is not None) else None
             self._last_read_seq = self._frame_seq
 
         now = time.time()
-        self.last_frame_timestamp = now
 
         if not ret or frame is None:
             self.consecutive_drops += 1
@@ -233,6 +255,13 @@ class VideoProcessor:
             return False, None
 
         self.consecutive_drops = 0
+        if not fresh_sequence:
+            return False, None
+        frame_hash = hash(frame[::16, ::16].tobytes())
+        if frame_hash == self._last_frame_hash:
+            return False, None
+        self._last_frame_hash = frame_hash
+        self.last_frame_timestamp = now
 
         self._frame_count += 1
         elapsed = now - self._fps_start_time

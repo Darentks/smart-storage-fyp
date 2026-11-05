@@ -1642,7 +1642,7 @@
       }
     }
 
-    async function predictDualCamerasWithTM(backImgEl, frontImgEl) {
+    async function predictDualCamerasWithTM(backImgEl, frontImgEl, overrideBoost) {
       if (!window.tmModel) return null;
 
       const isUsable = (img) => {
@@ -1675,7 +1675,7 @@
 
       // Check boost mode and apply canvas brightness/gamma enhancer fallback if enabled
       const boostSelect = document.getElementById('visionBoostSelect');
-      const boostMode = boostSelect ? boostSelect.value : 'auto';
+      const boostMode = overrideBoost || (boostSelect ? boostSelect.value : 'auto');
       const backTarget = enhanceCanvasLowLight(backImgEl, boostMode);
       const frontTarget = enhanceCanvasLowLight(frontImgEl, boostMode);
 
@@ -1683,13 +1683,14 @@
       let bestBack = null;
       let backCount = 0;
       let backNormProb = 0;
+      let backSum = 0;
       try {
         const backPreds = await window.tmModel.predict(backTarget);
         const backOnly = backPreds.filter(p => /^back_(\d+)/i.test(String(p.className || '').trim()));
         if (backOnly.length > 0) {
           bestBack = backOnly.reduce((a, b) => a.probability > b.probability ? a : b);
-          const backSum = backOnly.reduce((s, p) => s + p.probability, 0) || 1;
-          backNormProb = bestBack.probability / backSum;
+          backSum = backOnly.reduce((s, p) => s + p.probability, 0);
+          backNormProb = backSum > 0 ? bestBack.probability / backSum : 0;
           const m = String(bestBack.className).trim().match(/^back_(\d+)/i);
           backCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
@@ -1701,13 +1702,14 @@
       let bestFront = null;
       let frontCount = 0;
       let frontNormProb = 0;
+      let frontSum = 0;
       try {
         const frontPreds = await window.tmModel.predict(frontTarget);
         const frontOnly = frontPreds.filter(p => /^front_(\d+)/i.test(String(p.className || '').trim()));
         if (frontOnly.length > 0) {
           bestFront = frontOnly.reduce((a, b) => a.probability > b.probability ? a : b);
-          const frontSum = frontOnly.reduce((s, p) => s + p.probability, 0) || 1;
-          frontNormProb = bestFront.probability / frontSum;
+          frontSum = frontOnly.reduce((s, p) => s + p.probability, 0);
+          frontNormProb = frontSum > 0 ? bestFront.probability / frontSum : 0;
           const m = String(bestFront.className).trim().match(/^front_(\d+)/i);
           frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
@@ -1715,14 +1717,14 @@
         console.warn('[TM] Front camera predict failed:', e);
       }
 
-      if (!bestBack || !bestFront) {
+      if (!bestBack || !bestFront || backSum < 0.25 || frontSum < 0.25 || bestBack.probability < 0.20 || bestFront.probability < 0.20) {
         return {
           backClass: bestBack ? bestBack.className : 'Back_Unmatched',
           backCount: 0,
-          backConfidence: bestBack ? Number((backNormProb * 100).toFixed(1)) : 0,
+          backConfidence: 0,
           frontClass: bestFront ? bestFront.className : 'Front_Unmatched',
           frontCount: 0,
-          frontConfidence: bestFront ? Number((frontNormProb * 100).toFixed(1)) : 0,
+          frontConfidence: 0,
           totalBoxes: null,
           scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
           confidence: 0,
@@ -2322,8 +2324,8 @@
       }
 
       const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
-      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null) {
-        const abortMsg = 'Validation aborted: Dual-angle required (1 camera unreachable)';
+      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null || !Number.isFinite(tmRes.confidence) || tmRes.confidence < 65) {
+        const abortMsg = 'Validation aborted: dual-angle evidence or confidence is insufficient.';
         if (tmLivePredictionBanner) {
           tmLivePredictionBanner.style.display = 'block';
           tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);font-weight:700;">${abortMsg}</span>`;
@@ -2403,9 +2405,12 @@
         const stateDelta = delta < 0 ? 'ITEM_REMOVED' : (delta > 0 ? 'ITEM_RETURNED' : 'NO_CHANGE');
         const newQty = tmRes.totalBoxes;
         try {
-          await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
+          const savedRows = await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
             current_quantity: newQty
-          }, 'return=minimal');
+          }, 'return=representation');
+          if (!Array.isArray(savedRows) || !savedRows.some(row => row.shelf_id === shelfId && row.current_quantity === newQty)) {
+            throw new Error('Inventory update was not confirmed by the database');
+          }
 
           prependLatestAction({
             log_id: `local-${Date.now()}`,
@@ -2438,19 +2443,16 @@
     // =========================================================================
     // DUAL-CAMERA TEACHABLE MACHINE VALIDATION PIPELINE
     // =========================================================================
+    const validatingShelves = new Set();
     async function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
+      if (validatingShelves.has(shelfId)) return null;
+      validatingShelves.add(shelfId);
       const comp = compartmentsData.find(c => c.shelf_id === shelfId);
       const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201');
       const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202');
 
       const prefix = isCctvTrigger ? 'CCTV Trigger' : 'Dual-Camera Validation';
       showToast(`${prefix}: Running validation for ${shelfId} (${action})...`, 'info');
-
-      // Guardrail 2: 500ms Post-Withdrawal Settle Delay when triggered by CCTV interaction
-      if (isCctvTrigger) {
-        console.log(`[DualCam] Waiting 500ms settle delay after CCTV interaction for ${shelfId}...`);
-        await new Promise(r => setTimeout(r, 500));
-      }
 
       try {
         const loadImgPromise = (img, src) => new Promise(resolve => {
@@ -2459,10 +2461,8 @@
           img.src = src;
         });
 
-        const fetchSnapshots = async () => {
-          const boostSelect = document.getElementById('visionBoostSelect');
-          const boostVal = boostSelect ? boostSelect.value : 'auto';
-          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boostVal)}&_t=${Date.now()}`;
+        const fetchSnapshots = async (boost, duty) => {
+          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boost)}&duty=${duty}&_t=${Date.now()}`;
           const prevResp = await fetch(previewUrl, { cache: 'no-store' });
           if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
           return await prevResp.json();
@@ -2486,7 +2486,7 @@
           }
         };
 
-        const executePrediction = async (bSrc, fSrc) => {
+        const executePrediction = async (bSrc, fSrc, boost) => {
           if (!window.tmModel) return null;
           if (!bSrc || !fSrc) {
             return {
@@ -2528,55 +2528,50 @@
           }
 
           try {
-            return await predictDualCamerasWithTM(imgBack, imgFront);
+            return await predictDualCamerasWithTM(imgBack, imgFront, boost);
           } catch (predErr) {
             console.warn('[DualCam TM] Prediction error:', predErr);
             return null;
           }
         };
 
-        // 1. Fetch live dual-camera snapshots from local bridge (require BOTH image_back and image_front)
-        let previewData = await fetchSnapshots();
-        let backSrc = previewData.image_back || null;
-        let frontSrc = previewData.image_front || null;
-        updatePreviewUI(previewData, backSrc, frontSrc);
-
-        // 2. Load into Image() objects and run Teachable Machine
-        let tmRes = await executePrediction(backSrc, frontSrc);
-        console.log(`[DualCam TM] Initial prediction for ${shelfId}:`, tmRes);
-
-        // Guardrail 2: Low-Confidence Retry (if tmRes && (tmRes.degraded || tmRes.confidence < 75.0), wait 700ms and retry)
-        if (tmRes && (tmRes.degraded || tmRes.confidence < 75.0)) {
-          console.warn(`[DualCam TM] Degraded or confidence ${tmRes.confidence}% < 75.0%. Waiting 700ms and retrying snapshot...`);
-          await new Promise(r => setTimeout(r, 700));
-
+        const userBoost = document.getElementById('visionBoostSelect')?.value || 'auto';
+        const attempts = [
+          { boost: userBoost, duty: 90, delay: 0 },
+          { boost: 'auto', duty: 135, delay: 650 },
+          { boost: 'high', duty: 185, delay: 900 }
+        ];
+        let bestValidAttempt = null;
+        for (const settings of attempts) {
+          if (settings.delay) await new Promise(resolve => setTimeout(resolve, settings.delay));
           try {
-            previewData = await fetchSnapshots();
-            backSrc = previewData.image_back || null;
-            frontSrc = previewData.image_front || null;
-            updatePreviewUI(previewData, backSrc, frontSrc);
-
-            const retryTmRes = await executePrediction(backSrc, frontSrc);
-            if (retryTmRes) {
-              console.log(`[DualCam TM] Settle retry prediction: ${retryTmRes.confidence}% (degraded=${retryTmRes.degraded})`);
-              tmRes = retryTmRes;
+            const preview = await fetchSnapshots(settings.boost, settings.duty);
+            const bSrc = preview.image_back || null;
+            const fSrc = preview.image_front || null;
+            updatePreviewUI(preview, bSrc, fSrc);
+            const prediction = await executePrediction(bSrc, fSrc, settings.boost);
+            if (prediction && !prediction.degraded && prediction.totalBoxes !== null && Number.isFinite(prediction.confidence)) {
+              if (!bestValidAttempt || prediction.confidence > bestValidAttempt.prediction.confidence) {
+                bestValidAttempt = { prediction, preview, settings };
+              }
+              if (prediction.confidence >= 75) break;
             }
-          } catch (retryErr) {
-            console.warn('[DualCam TM] Retry snapshot failed, continuing with initial prediction:', retryErr);
+          } catch (error) {
+            console.warn('[DualCam] Capture attempt failed:', error.message);
           }
         }
-
-        // Strict Degraded Camera Guardrail: If either camera failed to return a valid frame (!backOk || !frontOk),
-        // mark degraded: true, abort calling POST /esp32_validate, and show toast/status.
-        if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null) {
-          const abortMsg = 'Validation aborted: Dual-angle required (1 camera unreachable)';
+        if (!bestValidAttempt || bestValidAttempt.prediction.confidence < 65) {
+          const abortMsg = 'Validation aborted after 3 attempts: dual-angle evidence or confidence is insufficient.';
           if (tmLivePredictionBanner) {
             tmLivePredictionBanner.style.display = 'block';
-            tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);font-weight:700;">${abortMsg}</span>`;
+            tmLivePredictionBanner.textContent = abortMsg;
           }
           showToast(abortMsg, 'error');
           return null;
         }
+        const { prediction: tmRes, preview: previewData, settings: acceptedSettings } = bestValidAttempt;
+        if (tmRes.confidence < 75) showToast(`Accepted best retry (${tmRes.confidence}%)`, 'warning');
+        updatePreviewUI(previewData, previewData.image_back, previewData.image_front);
 
         if (tmLivePredictionBanner) {
           tmLivePredictionBanner.style.display = 'block';
@@ -2584,8 +2579,7 @@
         }
 
         // 3. Send POST /esp32_validate to Local Bridge
-        const boostSelect = document.getElementById('visionBoostSelect');
-        const boostVal = boostSelect ? boostSelect.value : 'auto';
+        const boostVal = acceptedSettings.boost;
         const valPayload = {
           shelf_id: shelfId,
           expected_action: action,
@@ -2636,6 +2630,8 @@
         console.error('[runFullDualCamValidation] Error:', err);
         showToast(`Dual-camera validation failed: ${err.message}`, 'error');
         return null;
+      } finally {
+        validatingShelves.delete(shelfId);
       }
     }
 
@@ -2697,6 +2693,11 @@
       if (!bridgeJson) return false;
       if (Array.isArray(bridgeJson.discovered_cameras)) {
         discoveredCamerasList = bridgeJson.discovered_cameras;
+        esp32CameraNodesList = esp32CameraNodesList.map(camera => {
+          const node = discoveredCamerasList.find(node => node.device_id === camera.device_id || cleanCameraHost(node.ip_address) === cleanCameraHost(camera.ip_address));
+          return { ...camera, status: node?.status === 'ONLINE' ? 'ONLINE' : 'OFFLINE', rssi_dbm: node?.rssi_dbm ?? camera.rssi_dbm };
+        });
+        renderEsp32CameraManager();
       }
       if (Array.isArray(bridgeJson.running_pipelines)) {
         runningPipelinesList = bridgeJson.running_pipelines;
@@ -3248,7 +3249,7 @@
       if (!host) return '';
       const cleanMode = mode === 'baseline' ? 'baseline' : 'live';
       if (shouldProxyLanThroughBridge()) {
-        return `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(host)}&mode=${cleanMode}&t=${Date.now()}`;
+        return `${getBridgeUrl()}/esp32_snapshot_raw?ip=${encodeURIComponent(host)}&mode=${cleanMode}&flash=${flash}&t=${Date.now()}`;
       }
       return `http://${host}/capture?mode=${cleanMode}&flash=${flash}&t=${Date.now()}`;
     }
@@ -3318,19 +3319,15 @@
       };
       let savedRow = null;
       try {
-        if (supabaseClient) {
-          const { data, error } = await supabaseClient
-            .from('esp32_cameras')
-            .upsert(record, { onConflict: 'device_id' })
-            .select(CAMERA_COLS)
-            .single();
-          if (!error && data) savedRow = data;
-        } else {
-          const rows = await sbRest('esp32_cameras', 'POST', '?on_conflict=device_id&select=' + CAMERA_COLS, record, 'resolution=merge-duplicates,return=representation');
-          if (Array.isArray(rows) && rows[0]) savedRow = rows[0];
-        }
-      } catch (dbErr) {
-        console.warn('[upsertCamera] Supabase esp32_cameras upsert warning:', dbErr);
+        const existing = cam.id && !String(cam.id).startsWith('cam-');
+        const rows = existing
+          ? await sbRest('esp32_cameras', 'PATCH', '?id=eq.' + encodeURIComponent(cam.id), record, 'return=representation')
+          : await sbRest('esp32_cameras', 'POST', '?on_conflict=device_id&select=' + CAMERA_COLS, record, 'resolution=merge-duplicates,return=representation');
+        if (!Array.isArray(rows) || !rows[0]) throw new Error('Camera save returned no database record');
+        savedRow = rows[0];
+      } catch (error) {
+        showToast('Camera save failed: ' + error.message, 'error');
+        throw error;
       }
 
       // Runtime fields (status/rssi/last_seen) are merged on top of the DB row, never persisted
@@ -3862,7 +3859,7 @@
               ip_octet: ipOctet
             });
           } catch (nvsErr) {
-            console.warn('NVS push warning:', nvsErr);
+            throw new Error('Camera NVS configuration failed: ' + nvsErr.message);
           }
         }
 
@@ -3880,9 +3877,9 @@
           last_seen: new Date().toISOString()
         });
 
-        const exists = esp32CameraNodesList.some((c) => c.device_id === saved.device_id);
+        const exists = esp32CameraNodesList.some((c) => c.device_id === saved.device_id || (camId && c.id === camId));
         if (exists) {
-          esp32CameraNodesList = esp32CameraNodesList.map((c) => (c.device_id === saved.device_id ? { ...c, ...saved } : c));
+          esp32CameraNodesList = esp32CameraNodesList.map((c) => (c.device_id === saved.device_id || (camId && c.id === camId) ? { ...c, ...saved } : c));
         } else {
           esp32CameraNodesList.push(saved);
         }
@@ -3994,9 +3991,12 @@
       'SHELF_R1_C6': { x_min: 0.16, y_min: 0.55, x_max: 0.36, y_max: 0.85 }
     };
 
+    let activeCctvId = 'CCTV_01';
+    function roiStorageKey() { return 'smart_storage_cctv_rois_' + (activeCctvId || 'CCTV_01'); }
+
     function loadStoredRois() {
       try {
-        const raw = localStorage.getItem('smart_storage_cctv_rois');
+        const raw = localStorage.getItem(roiStorageKey());
         if (raw) return { ...DEFAULT_COMPARTMENT_ROIS, ...JSON.parse(raw) };
       } catch (_) { }
       return { ...DEFAULT_COMPARTMENT_ROIS };
@@ -4030,6 +4030,7 @@
     initCompartmentTrackers();
 
     // YOLO11n-Pose ONNX Tracker instances & state
+    let trackingGeneration = 0;
     let poseAnimationId = null;
     let isPoseRunning = false;
     let isCalibratingRoi = false;
@@ -4401,32 +4402,9 @@
     }
 
     async function dispatchDwellTrigger(shelfId, action, dwellDuration, conf) {
-      console.log(`[YOLO11n-Pose ONNX] Dwell verified (>=1.2s) for ${shelfId}: Action=${action}, Dwell=${dwellDuration.toFixed(2)}s, Conf=${conf.toFixed(2)}`);
-      showToast(`🎯 CCTV Interaction Detected! ${shelfId} sustained ${dwellDuration.toFixed(1)}s dwell -> Action: ${action}`, 'warning');
-
       const triggerEl = document.getElementById('cctvLastTriggerText');
-      if (triggerEl) {
-        triggerEl.textContent = `${shelfId} (${action}) • ${dwellDuration.toFixed(1)}s`;
-        triggerEl.style.color = '#34d399';
-      }
-
-      // Trigger the Dual-Camera Teachable Machine AI verification with 500ms post-withdrawal settle delay
-      runFullDualCamValidation(shelfId, action, true);
-
-      // Optional bridge trigger notification if running
-      try {
-        fetch(`${getBridgeUrl()}/esp32_trigger`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shelf_id: shelfId,
-            action: action,
-            dwell_duration_seconds: Math.round(dwellDuration * 100) / 100,
-            oks_confidence: Math.round(conf * 100) / 100,
-            source: 'yolo_onnx_in_browser'
-          })
-        }).catch(() => { });
-      } catch (_) { }
+      if (triggerEl) triggerEl.textContent = shelfId + ' (' + action + ') • ' + dwellDuration.toFixed(1) + 's';
+      return await runFullDualCamValidation(shelfId, action, true);
     }
 
     async function toggleMediaPipeTracker() {
@@ -4438,6 +4416,7 @@
     }
 
     async function startMediaPipeTracker() {
+      const generation = ++trackingGeneration;
       const toggleBtn = document.getElementById('cctvPoseToggleBtn');
       const badge = document.getElementById('cctvPoseStatusBadge');
       const placeholder = document.getElementById('cctvTestPlaceholder');
@@ -4460,6 +4439,7 @@
         return;
       }
 
+      if (generation !== trackingGeneration) return;
       isPoseRunning = true;
       if (placeholder) placeholder.style.display = 'none';
       if (toggleBtn) {
@@ -4496,12 +4476,13 @@
           video: { width: { ideal: 640 }, height: { ideal: 480 } },
           audio: false
         });
+        if (generation !== trackingGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
         activeMediaStream = stream;
         videoEl.srcObject = stream;
         await videoEl.play();
 
         const loop = async () => {
-          if (!isPoseRunning) return;
+          if (!isPoseRunning || generation !== trackingGeneration) return;
           try {
             if (videoEl.readyState >= 2) await runYoloPoseOnSource(videoEl);
           } catch (error) {
@@ -4509,7 +4490,7 @@
             showToast('YOLO inference failed: ' + error.message, 'error');
             return;
           }
-          if (isPoseRunning) poseAnimationId = requestAnimationFrame(loop);
+          if (isPoseRunning && generation === trackingGeneration) poseAnimationId = requestAnimationFrame(loop);
         };
         poseAnimationId = requestAnimationFrame(loop);
 
@@ -4532,6 +4513,8 @@
 
     function stopMediaPipeTracker() {
       isPoseRunning = false;
+      trackingGeneration++;
+      initCompartmentTrackers();
       const toggleBtn = document.getElementById('cctvPoseToggleBtn');
       const badge = document.getElementById('cctvPoseStatusBadge');
       const placeholder = document.getElementById('cctvTestPlaceholder');
@@ -4581,6 +4564,7 @@
     }
 
     function onCctvSourceChanged() {
+      initCompartmentTrackers();
       if (isPoseRunning) {
         stopMediaPipeTracker();
         setTimeout(startMediaPipeTracker, 300);
@@ -4667,6 +4651,7 @@
     let activeCctvSourceUrl = null;
 
     function startCctvBridgePollingLoop() {
+      const generation = trackingGeneration;
       if (bridgeStreamInterval) {
         clearTimeout(bridgeStreamInterval);
         clearInterval(bridgeStreamInterval);
@@ -4676,9 +4661,10 @@
       const reusableImg = new Image();
       reusableImg.crossOrigin = 'anonymous';
       let lastSeq = -1;
+      let lastFreshFrameAt = performance.now();
 
       async function pumpFrame() {
-        if (!isPoseRunning) return;
+        if (!isPoseRunning || generation !== trackingGeneration) return;
         const t0 = performance.now();
         try {
           const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}`, { cache: 'no-store' });
@@ -4690,17 +4676,20 @@
               reusableImg.onerror = resolve;
               reusableImg.src = data.image;
             });
-            if (isPoseRunning && reusableImg.naturalWidth) {
+            if (isPoseRunning && generation === trackingGeneration && reusableImg.naturalWidth) {
               const cv = document.getElementById('cctvPoseCanvas');
               if (cv && (cv.width !== reusableImg.naturalWidth || cv.height !== reusableImg.naturalHeight)) {
                 cv.width = reusableImg.naturalWidth;
                 cv.height = reusableImg.naturalHeight;
               }
+              if (performance.now() - lastFreshFrameAt > 300) initCompartmentTrackers();
               await runYoloPoseOnSource(reusableImg);
+              lastFreshFrameAt = performance.now();
             }
           }
         } catch (_) { }
-        if (isPoseRunning) {
+        if (performance.now() - lastFreshFrameAt > 300) initCompartmentTrackers();
+        if (isPoseRunning && generation === trackingGeneration) {
           const elapsed = performance.now() - t0;
           const nextDelay = Math.max(8, 33 - elapsed);
           bridgeStreamInterval = setTimeout(pumpFrame, nextDelay);
@@ -4744,7 +4733,7 @@
 
     function saveCalibratedRois() {
       try {
-        localStorage.setItem('smart_storage_cctv_rois', JSON.stringify(activeCctvRois));
+        localStorage.setItem(roiStorageKey(), JSON.stringify(activeCctvRois));
         showToast('Saved calibrated ROIs to local browser storage!', 'success');
       } catch (err) {
         showToast(`Failed to save ROIs: ${err.message}`, 'error');
@@ -4754,7 +4743,7 @@
     function resetDefaultRois() {
       activeCctvRois = { ...DEFAULT_COMPARTMENT_ROIS };
       try {
-        localStorage.removeItem('smart_storage_cctv_rois');
+        localStorage.removeItem(roiStorageKey());
       } catch (_) { }
       updateCalibCoordsText();
       showToast('Reset all compartment ROIs to defaults.', 'info');
@@ -4997,12 +4986,17 @@
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
       toggleRoiCalibrationMode(true);
-      useCctvAsTrackerSource(rtspUrl);
+      useCctvAsTrackerSource(rtspUrl, cctvId);
       showToast(`Ready to calibrate ROI for ${cctvId} on its CCTV feed. Drag box on canvas above.`, 'info');
     }
 
     // Point the tracker canvas at the selected CCTV (via local bridge) instead of the laptop webcam
-    function useCctvAsTrackerSource(rtspUrl) {
+    function useCctvAsTrackerSource(rtspUrl, cctvId = 'CCTV_01') {
+      if (isPoseRunning) stopMediaPipeTracker();
+      activeCctvId = cctvId;
+      activeCctvRois = loadStoredRois();
+      initCompartmentTrackers();
+      updateCalibCoordsText();
       activeCctvSourceUrl = rtspUrl;
       const sourceSelect = document.getElementById('cctvPoseSourceSelect');
       if (sourceSelect) sourceSelect.value = 'cctv_bridge';
@@ -5015,7 +5009,7 @@
     function startCctvPipeline(cctvId, rtspUrl) {
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
-      useCctvAsTrackerSource(rtspUrl);
+      useCctvAsTrackerSource(rtspUrl, cctvId);
       showToast(`Running YOLO11n-Pose ONNX (Vercel Web) on ${cctvId} CCTV feed`, 'success');
     }
 

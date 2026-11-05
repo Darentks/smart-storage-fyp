@@ -103,11 +103,8 @@ class VisionValidationEngine:
         action = event["expected_action"]
         conf = event.get("oks_confidence", 1.0)
 
-        # Publish MQTT trigger to wake compartment ESP32-CAM
-        if self.mqtt_client is not None:
-            self.mqtt_client.publish_trigger(shelf_id=shelf_id, expected_action=action, confidence=conf)
-
-        # Also notify local bridge about CCTV trigger so browser UI TM model can process dual-cam inference
+        # The bridge publishes the hardware trigger and queues browser validation.
+        # Publish directly only if the bridge is unavailable, avoiding duplicate captures.
         def _notify_bridge_trigger():
             try:
                 trig_url = "http://localhost:8008/esp32_trigger"
@@ -122,6 +119,8 @@ class VisionValidationEngine:
                     print(f"[VisionEngine] CCTV wrist interaction (1.2s dwell) queued in local bridge: {shelf_id} ({action})")
             except Exception as e:
                 print(f"[VisionEngine] Notice: Local bridge not responding to CCTV trigger: {e}")
+                if self.mqtt_client is not None:
+                    self.mqtt_client.publish_trigger(shelf_id=shelf_id, expected_action=action, confidence=conf)
 
         threading.Thread(target=_notify_bridge_trigger, daemon=True).start()
 
@@ -241,8 +240,11 @@ class VisionValidationEngine:
             while self.is_running:
                 ret, frame = video_proc.capture_frame()
                 if not ret or frame is None:
-                    time.sleep(0.5)
-                    video_proc.connect()
+                    # Missing or repeated frames must break dwell continuity without
+                    # reconnecting a healthy stream for every unchanged image.
+                    if time.time() - video_proc.last_frame_timestamp > 0.3:
+                        behav_clf.reset_dwell_tracking()
+                    time.sleep(0.02)
                     continue
 
                 # 1. Pose estimation keypoint extraction
