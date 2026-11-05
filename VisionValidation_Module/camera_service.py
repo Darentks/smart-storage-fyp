@@ -930,7 +930,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
     def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
@@ -940,7 +940,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self._send_cors_headers()
         self.end_headers()
-        self.wfile.write(json.dumps(payload).encode("utf-8"))
+        if self.command != "HEAD":
+            self.wfile.write(json.dumps(payload).encode("utf-8"))
 
     def _read_json_body(self) -> dict:
         content_length = int(self.headers.get("Content-Length", 0))
@@ -956,6 +957,41 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self.send_response(204)
         self._send_cors_headers()
         self.end_headers()
+
+    def _serve_model_asset(self, filename: str, head_only: bool = False):
+        service_dir = Path(__file__).resolve().parent
+        model_bases = [
+            service_dir.parent / "models",
+            service_dir / "models",
+            service_dir / "backend" / "models",
+        ]
+        for base in model_bases:
+            try:
+                base_resolved = base.resolve()
+                target = (base_resolved / filename).resolve()
+                if not target.is_relative_to(base_resolved) or not target.is_file():
+                    continue
+                data_bytes = None if head_only else target.read_bytes()
+                content_length = target.stat().st_size if head_only else len(data_bytes)
+            except (OSError, ValueError):
+                continue
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(content_length))
+            self._send_cors_headers()
+            self.end_headers()
+            if data_bytes is not None:
+                self.wfile.write(data_bytes)
+            return
+        self._send_json(404, {"error": "Model asset not found"})
+
+    def do_HEAD(self):
+        path = urllib.parse.urlparse(self.path).path
+        if path.startswith("/models/"):
+            filename = urllib.parse.unquote(path[len("/models/"):])
+            self._serve_model_asset(filename, head_only=True)
+            return
+        self._send_json(404, {"error": "Endpoint not found"})
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -1051,32 +1087,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(502, {"error": f"Failed to fetch Teachable Machine asset {clean_filename}"})
                 return
 
-        # Serve offline local Teachable Machine model assets (/models/tm_0cQO4TjOm/*)
+        # Serve local ONNX and Teachable Machine assets from all model directories.
         if path.startswith("/models/"):
             filename = urllib.parse.unquote(path[len("/models/"):])
-            model_bases = [(Path(__file__).parent.parent / "models").resolve(),
-                           (Path(__file__).parent / "models").resolve()]
-            model_candidates = [(base / filename).resolve() for base in model_bases]
-            if not all(target.is_relative_to(base) for base, target in zip(model_bases, model_candidates)):
-                self._send_json(403, {"error": "Model path is outside the models directory"})
-                return
-            if any(target.is_file() for target in model_candidates):
-                for mp in model_candidates:
-                    if os.path.isfile(mp):
-                        try:
-                            with open(mp, "rb") as mf:
-                                data_bytes = mf.read()
-                            ctype = "application/json" if mp.suffix == ".json" else "application/octet-stream"
-                            self.send_response(200)
-                            self.send_header("Content-Type", ctype)
-                            self.send_header("Content-Length", str(len(data_bytes)))
-                            self._send_cors_headers()
-                            self.end_headers()
-                            self.wfile.write(data_bytes)
-                            return
-                        except Exception:
-                            pass
-            self._send_json(403, {"error": "Model asset not found"})
+            self._serve_model_asset(filename)
             return
 
         if path in ["/", "/status", "/health"]:

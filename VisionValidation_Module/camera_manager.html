@@ -4060,9 +4060,9 @@
       return 'BORROW';
     }
 
+    let isYoloInferencing = false;
     let yoloOrtSession = null;
     let yoloSessionPromise = null;
-    const YOLO_MODEL_PATHS = ['/models/yolo11n-pose.onnx', '/VisionValidation_Module/backend/models/yolo11n-pose.onnx'];
     const YOLO_INPUT_SIZE = 320;
     const yoloOffscreen = Object.assign(document.createElement('canvas'), { width: 320, height: 320 });
     const yoloOffCtx = yoloOffscreen.getContext('2d', { willReadFrequently: true });
@@ -4074,53 +4074,104 @@
         if (!window.ort) throw new Error('ONNX Runtime did not load. Check the CDN connection.');
         ort.env.wasm.wasmPaths = 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/';
         ort.env.wasm.numThreads = 1;
-        for (const path of YOLO_MODEL_PATHS) {
+        const candidatePaths = [
+          './models/yolo11n-pose.onnx',
+          '/models/yolo11n-pose.onnx',
+          `${getBridgeUrl()}/models/yolo11n-pose.onnx`,
+          '/VisionValidation_Module/backend/models/yolo11n-pose.onnx'
+        ];
+        for (const path of candidatePaths) {
           try {
+            const response = await fetch(path, { method: 'HEAD' });
+            const contentType = (response.headers.get('content-type') || '').toLowerCase();
+            if (!response.ok) throw new Error(`Model request failed: HTTP ${response.status}`);
+            if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml')) {
+              throw new Error('Model URL returned HTML instead of an ONNX file.');
+            }
             yoloOrtSession = await ort.InferenceSession.create(path, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
             return yoloOrtSession;
           } catch (error) { console.warn('[YOLO ONNX]', path, error.message); }
         }
-        throw new Error('Missing /models/yolo11n-pose.onnx. Run the ONNX export step.');
+        throw new Error('YOLO pose model unavailable from the site or camera bridge. Export yolo11n-pose.onnx into a models directory and check the bridge URL.');
       })();
       try { return await yoloSessionPromise; }
       finally { yoloSessionPromise = null; }
     }
 
     async function runYoloPoseOnSource(sourceEl) {
-      const session = await getYoloPoseSession();
-      yoloOffCtx.drawImage(sourceEl, 0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE);
-      const pixels = yoloOffCtx.getImageData(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE).data;
-      const area = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
-      const input = new Float32Array(3 * area);
-      for (let i = 0; i < area; i++) {
-        input[i] = pixels[i * 4] / 255;
-        input[area + i] = pixels[i * 4 + 1] / 255;
-        input[2 * area + i] = pixels[i * 4 + 2] / 255;
-      }
-      const tensor = new ort.Tensor('float32', input, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
+      if (isYoloInferencing || !isPoseRunning) return;
+      const generation = trackingGeneration;
+      let tensor;
       let outputs;
       try {
-        outputs = await session.run({ [session.inputNames[0]]: tensor });
+        // Acquire before awaiting session initialization so overlapping frames also skip it.
+        isYoloInferencing = true;
+        const session = await getYoloPoseSession();
+        if (!isPoseRunning || generation !== trackingGeneration) return;
+        const srcW = sourceEl.videoWidth || sourceEl.naturalWidth || sourceEl.width || 640;
+        const srcH = sourceEl.videoHeight || sourceEl.naturalHeight || sourceEl.height || 480;
+        const scale = Math.min(YOLO_INPUT_SIZE / srcW, YOLO_INPUT_SIZE / srcH);
+        const newW = Math.round(srcW * scale), newH = Math.round(srcH * scale);
+        const padX = (YOLO_INPUT_SIZE - newW) / 2, padY = (YOLO_INPUT_SIZE - newH) / 2;
+        yoloOffCtx.fillStyle = '#727272';
+        yoloOffCtx.fillRect(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE);
+        yoloOffCtx.drawImage(sourceEl, padX, padY, newW, newH);
+        const pixels = yoloOffCtx.getImageData(0, 0, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE).data;
+        const area = YOLO_INPUT_SIZE * YOLO_INPUT_SIZE;
+        const input = new Float32Array(3 * area);
+        for (let i = 0; i < area; i++) {
+          input[i] = pixels[i * 4] / 255;
+          input[area + i] = pixels[i * 4 + 1] / 255;
+          input[2 * area + i] = pixels[i * 4 + 2] / 255;
+        }
+        tensor = new ort.Tensor('float32', input, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
+        const feeds = { [session.inputNames[0]]: tensor };
+        outputs = await session.run(feeds);
+        if (!isPoseRunning || generation !== trackingGeneration) return;
         const output = outputs[session.outputNames[0]];
         if (output.dims.length !== 3 || output.dims[1] !== 56) throw new Error('Expected YOLO pose output [1,56,anchors]. Export without NMS.');
         const anchors = output.dims[2], data = output.data;
-        let best = -1, score = 0.45;
+        const candidates = [];
         for (let a = 0; a < anchors; a++) {
-          if (data[4 * anchors + a] > score) { score = data[4 * anchors + a]; best = a; }
+          const score = data[4 * anchors + a];
+          if (score > 0.45) {
+            candidates.push([data[a], data[anchors + a], data[2 * anchors + a], data[3 * anchors + a], score, a]);
+          }
         }
-        const landmarks = Array.from({ length: 33 }, () => ({ x: 0, y: 0, visibility: 0 }));
-        if (best >= 0) {
-          [5, 6, 7, 8, 9, 10, 11, 12].forEach((keypoint, i) => {
-            landmarks[[11, 12, 13, 14, 15, 16, 23, 24][i]] = {
-              x: data[(5 + keypoint * 3) * anchors + best] / YOLO_INPUT_SIZE,
-              y: data[(6 + keypoint * 3) * anchors + best] / YOLO_INPUT_SIZE,
-              visibility: data[(7 + keypoint * 3) * anchors + best]
+        candidates.sort((a, b) => b[4] - a[4]);
+        const iouThreshold = 0.50, maxDetections = 5;
+        const kept = [];
+        for (const candidate of candidates) {
+          const [cx, cy, w, h] = candidate;
+          const overlaps = kept.some(([otherX, otherY, otherW, otherH]) => {
+            const intersectionW = Math.max(0, Math.min(cx + w / 2, otherX + otherW / 2) - Math.max(cx - w / 2, otherX - otherW / 2));
+            const intersectionH = Math.max(0, Math.min(cy + h / 2, otherY + otherH / 2) - Math.max(cy - h / 2, otherY - otherH / 2));
+            const intersection = intersectionW * intersectionH;
+            const union = w * h + otherW * otherH - intersection;
+            return union > 0 && intersection / union > iouThreshold;
+          });
+          if (!overlaps) kept.push(candidate);
+          if (kept.length >= maxDetections) break;
+        }
+        // COCO's 17 keypoints mapped to the existing MediaPipe-style landmark indices.
+        const cocoToPose = [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
+        const allPersonsLandmarks = kept.map(([, , , , , anchorIdx]) => {
+          const mappedLandmarks = Array.from({ length: 33 }, () => ({ x: 0, y: 0, visibility: 0 }));
+          cocoToPose.forEach((poseIndex, keypoint) => {
+            const rawX = data[(5 + keypoint * 3) * anchors + anchorIdx];
+            const rawY = data[(6 + keypoint * 3) * anchors + anchorIdx];
+            mappedLandmarks[poseIndex] = {
+              x: Math.max(0, Math.min(1, (rawX - padX) / newW)),
+              y: Math.max(0, Math.min(1, (rawY - padY) / newH)),
+              visibility: data[(7 + keypoint * 3) * anchors + anchorIdx]
             };
           });
-        }
-        onPoseResults({ image: sourceEl, poseLandmarks: best >= 0 ? landmarks : null });
+          return mappedLandmarks;
+        });
+        onPoseResults({ image: sourceEl, poseLandmarks: allPersonsLandmarks[0] || null, multiPoseLandmarks: allPersonsLandmarks });
       } finally {
-        tensor.dispose();
+        isYoloInferencing = false;
+        if (tensor) tensor.dispose();
         if (outputs) Object.values(outputs).forEach(output => output.dispose());
       }
     }
@@ -4154,45 +4205,43 @@
         ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
 
-      // Draw Pose Landmarks & Skeleton connectors if present
-      let leftWrist = null;
-      let rightWrist = null;
-
-      if (results.poseLandmarks) {
+      // Draw every person's skeleton and evaluate all visible wrists.
+      const persons = results.multiPoseLandmarks || (results.poseLandmarks ? [results.poseLandmarks] : []);
+      const detectedWrists = [];
+      for (const [personIndex, landmarks] of persons.entries()) {
         if (window.drawConnectors && window.POSE_CONNECTIONS) {
           try {
-            drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, {
+            drawConnectors(ctx, landmarks, POSE_CONNECTIONS, {
               color: 'rgba(56, 189, 248, 0.4)',
               lineWidth: 2
             });
           } catch (_) { }
         } else {
-          drawBasicSkeleton(ctx, results.poseLandmarks, canvas.width, canvas.height);
+          drawBasicSkeleton(ctx, landmarks, canvas.width, canvas.height);
         }
 
-        // Wrist landmarks: 15 (LEFT_WRIST), 16 (RIGHT_WRIST)
-        const lw = results.poseLandmarks[15];
-        const rw = results.poseLandmarks[16];
-        if (lw && (lw.visibility === undefined || lw.visibility >= 0.45)) leftWrist = lw;
-        if (rw && (rw.visibility === undefined || rw.visibility >= 0.45)) rightWrist = rw;
+        // Wrist landmarks: 15 (LEFT_WRIST), 16 (RIGHT_WRIST).
+        for (const [index, side] of [[15, 'Left'], [16, 'Right']]) {
+          const wrist = landmarks[index];
+          if (wrist && wrist.visibility >= 0.45) {
+            const name = persons.length > 1 ? `P${personIndex + 1} ${side}` : side;
+            detectedWrists.push({ ...wrist, name });
+          }
+        }
       }
 
-      // Update Wrist UI telemetry
+      // Update Wrist UI telemetry for all detected persons.
       const wristsEl = document.getElementById('cctvWristsText');
       if (wristsEl) {
-        const lStr = leftWrist ? `L (${(leftWrist.x).toFixed(2)}, ${(leftWrist.y).toFixed(2)})` : 'L: --';
-        const rStr = rightWrist ? `R (${(rightWrist.x).toFixed(2)}, ${(rightWrist.y).toFixed(2)})` : 'R: --';
-        wristsEl.textContent = `${lStr} | ${rStr}`;
+        wristsEl.textContent = detectedWrists.length
+          ? detectedWrists.map(w => `${w.name} (${w.x.toFixed(2)}, ${w.y.toFixed(2)})`).join(' | ')
+          : 'L: -- | R: --';
       }
 
       // Evaluate Dwell State Machine for each compartment ROI
       let maxDwellShelf = null;
       let maxDwellTime = 0;
       let activeDwellState = 'IDLE';
-
-      const detectedWrists = [];
-      if (leftWrist) detectedWrists.push({ ...leftWrist, name: 'Left' });
-      if (rightWrist) detectedWrists.push({ ...rightWrist, name: 'Right' });
 
       for (const shelfId of ALL_SHELF_IDS) {
         const roi = activeCctvRois[shelfId] || DEFAULT_COMPARTMENT_ROIS[shelfId];
