@@ -20,7 +20,7 @@ Comprehensive ROI Editing Features:
       * Press [SPACE] / [C] to freeze/unfreeze camera frame
       * Press [X] or [Backspace] to delete the selected compartment
   - SAVING:
-      * Press [ENTER] or [Ctrl+S] / [S] to save the selected camera config (master only without --cctv-id or with --update-master)
+      * Press [ENTER] or [Ctrl+S] / [S] to save the selected camera config (master only without --cctv-id)
       * Press [R] to reload saved config from disk
       * Press [Q] or [ESC] to exit
 """
@@ -255,6 +255,13 @@ def mouse_callback(event, x, y, flags, param):
 def load_calibration_mapper(base_config_path, cctv_config_path=None):
     """Overlay camera ROIs on the master, retaining shelves absent from the camera file."""
     mapper = SpatialMapper(base_config_path)
+    # Preserve shelf metadata that SpatialMapper does not consume for drawing.
+    with open(base_config_path, "r", encoding="utf-8") as config_file:
+        base_config = json.load(config_file)
+    merged = {comp["shelf_id"]: comp.copy() for comp in mapper.compartments}
+    for comp in base_config.get("compartments", []):
+        merged[comp["shelf_id"]] = {**merged.get(comp["shelf_id"], {}), **comp}
+    mapper.compartments = list(merged.values())
     if cctv_config_path and os.path.isfile(cctv_config_path):
         with open(cctv_config_path, "r", encoding="utf-8") as config_file:
             camera_config = json.load(config_file)
@@ -264,7 +271,7 @@ def load_calibration_mapper(base_config_path, cctv_config_path=None):
             merged[shelf_id] = {**merged.get(shelf_id, {}), **comp}
         mapper.compartments = list(merged.values())
         mapper.rack_id = camera_config.get("rack_id", mapper.rack_id)
-        mapper.config_file = cctv_config_path
+    mapper.config_file = cctv_config_path or base_config_path
     return mapper
 
 
@@ -276,7 +283,11 @@ def save_calibration_rois(mapper, config_paths):
             with open(config_path, "r", encoding="utf-8") as config_file:
                 data = json.load(config_file)
         data.setdefault("camera_resolution", [640, 480])
-        data.update(rack_id=mapper.rack_id, compartments=mapper.compartments)
+        merged = {comp["shelf_id"]: comp.copy() for comp in data.get("compartments", [])}
+        for comp in mapper.compartments:
+            shelf_id = comp["shelf_id"]
+            merged[shelf_id] = {**merged.get(shelf_id, {}), **comp}
+        data.update(rack_id=mapper.rack_id, compartments=list(merged.values()))
         with open(config_path, "w", encoding="utf-8") as config_file:
             json.dump(data, config_file, indent=2)
             config_file.write("\n")
@@ -294,8 +305,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Interactive Dynamic ROI Calibration Canvas")
     parser.add_argument("--source", default=None, help="Camera index or RTSP URL")
     parser.add_argument("--cctv-id", default=None, help="Save to this CCTV config (e.g. CCTV_01, CCTV_02, CCTV_03); omit to edit the master")
-    parser.add_argument("--update-master", action="store_true", help="Also update roi_config.json when --cctv-id is provided")
-    args, _ = parser.parse_known_args()
+    args = parser.parse_args()
 
     cctv_id = str(args.cctv_id).strip() if args.cctv_id else None
     if cctv_id is not None and (not cctv_id or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in cctv_id)):
@@ -305,8 +315,6 @@ def main() -> int:
     base_config_path = os.path.join(config_dir, "roi_config.json")
     cctv_config_path = os.path.join(config_dir, f"roi_config_{cctv_id}.json") if cctv_id else None
     save_paths = [cctv_config_path] if cctv_config_path else [base_config_path]
-    if cctv_config_path and args.update_master:
-        save_paths.append(base_config_path)
 
     spatial_mapper = load_calibration_mapper(base_config_path, cctv_config_path)
     calibration_label = cctv_id or "Master"

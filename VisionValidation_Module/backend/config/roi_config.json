@@ -3,51 +3,73 @@
   "compartments": [
     {
       "shelf_id": "SHELF_R1_C1",
-      "x_min": 49,
-      "y_min": 45,
-      "x_max": 108,
-      "y_max": 109,
-      "dwell_threshold_seconds": 1.2
+      "mqtt_client_id": "ESP32_R1_C1",
+      "camera_name": "ESP32 Node (SHELF_R1_C1)",
+      "container_id": null,
+      "dwell_threshold_seconds": 1.2,
+      "x_min": 384,
+      "y_min": 264,
+      "x_max": 518,
+      "y_max": 408
     },
     {
       "shelf_id": "SHELF_R1_C2",
-      "x_min": 180,
-      "y_min": 67,
-      "x_max": 409,
-      "y_max": 232,
-      "dwell_threshold_seconds": 1.2
+      "mqtt_client_id": "ESP32_R1_C2",
+      "camera_name": "ESP32 Node (SHELF_R1_C2)",
+      "container_id": null,
+      "dwell_threshold_seconds": 1.2,
+      "x_min": 243,
+      "y_min": 264,
+      "x_max": 371,
+      "y_max": 408
     },
     {
       "shelf_id": "SHELF_R1_C3",
-      "x_min": 47,
-      "y_min": 128,
-      "x_max": 140,
-      "y_max": 241,
-      "dwell_threshold_seconds": 1.2
+      "mqtt_client_id": "ESP32_R1_C3",
+      "camera_name": "ESP32 Node (SHELF_R1_C3)",
+      "container_id": null,
+      "dwell_threshold_seconds": 1.2,
+      "x_min": 102,
+      "y_min": 264,
+      "x_max": 230,
+      "y_max": 408
     },
     {
       "shelf_id": "SHELF_R1_C4",
-      "x_min": 180,
-      "y_min": 245,
-      "x_max": 409,
-      "y_max": 360,
-      "dwell_threshold_seconds": 1.2
+      "mqtt_client_id": "ESP32_R1_C4",
+      "camera_name": "ESP32 Node (SHELF_R1_C4)",
+      "container_id": null,
+      "dwell_threshold_seconds": 1.2,
+      "x_min": 102,
+      "y_min": 91,
+      "x_max": 230,
+      "y_max": 202
     },
     {
       "shelf_id": "SHELF_R1_C5",
-      "x_min": 47,
-      "y_min": 255,
-      "x_max": 140,
-      "y_max": 360,
-      "dwell_threshold_seconds": 1.2
+      "mqtt_client_id": "ESP32_R1_C5",
+      "camera_name": "ESP32 Node (SHELF_R1_C5)",
+      "container_id": null,
+      "dwell_threshold_seconds": 1.2,
+      "x_min": 243,
+      "y_min": 91,
+      "x_max": 371,
+      "y_max": 202
     },
     {
       "shelf_id": "SHELF_R1_C6",
-      "x_min": 420,
-      "y_min": 67,
-      "x_max": 580,
-      "y_max": 232,
-      "dwell_threshold_seconds": 1.2
+      "mqtt_client_id": "ESP32_R1_C6",
+      "camera_name": "ESP32 Node (SHELF_R1_C6)",
+      "container_id": null,
+      "dwell_threshold_seconds": 1.2,
+      "x_min": 384,
+      "y_min": 91,
+      "x_max": 518,
+      "y_max": 202
     }
+  ],
+  "camera_resolution": [
+    640,
+    480
   ]
 }

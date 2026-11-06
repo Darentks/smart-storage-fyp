@@ -10,10 +10,12 @@
  *  - Supabase CRUD helpers: getCameras(), upsertCamera(cam), deleteCamera(id)
  */
 
-const SUPABASE_URL = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_SUPABASE_URL) || 'https://tosvjwxvcuxvgtcmakta.supabase.co';
-const SUPABASE_ANON_KEY = (typeof process !== 'undefined' && process.env?.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY) || 'sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l';
+const SUPABASE_URL = 'https://tosvjwxvcuxvgtcmakta.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l';
 
-export const DEFAULT_12_ESP32_CAMERAS = [
+export const CAMERA_COLS = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address';
+
+const DEFAULT_12_ESP32_CAMERAS = [
   { id: 'cam-201', device_id: 'ESP32_R1_C1_CAM1', camera_name: 'R1-C1 Back Angle (CAM 1)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 1, ip_address: '192.168.0.201', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
   { id: 'cam-202', device_id: 'ESP32_R1_C1_CAM2', camera_name: 'R1-C1 Front Angle (CAM 2)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C1', angle_index: 2, ip_address: '192.168.0.202', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
   { id: 'cam-203', device_id: 'ESP32_R1_C2_CAM1', camera_name: 'R1-C2 Back Angle (CAM 3)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 1, ip_address: '192.168.0.203', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
@@ -272,11 +274,10 @@ export async function getCameras(forceRefresh = false) {
   }
 
   try {
-    const cols = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address';
     const rows = await supabaseRestRequest(
       'esp32_cameras',
       'GET',
-      `?select=${cols}&order=shelf_id.asc,angle_index.asc`,
+      `?select=${CAMERA_COLS}&order=shelf_id.asc,angle_index.asc`,
       null,
       'return=representation'
     );
@@ -326,9 +327,9 @@ export async function upsertCamera(cam) {
     const res = await supabaseRestRequest(
       'esp32_cameras',
       existing ? 'PATCH' : 'POST',
-      existing ? '?id=eq.' + encodeURIComponent(cam.id) : '?on_conflict=device_id&select=id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address',
+      existing ? '?id=eq.' + encodeURIComponent(cam.id) : '?select=' + CAMERA_COLS,
       record,
-      existing ? 'return=representation' : 'resolution=merge-duplicates,return=representation'
+      'return=representation'
     );
     if (!Array.isArray(res) || !res[0]) throw new Error('Camera save returned no database record');
     if (Array.isArray(res) && res.length > 0) {

@@ -7,6 +7,7 @@ Author: Daren Tan Khai Shuen
 """
 
 import os
+import math
 import re
 import threading
 import time
@@ -52,6 +53,7 @@ class VideoProcessor:
         self._frame_seq: int = 0
         self._last_read_seq: int = -1
         self._last_frame_hash = None
+        self._repeated_frame_reads = 0
         self.is_file = os.path.isfile(str(source))
         self._reader_running: bool = False
         self._reader_generation = 0
@@ -86,6 +88,7 @@ class VideoProcessor:
             self._latest_ret = False
             self._last_read_seq = -1
             self._last_frame_hash = None
+            self._repeated_frame_reads = 0
 
         if self.cap is not None:
             try:
@@ -165,7 +168,7 @@ class VideoProcessor:
         generation = self._reader_generation if generation is None else generation
         cap, is_file = self.cap, self.is_file
         fps = cap.get(cv2.CAP_PROP_FPS) if is_file else 0
-        frame_period = 1.0 / fps if fps and fps > 0 else 1.0 / 25.0
+        frame_period = 1.0 / fps if fps and math.isfinite(fps) and fps > 0 else 1.0 / 25.0
         next_frame_at = time.perf_counter() + frame_period
         while self._reader_running and generation == self._reader_generation and cap is not None:
             try:
@@ -258,9 +261,13 @@ class VideoProcessor:
         if not fresh_sequence:
             return False, None
         frame_hash = hash(frame[::16, ::16].tobytes())
-        if frame_hash == self._last_frame_hash:
-            return False, None
+        if self.is_rtsp and frame_hash == self._last_frame_hash:
+            self._repeated_frame_reads += 1
+        else:
+            self._repeated_frame_reads = 0
         self._last_frame_hash = frame_hash
+        if self.is_rtsp and self._repeated_frame_reads > 3:
+            return False, None
         self.last_frame_timestamp = now
 
         self._frame_count += 1

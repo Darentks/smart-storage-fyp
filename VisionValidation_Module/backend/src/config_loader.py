@@ -76,7 +76,10 @@ def _supabase_rest(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    if prefer:
+    if method.upper() == "PATCH":
+        # An empty/minimal response cannot confirm that any row was updated.
+        headers["Prefer"] = "return=representation"
+    elif prefer:
         headers["Prefer"] = prefer
 
     data_bytes = None
@@ -86,13 +89,18 @@ def _supabase_rest(
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method.upper())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if not 200 <= resp.status < 300:
+                return False if method.upper() in {"PATCH", "DELETE"} else []
             if resp.status == 204:
-                return True
+                return False if method.upper() == "PATCH" else True
             raw_text = resp.read().decode("utf-8")
-            return json.loads(raw_text) if raw_text else []
+            result = json.loads(raw_text) if raw_text else []
+            if method.upper() == "PATCH" and (not isinstance(result, list) or not result):
+                return False
+            return result
     except Exception as exc:
         print(f"[_supabase_rest] {method.upper()} on '{table}' failed: {exc}")
-        return False if method.upper() == "DELETE" else []
+        return False if method.upper() in {"PATCH", "DELETE"} else []
 
 
 # Alias for backward compatibility
@@ -148,7 +156,7 @@ class SupabaseRestFallback:
         )
         return res if isinstance(res, list) else []
 
-    def update(self, table: str, query_params: str, payload: Dict[str, Any], prefer: str = "return=minimal") -> List[Dict[str, Any]]:
+    def update(self, table: str, query_params: str, payload: Dict[str, Any], prefer: str = "return=representation") -> Union[List[Dict[str, Any]], Literal[False]]:
         res = _supabase_rest(
             method="PATCH",
             table=table,
@@ -157,7 +165,7 @@ class SupabaseRestFallback:
             prefer=prefer,
             timeout=self.timeout,
         )
-        return res if isinstance(res, list) else []
+        return res if isinstance(res, list) and res else False
 
     def delete(self, table: str, query_params: str) -> bool:
         res = _supabase_rest(
@@ -468,7 +476,7 @@ def apply_inventory_delta_in_supabase(
     )
     if not isinstance(saved_rows, list) or not saved_rows:
         return False
-    if not any(row.get("shelf_id") == shelf_id and row.get("current_quantity") == quantity_after for row in saved_rows):
+    if not any(isinstance(row, dict) and row.get("shelf_id") == shelf_id and row.get("current_quantity") == quantity_after for row in saved_rows):
         return False
     print(f"[ConfigLoader] Updated {shelf_id} inventory: {quantity_before} -> {quantity_after} ({state_delta}).")
 

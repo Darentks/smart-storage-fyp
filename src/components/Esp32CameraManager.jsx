@@ -386,8 +386,8 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
         notify(`Pushed NVS identity (${formState.device_id} -> ${targetIp}) & rebooting ESP32-CAM!`, 'success');
       } catch (nvsErr) {
         notify(`NVS configuration failed: ${nvsErr.message}`, 'error');
-      setSavingProvision(false);
-      return;
+        setSavingProvision(false);
+        return;
       }
     }
 
@@ -401,10 +401,8 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
         shelf_id: formState.shelf_id,
         angle_index: Number(formState.angle_index),
         ip_address: targetIp,
-        status: onlineStatus,
-        rssi_dbm: liveRssi,
-        last_seen: new Date().toISOString(),
       });
+      Object.assign(saved, { status: onlineStatus, rssi_dbm: liveRssi, last_seen: new Date().toISOString() });
 
       setCameras((prev) => {
         const exists = prev.some((c) => c.device_id === saved.device_id || (saved.id && c.id === saved.id));

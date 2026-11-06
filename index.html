@@ -1122,6 +1122,14 @@
               </div>
             </div>
 
+            <div class="form-group">
+              <label for="cctvRoleSelect">Camera Role</label>
+              <select id="cctvRoleSelect" class="form-control" required>
+                <option value="GRID_6_ROI">6-Compartment ROI Grid (Front / Oblique Angle ? CCTV_01, CCTV_02)</option>
+                <option value="SIDE_PRESENCE">Side-View Rack Presence &amp; Depth Entry Zone (Side Angle ? CCTV_03)</option>
+              </select>
+            </div>
+
             <!-- Full RTSP URL Input -->
             <div class="form-group">
               <label for="cctvRtspInput" style="font-size: 11px; font-weight: 600;">Full RTSP URL or Webcam
@@ -1170,7 +1178,15 @@
                 style="font-size: 11px; padding: 4px 6px; height: 30px; flex: 1; min-width: 0; width: auto;" onchange="onCctvSourceChanged()">
                 <option value="cctv_bridge" selected>&#127760; CCTV Camera (via Local Bridge RTSP Stream)</option>
                 <option value="webcam">&#128247; Laptop / USB Webcam (Device 0)</option>
+                <option value="video_file">Recorded Video File (.mp4)</option>
                 <option value="simulation">&#127918; Synthetic Wrist-ROI Interaction Simulation</option>
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 6px; flex: 1 1 260px; min-width: 0;">
+              <label for="cctvConsensusSelect" style="font-size: 11px; color: var(--text-muted);">Consensus:</label>
+              <select id="cctvConsensusSelect" class="form-control" onchange="saveCctvConsensusMode()"
+                style="font-size: 11px; height: 30px; padding: 4px 6px; flex: 1; min-width: 0; width: auto;">
+                <option value="3" selected>All Enabled Cameras (3-of-3 when all active)</option>
               </select>
             </div>
             <button type="button" class="btn-action" id="cctvPoseToggleBtn"
@@ -1207,6 +1223,7 @@
                 <option value="SHELF_R1_C4">SHELF_R1_C4</option>
                 <option value="SHELF_R1_C5">SHELF_R1_C5</option>
                 <option value="SHELF_R1_C6">SHELF_R1_C6</option>
+                <option value="RACK_ENTRY_ZONE">RACK_ENTRY_ZONE (Side Presence)</option>
               </select>
               <span style="font-size: 11px; color: var(--text-muted);">Click &amp; drag on canvas to set box</span>
               <span id="cctvCalibCoordsText"
@@ -1229,6 +1246,7 @@
           <!-- Canvas & Video Viewport (Single Full-Box Canvas — No Split Screen) -->
           <div class="preview-canvas-box" id="cctvTestContainer"
             style="position: relative; width: 100%; aspect-ratio: 4 / 3; display: block; background: #070b14; border-radius: 8px; overflow: hidden;">
+            <input type="file" id="cctvVideoFileInput" accept=".mp4,video/mp4" style="display:none;" aria-label="Recorded MP4 video" onchange="onCctvVideoFileChanged()" />
             <video id="cctvPoseVideo" playsinline muted style="display:none;"></video>
             <canvas id="cctvPoseCanvas" width="640" height="480"
               style="width: 100%; height: 100%; display: block;"></canvas>
@@ -1717,7 +1735,7 @@
         console.warn('[TM] Front camera predict failed:', e);
       }
 
-      if (!bestBack || !bestFront || backSum < 0.25 || frontSum < 0.25 || bestBack.probability < 0.20 || bestFront.probability < 0.20) {
+      if (!bestBack || !bestFront || !(bestBack.probability >= 0.20 && backSum >= 0.25 && bestFront.probability >= 0.20 && frontSum >= 0.25)) {
         return {
           backClass: bestBack ? bestBack.className : 'Back_Unmatched',
           backCount: 0,
@@ -2067,8 +2085,8 @@
 
     async function saveAssignedShelfIps() {
       const shelfId = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
-      const ip1 = refEspIpInput ? refEspIpInput.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.201';
-      const ip2 = refEspIp2Input ? refEspIp2Input.value.replace(/^https?:\/\//, '').replace(/\/$/, '').trim() : '192.168.0.202';
+      const ip1 = cleanCameraHost(refEspIpInput ? refEspIpInput.value : '192.168.0.201');
+      const ip2 = cleanCameraHost(refEspIp2Input ? refEspIp2Input.value : '192.168.0.202');
 
       if (!ip1 || !ip2) {
         showToast('Please enter or select valid IP addresses for both CAM 1 and CAM 2.', 'error');
@@ -2461,8 +2479,8 @@
           img.src = src;
         });
 
-        const fetchSnapshots = async (boost, duty) => {
-          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boost)}&duty=${duty}&_t=${Date.now()}`;
+        const fetchSnapshots = async (stage) => {
+          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(stage.boost)}&duty=${stage.duty}&_t=${Date.now()}`;
           const prevResp = await fetch(previewUrl, { cache: 'no-store' });
           if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
           return await prevResp.json();
@@ -2535,32 +2553,32 @@
           }
         };
 
-        const userBoost = document.getElementById('visionBoostSelect')?.value || 'auto';
+        const uiBoost = document.getElementById('visionBoostSelect')?.value || 'auto';
         const attempts = [
-          { boost: userBoost, duty: 90, delay: 0 },
-          { boost: 'auto', duty: 135, delay: 650 },
-          { boost: 'high', duty: 185, delay: 900 }
+          { delay: 0, boost: uiBoost, duty: 90 },
+          { delay: 650, boost: 'auto', duty: 135 },
+          { delay: 900, boost: 'high', duty: 185 }
         ];
         let bestValidAttempt = null;
-        for (const settings of attempts) {
-          if (settings.delay) await new Promise(resolve => setTimeout(resolve, settings.delay));
+        for (const stage of attempts) {
+          if (stage.delay) await new Promise(resolve => setTimeout(resolve, stage.delay));
           try {
-            const preview = await fetchSnapshots(settings.boost, settings.duty);
+            const preview = await fetchSnapshots(stage);
             const bSrc = preview.image_back || null;
             const fSrc = preview.image_front || null;
             updatePreviewUI(preview, bSrc, fSrc);
-            const prediction = await executePrediction(bSrc, fSrc, settings.boost);
-            if (prediction && !prediction.degraded && prediction.totalBoxes !== null && Number.isFinite(prediction.confidence)) {
+            const prediction = await executePrediction(bSrc, fSrc, stage.boost);
+            if (prediction && !prediction.degraded && prediction.totalBoxes !== null && Number.isFinite(prediction.confidence) && prediction.confidence >= 65.0) {
               if (!bestValidAttempt || prediction.confidence > bestValidAttempt.prediction.confidence) {
-                bestValidAttempt = { prediction, preview, settings };
+                bestValidAttempt = { prediction, preview, settings: stage };
               }
-              if (prediction.confidence >= 75) break;
+              if (prediction.confidence >= 75.0) break;
             }
           } catch (error) {
             console.warn('[DualCam] Capture attempt failed:', error.message);
           }
         }
-        if (!bestValidAttempt || bestValidAttempt.prediction.confidence < 65) {
+        if (!bestValidAttempt) {
           const abortMsg = 'Validation aborted after 3 attempts: dual-angle evidence or confidence is insufficient.';
           if (tmLivePredictionBanner) {
             tmLivePredictionBanner.style.display = 'block';
@@ -2677,7 +2695,7 @@
         const out = { ...prev, ...row };
         if (c1) {
           out.ip_address = cleanCameraHost(c1.ip_address) || prev.ip_address;
-          out.mqtt_client_id = String(c1.device_id || '').replace(/_CAM1$/i, '') || prev.mqtt_client_id;
+          out.mqtt_client_id = c1.device_id || prev.mqtt_client_id;
           out.camera_name = c1.camera_name || prev.camera_name;
         }
         if (c2) {
@@ -2689,6 +2707,27 @@
     }
 
     // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
+    async function consumeCctvTrigger(trigger) {
+      if (!trigger.trigger_id || processedTriggerIds.has(trigger.trigger_id)) return;
+      if (trigger.source === 'CCTV' && trigger.consensus_met !== true) return;
+      if (!ALL_SHELF_IDS.includes(trigger.shelf_id)) return;
+      processedTriggerIds.add(trigger.trigger_id);
+      try {
+        const response = await fetch(`${getBridgeUrl()}/cctv_trigger_claim`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trigger_id: trigger.trigger_id })
+        });
+        if (!response.ok) throw new Error(`Trigger claim failed: HTTP ${response.status}`);
+        const result = await response.json();
+        if (result.claimed) {
+          await runFullDualCamValidation(trigger.shelf_id, trigger.expected_action || 'BORROW', true);
+        }
+      } catch (error) {
+        processedTriggerIds.delete(trigger.trigger_id);
+        console.warn('[CCTV Integration]', error.message);
+      }
+    }
+
     function mergeBridgeTelemetry(bridgeJson) {
       if (!bridgeJson) return false;
       if (Array.isArray(bridgeJson.discovered_cameras)) {
@@ -2736,13 +2775,13 @@
       }
 
       // Latest 5 actions from bridge (kept in local cache only)
-      const bridgeLogs = Array.isArray(bridgeJson.latest_5_actions) ? bridgeJson.latest_5_actions : bridgeJson.comparison_logs;
-      if (Array.isArray(bridgeLogs) && bridgeLogs.length > 0) {
-        const first = bridgeLogs[0] || {};
-        const sig = `${bridgeLogs.length}|${first.log_id || ''}|${first.created_at || ''}`;
+      const bridgeLogs = bridgeJson.comparison_logs;
+      if (Array.isArray(bridgeLogs)) {
+        bridgeJson.comparison_logs = bridgeLogs.slice(0, 5).map(normalizeLatestAction);
+        const sig = JSON.stringify(bridgeJson.comparison_logs);
         if (sig !== lastLogsSig) {
           lastLogsSig = sig;
-          comparisonLogsData = bridgeLogs.slice(0, 5);
+          comparisonLogsData = bridgeJson.comparison_logs;
           saveLatestActions();
           renderComparisonLogs(comparisonLogsData);
         }
@@ -2752,10 +2791,7 @@
       if (Array.isArray(bridgeJson.pending_cctv_triggers)) {
         for (const trig of bridgeJson.pending_cctv_triggers) {
           if (trig.trigger_id && !processedTriggerIds.has(trig.trigger_id)) {
-            processedTriggerIds.add(trig.trigger_id);
-            console.log('[CCTV Integration] Detected new CCTV intent confirmation trigger:', trig);
-            showToast(`CCTV Dwell Trigger: Running Dual-Cam TM AI for ${trig.shelf_id}...`, 'info');
-            runFullDualCamValidation(trig.shelf_id, trig.expected_action || 'BORROW', true);
+            consumeCctvTrigger(trig);
           }
         }
       }
@@ -2811,8 +2847,20 @@
     const LATEST_ACTIONS_KEY = 'smart_storage_latest_5_actions';
     let lastLogsSig = '';
 
+    function normalizeLatestAction(entry) {
+      const log = entry && typeof entry === 'object' ? entry : {};
+      const delta = Number(log.quantity_after) - Number(log.quantity_before);
+      const state = ['ITEM_REMOVED', 'ITEM_RETURNED', 'NO_CHANGE'].includes(log.state_delta)
+        ? log.state_delta : (delta < 0 ? 'ITEM_REMOVED' : delta > 0 ? 'ITEM_RETURNED' : 'NO_CHANGE');
+      return {
+        ...log,
+        log_id: String(log.log_id || `local-${typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`}`),
+        state_delta: state
+      };
+    }
+
     function saveLatestActions() {
-      comparisonLogsData = (comparisonLogsData || []).slice(0, 5);
+      comparisonLogsData = (comparisonLogsData || []).slice(0, 5).map(normalizeLatestAction);
       try {
         localStorage.setItem(LATEST_ACTIONS_KEY, JSON.stringify(comparisonLogsData));
       } catch (_) {
@@ -2828,7 +2876,10 @@
       try {
         const raw = localStorage.getItem(LATEST_ACTIONS_KEY);
         const parsed = raw ? JSON.parse(raw) : [];
-        if (Array.isArray(parsed)) comparisonLogsData = parsed.slice(0, 5);
+        if (Array.isArray(parsed)) {
+          comparisonLogsData = parsed.slice(0, 5).map(normalizeLatestAction);
+          saveLatestActions();
+        }
       } catch (_) { }
     }
 
@@ -2840,18 +2891,6 @@
 
     async function loadComparisonLogs() {
       if (!comparisonLogsData || comparisonLogsData.length === 0) loadLatestActionsFromLocal();
-      try {
-        const latestResp = await fetch(`${getBridgeUrl()}/api/comparisons/latest`, { cache: 'no-store' });
-        if (latestResp.ok) {
-          const latestList = await latestResp.json();
-          if (Array.isArray(latestList) && latestList.length > 0) {
-            comparisonLogsData = latestList.slice(0, 5);
-            saveLatestActions();
-          }
-        }
-      } catch (_) {
-        // Bridge offline or unreachable; fallback to local cache
-      }
       renderComparisonLogs(comparisonLogsData || []);
     }
 
@@ -2901,16 +2940,11 @@
         const qty = comp.current_quantity ?? 4;
         const maxQty = comp.max_capacity ?? 4;
         const rssi = comp.rssi_dbm != null ? `${comp.rssi_dbm} dBm` : 'N/A';
-        const updatedTime = comp.baseline_updated_at ? new Date(comp.baseline_updated_at).toLocaleTimeString() : 'Pending';
 
         let slotPillsHtml = '';
         for (let i = 1; i <= maxQty; i++) {
           slotPillsHtml += `<div class="slot-pill ${i <= qty ? 'active' : ''}"></div>`;
         }
-
-        const snapshotImgHtml = comp.baseline_image_url
-          ? `<img src="${comp.baseline_image_url}" class="snapshot-img" alt="Baseline ${comp.shelf_id}" />`
-          : `<div class="snapshot-placeholder">&#128247; No 30s baseline snapshot captured yet.</div>`;
 
         return `
           <div class="compartment-card ${isOnline ? 'online' : ''}">
@@ -2925,13 +2959,6 @@
             : '<span class="badge badge-offline">Offline</span>'
           }
               </div>
-            </div>
-
-            <!-- 30s Baseline Snapshot Window -->
-            <div class="snapshot-wrap">
-              <span class="snapshot-tag">&#9201; 30s Baseline Snapshot</span>
-              ${snapshotImgHtml}
-              <span class="snapshot-timestamp">${updatedTime}</span>
             </div>
 
             <!-- Stats & Capacity -->
@@ -3249,7 +3276,7 @@
       if (!host) return '';
       const cleanMode = mode === 'baseline' ? 'baseline' : 'live';
       if (shouldProxyLanThroughBridge()) {
-        return `${getBridgeUrl()}/esp32_snapshot_raw?ip=${encodeURIComponent(host)}&mode=${cleanMode}&flash=${flash}&t=${Date.now()}`;
+        return `${getBridgeUrl()}/esp32_raw_snapshot?ip=${encodeURIComponent(host)}&mode=${cleanMode}&flash=${flash}&t=${Date.now()}`;
       }
       return `http://${host}/capture?mode=${cleanMode}&flash=${flash}&t=${Date.now()}`;
     }
@@ -3322,7 +3349,7 @@
         const existing = cam.id && !String(cam.id).startsWith('cam-');
         const rows = existing
           ? await sbRest('esp32_cameras', 'PATCH', '?id=eq.' + encodeURIComponent(cam.id), record, 'return=representation')
-          : await sbRest('esp32_cameras', 'POST', '?on_conflict=device_id&select=' + CAMERA_COLS, record, 'resolution=merge-duplicates,return=representation');
+          : await sbRest('esp32_cameras', 'POST', '?select=' + CAMERA_COLS, record, 'return=representation');
         if (!Array.isArray(rows) || !rows[0]) throw new Error('Camera save returned no database record');
         savedRow = rows[0];
       } catch (error) {
@@ -3871,11 +3898,9 @@
           rack_id: rackId,
           shelf_id: shelfId,
           angle_index: angleIndex,
-          ip_address: targetIp,
-          status: isOnline ? 'ONLINE' : 'OFFLINE',
-          rssi_dbm: probedRssi,
-          last_seen: new Date().toISOString()
+          ip_address: targetIp
         });
+        Object.assign(saved, { status: isOnline ? 'ONLINE' : 'OFFLINE', rssi_dbm: probedRssi, last_seen: new Date().toISOString() });
 
         const exists = esp32CameraNodesList.some((c) => c.device_id === saved.device_id || (camId && c.id === camId));
         if (exists) {
@@ -3907,6 +3932,7 @@
       } catch (err) {
         if (statusBanner) statusBanner.textContent = `Error: ${err.message}`;
         showToast(`Provision failed: ${err.message}`, 'error');
+        throw err;
       } finally {
         if (submitBtn) submitBtn.disabled = false;
       }
@@ -3957,6 +3983,7 @@
     const DEFAULT_3_CCTV_CAMERAS = [
       {
         cctv_id: 'CCTV_01',
+        camera_role: 'GRID_6_ROI',
         camera_name: 'Hikvision CCTV 1 (Left Angle - Column 1)',
         rack_id: 'RACK_01',
         ip_address: '192.168.0.101',
@@ -3966,6 +3993,7 @@
       },
       {
         cctv_id: 'CCTV_02',
+        camera_role: 'GRID_6_ROI',
         camera_name: 'Hikvision CCTV 2 (Center Angle)',
         rack_id: 'RACK_01',
         ip_address: '192.168.0.102',
@@ -3974,6 +4002,7 @@
       },
       {
         cctv_id: 'CCTV_03',
+        camera_role: 'SIDE_PRESENCE',
         camera_name: 'Hikvision CCTV 3 (Right Angle)',
         rack_id: 'RACK_01',
         ip_address: '192.168.0.103',
@@ -3988,11 +4017,13 @@
       'SHELF_R1_C3': { x_min: 0.16, y_min: 0.19, x_max: 0.36, y_max: 0.42 },
       'SHELF_R1_C4': { x_min: 0.60, y_min: 0.55, x_max: 0.81, y_max: 0.85 },
       'SHELF_R1_C5': { x_min: 0.38, y_min: 0.55, x_max: 0.58, y_max: 0.85 },
-      'SHELF_R1_C6': { x_min: 0.16, y_min: 0.55, x_max: 0.36, y_max: 0.85 }
+      'SHELF_R1_C6': { x_min: 0.16, y_min: 0.55, x_max: 0.36, y_max: 0.85 },
+      'RACK_ENTRY_ZONE': { x_min: 0.35, y_min: 0.12, x_max: 0.68, y_max: 0.88 }
     };
 
     let activeCctvId = 'CCTV_01';
-    function roiStorageKey() { return 'smart_storage_cctv_rois_' + (activeCctvId || 'CCTV_01'); }
+    let activeCameraRole = 'GRID_6_ROI';
+    function roiStorageKey() { return `smart_storage_cctv_rois_${activeCctvId || 'CCTV_01'}`; }
 
     function loadStoredRois() {
       try {
@@ -4004,13 +4035,14 @@
 
     let activeCctvRois = loadStoredRois();
     let cctvCamerasList = [];
+    let cctvConfigLoaded = false;
     let runningPipelinesList = [];
 
     // Compartment Dwell State Machine (mirrors behavior_classifier.py)
     const compartmentTrackers = {};
 
     function initCompartmentTrackers() {
-      for (const s of ALL_SHELF_IDS) {
+      for (const s of [...ALL_SHELF_IDS, 'RACK_ENTRY_ZONE']) {
         compartmentTrackers[s] = {
           shelfId: s,
           state: 'IDLE', // 'IDLE' | 'DWELLING' | 'INTENT_CONFIRMED'
@@ -4060,6 +4092,7 @@
       return 'BORROW';
     }
 
+    let recordedVideoUrl = null;
     let isYoloInferencing = false;
     let yoloOrtSession = null;
     let yoloSessionPromise = null;
@@ -4088,7 +4121,7 @@
             if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml')) {
               throw new Error('Model URL returned HTML instead of an ONNX file.');
             }
-            yoloOrtSession = await ort.InferenceSession.create(path, { executionProviders: ['wasm'], graphOptimizationLevel: 'all' });
+            yoloOrtSession = await ort.InferenceSession.create(path, { executionProviders: ['webgl', 'wasm'] });
             return yoloOrtSession;
           } catch (error) { console.warn('[YOLO ONNX]', path, error.message); }
         }
@@ -4148,7 +4181,7 @@
             const intersectionH = Math.max(0, Math.min(cy + h / 2, otherY + otherH / 2) - Math.max(cy - h / 2, otherY - otherH / 2));
             const intersection = intersectionW * intersectionH;
             const union = w * h + otherW * otherH - intersection;
-            return union > 0 && intersection / union > iouThreshold;
+            return union > 0 && intersection / union >= iouThreshold;
           });
           if (!overlaps) kept.push(candidate);
           if (kept.length >= maxDetections) break;
@@ -4208,6 +4241,7 @@
       // Draw every person's skeleton and evaluate all visible wrists.
       const persons = results.multiPoseLandmarks || (results.poseLandmarks ? [results.poseLandmarks] : []);
       const detectedWrists = [];
+      const upperBodyPoints = [];
       for (const [personIndex, landmarks] of persons.entries()) {
         if (window.drawConnectors && window.POSE_CONNECTIONS) {
           try {
@@ -4218,6 +4252,11 @@
           } catch (_) { }
         } else {
           drawBasicSkeleton(ctx, landmarks, canvas.width, canvas.height);
+        }
+
+        for (let index = 11; index <= 16; index++) {
+          const point = landmarks[index];
+          if (point && point.visibility >= 0.40) upperBodyPoints.push({ ...point, personIndex });
         }
 
         // Wrist landmarks: 15 (LEFT_WRIST), 16 (RIGHT_WRIST).
@@ -4243,7 +4282,8 @@
       let maxDwellTime = 0;
       let activeDwellState = 'IDLE';
 
-      for (const shelfId of ALL_SHELF_IDS) {
+      const evaluatedRois = activeCameraRole === 'SIDE_PRESENCE' ? ['RACK_ENTRY_ZONE'] : ALL_SHELF_IDS;
+      for (const shelfId of evaluatedRois) {
         const roi = activeCctvRois[shelfId] || DEFAULT_COMPARTMENT_ROIS[shelfId];
         if (!roi) continue;
 
@@ -4258,7 +4298,7 @@
 
         // Check if any wrist is inside this compartment ROI
         let insideWrist = null;
-        for (const w of detectedWrists) {
+        for (const w of (activeCameraRole === 'SIDE_PRESENCE' ? upperBodyPoints : detectedWrists)) {
           if (w.x >= xMin && w.x <= xMax && w.y >= yMin && w.y <= yMax) {
             insideWrist = w;
             break;
@@ -4284,13 +4324,17 @@
               tracker.state = 'INTENT_CONFIRMED';
               tracker.lastConfirmedConf = insideWrist.visibility || 0.88;
               tracker.lastConfirmedAction = classifyTrajectoryAction(tracker.trajectoryHistory);
+              if (activeCameraRole === 'SIDE_PRESENCE' && !tracker.triggerFired) {
+                tracker.triggerFired = true;
+                dispatchDwellTrigger('ANY_SHELF', tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+              }
             }
           } else if (tracker.state === 'INTENT_CONFIRMED') {
             tracker.currentDwellDuration = (now - tracker.dwellStartTime) / 1000;
             // Over-dwell fallback: if sustained > 3.5s without withdrawal, trigger immediately
             if (tracker.currentDwellDuration >= 3.5 && !tracker.triggerFired) {
               tracker.triggerFired = true;
-              dispatchDwellTrigger(shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+              dispatchDwellTrigger(activeCameraRole === 'SIDE_PRESENCE' ? 'ANY_SHELF' : shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
             }
           }
         } else {
@@ -4299,7 +4343,7 @@
           if (tracker.state === 'INTENT_CONFIRMED' && timeSinceSeen > tracker.dropGracePeriod) {
             if (!tracker.triggerFired) {
               tracker.triggerFired = true;
-              dispatchDwellTrigger(shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+              dispatchDwellTrigger(activeCameraRole === 'SIDE_PRESENCE' ? 'ANY_SHELF' : shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
             }
             tracker.state = 'IDLE';
             tracker.dwellStartTime = null;
@@ -4450,10 +4494,63 @@
       }
     }
 
+    function getCctvConsensusMode() {
+      return cctvCamerasList.filter(cam => cam.is_active !== false).length;
+    }
+
+    function saveCctvConsensusMode() { initCompartmentTrackers(); }
+    function initCctvConsensusMode() {
+      const select = document.getElementById('cctvConsensusSelect');
+      if (select) select.value = '3';
+    }
+
+    function cameraRole(cam) {
+      return ['GRID_6_ROI', 'SIDE_PRESENCE'].includes(cam?.camera_role)
+        ? cam.camera_role : (cam?.cctv_id === 'CCTV_03' ? 'SIDE_PRESENCE' : 'GRID_6_ROI');
+    }
+
+    async function syncCctvAlignmentConfig() {
+      const response = await fetch(`${getBridgeUrl()}/cctv_alignment_config`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cameras: cctvCamerasList.map(cam => ({
+          cctv_id: cam.cctv_id, camera_role: cameraRole(cam), is_active: cam.is_active !== false
+        })) })
+      });
+      if (!response.ok) throw new Error(`Camera alignment configuration failed: HTTP ${response.status}`);
+    }
+
     async function dispatchDwellTrigger(shelfId, action, dwellDuration, conf) {
       const triggerEl = document.getElementById('cctvLastTriggerText');
-      if (triggerEl) triggerEl.textContent = shelfId + ' (' + action + ') • ' + dwellDuration.toFixed(1) + 's';
-      return await runFullDualCamValidation(shelfId, action, true);
+      const cameraId = activeCctvId;
+      const role = activeCameraRole;
+      const triggerId = `dwell-${cameraId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      try {
+        await syncCctvAlignmentConfig();
+        const response = await fetch(`${getBridgeUrl()}/esp32_trigger`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trigger_id: triggerId, camera_id: cameraId, camera_role: role,
+            shelf_id: shelfId, expected_action: action, dwell_duration_seconds: dwellDuration,
+            oks_confidence: conf, source: 'cctv_browser_dwell'
+          })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || `Bridge returned HTTP ${response.status}`);
+        if (triggerEl) {
+          triggerEl.textContent = result.consensus_met === true
+            ? `${result.shelf_id}: Consensus ${result.confirmed_cameras.join(' + ')} (${action})`
+            : result.status === 'debounced' ? `${result.shelf_id}: Cooldown`
+              : `${shelfId}: Waiting for consensus (${result.confirmed_count}/${result.required_cameras})`;
+        }
+        if (result.consensus_met === true) {
+          await consumeCctvTrigger({ ...result, expected_action: action, source: 'CCTV' });
+        }
+        return result;
+      } catch (error) {
+        if (triggerEl) triggerEl.textContent = `${shelfId}: Vote failed`;
+        showToast('CCTV consensus vote failed: ' + error.message, 'error');
+        return null;
+      }
     }
 
     async function toggleMediaPipeTracker() {
@@ -4471,6 +4568,11 @@
       const placeholder = document.getElementById('cctvTestPlaceholder');
       const sourceSelect = document.getElementById('cctvPoseSourceSelect');
       const selectedSource = sourceSelect ? sourceSelect.value : 'webcam';
+
+      if (selectedSource === 'video_file' && !document.getElementById('cctvVideoFileInput').files[0]) {
+        document.getElementById('cctvVideoFileInput').click();
+        return;
+      }
 
       if (badge) {
         badge.className = 'badge badge-online';
@@ -4518,17 +4620,27 @@
         return;
       }
 
-      // Default: Webcam via getUserMedia
+      // Webcam and recorded MP4 share the same inference loop.
       const videoEl = document.getElementById('cctvPoseVideo');
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 640 }, height: { ideal: 480 } },
-          audio: false
-        });
-        if (generation !== trackingGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
-        activeMediaStream = stream;
-        videoEl.srcObject = stream;
+        if (selectedSource === 'video_file') {
+          const file = document.getElementById('cctvVideoFileInput').files[0];
+          recordedVideoUrl = URL.createObjectURL(file);
+          videoEl.srcObject = null;
+          videoEl.src = recordedVideoUrl;
+          videoEl.loop = false;
+          videoEl.onended = () => stopMediaPipeTracker();
+        } else {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 640 }, height: { ideal: 480 } },
+            audio: false
+          });
+          if (generation !== trackingGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
+          activeMediaStream = stream;
+          videoEl.srcObject = stream;
+        }
         await videoEl.play();
+        if (generation !== trackingGeneration) return;
 
         const loop = async () => {
           if (!isPoseRunning || generation !== trackingGeneration) return;
@@ -4545,10 +4657,16 @@
 
         if (badge) {
           badge.className = 'badge badge-online';
-          badge.textContent = 'Webcam Tracking Active';
+          badge.textContent = selectedSource === 'video_file' ? 'Recorded Video Tracking Active' : 'Webcam Tracking Active';
         }
-        showToast('Webcam connected! Tracking wrist keypoints in real time.', 'success');
+        showToast(selectedSource === 'video_file' ? 'Recorded MP4 tracking started.' : 'Webcam connected! Tracking wrist keypoints in real time.', 'success');
       } catch (camErr) {
+        if (generation !== trackingGeneration) return;
+        if (selectedSource === 'video_file') {
+          stopMediaPipeTracker();
+          showToast('Recorded video failed: ' + camErr.message, 'error');
+          return;
+        }
         console.warn('Webcam access error, falling back to simulated mode:', camErr);
         showToast(`Webcam unavailable (${camErr.message}). Switching to Simulation mode!`, 'info');
         if (sourceSelect) sourceSelect.value = 'simulation';
@@ -4590,6 +4708,13 @@
       if (videoEl) {
         videoEl.pause();
         videoEl.srcObject = null;
+        videoEl.onended = null;
+        videoEl.removeAttribute('src');
+        videoEl.load();
+      }
+      if (recordedVideoUrl) {
+        URL.revokeObjectURL(recordedVideoUrl);
+        recordedVideoUrl = null;
       }
 
       if (toggleBtn) {
@@ -4612,7 +4737,17 @@
       showToast('YOLO11n-Pose ONNX Tracker stopped.', 'info');
     }
 
+    function onCctvVideoFileChanged() {
+      if (isPoseRunning) stopMediaPipeTracker();
+      if (document.getElementById('cctvVideoFileInput').files[0]) {
+        document.getElementById('cctvPoseSourceSelect').value = 'video_file';
+        startMediaPipeTracker();
+      }
+    }
+
     function onCctvSourceChanged() {
+      const fileInput = document.getElementById('cctvVideoFileInput');
+      fileInput.style.display = document.getElementById('cctvPoseSourceSelect').value === 'video_file' ? 'block' : 'none';
       initCompartmentTrackers();
       if (isPoseRunning) {
         stopMediaPipeTracker();
@@ -4701,6 +4836,7 @@
 
     function startCctvBridgePollingLoop() {
       const generation = trackingGeneration;
+      const cameraId = activeCctvId;
       if (bridgeStreamInterval) {
         clearTimeout(bridgeStreamInterval);
         clearInterval(bridgeStreamInterval);
@@ -4716,7 +4852,7 @@
         if (!isPoseRunning || generation !== trackingGeneration) return;
         const t0 = performance.now();
         try {
-          const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}`, { cache: 'no-store' });
+          const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}&cctv_id=${encodeURIComponent(cameraId)}`, { cache: 'no-store' });
           const data = resp.ok ? await resp.json() : null;
           if (data && data.image && (data.seq === undefined || data.seq !== lastSeq)) {
             if (data.seq !== undefined) lastSeq = data.seq;
@@ -4900,6 +5036,7 @@
       document.getElementById('cctvIpInput').value = '192.168.0.101';
       document.getElementById('cctvRtspInput').value = 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102';
       document.getElementById('cctvActiveCheck').checked = true;
+      document.getElementById('cctvRoleSelect').value = 'GRID_6_ROI';
     }
 
     async function saveCctvCamera(event) {
@@ -4921,7 +5058,8 @@
         rack_id: 'RACK_01',
         ip_address: ipAddress,
         rtsp_url: rtspUrl,
-        is_active: isActive
+        is_active: isActive,
+        camera_role: document.getElementById('cctvRoleSelect').value
       };
 
       try {
@@ -4933,6 +5071,7 @@
         const idx = cctvCamerasList.findIndex(c => c.cctv_id === cctvId);
         if (idx >= 0) cctvCamerasList[idx] = payload;
         else cctvCamerasList.push(payload);
+        cctvConfigLoaded = true;
         renderCctvCameras();
         showToast(`Saved CCTV ${cctvId} locally (DB offline)`, 'info');
       }
@@ -4952,23 +5091,25 @@
 
         let data = null;
         try {
-          data = await sbRest('cctv_cameras', 'GET', '?select=cctv_id,camera_name,rack_id,ip_address,rtsp_url,is_active&order=cctv_id.asc');
+          data = await sbRest('cctv_cameras', 'GET', '?select=cctv_id,camera_name,rack_id,ip_address,rtsp_url,is_active,camera_role&order=cctv_id.asc');
         } catch (dbErr) {
           console.warn('Supabase cctv_cameras read failed, checking fallback:', dbErr);
         }
 
         if (Array.isArray(data) && data.length > 0) {
-          cctvCamerasList = data;
+          cctvCamerasList = data.map(cam => ({ ...cam, camera_role: cameraRole(cam) }));
         } else if (!cctvCamerasList || cctvCamerasList.length === 0) {
           cctvCamerasList = [...DEFAULT_3_CCTV_CAMERAS];
         }
 
+        cctvConfigLoaded = true;
         renderCctvCameras();
       } catch (err) {
         console.error('Error loading CCTV cameras:', err);
         if (!cctvCamerasList || cctvCamerasList.length === 0) {
           cctvCamerasList = [...DEFAULT_3_CCTV_CAMERAS];
         }
+        cctvConfigLoaded = true;
         renderCctvCameras();
       }
     }
@@ -4978,16 +5119,22 @@
       if (!grid) return;
 
       if (!cctvCamerasList || cctvCamerasList.length === 0) {
+        if (cctvConfigLoaded) syncCctvAlignmentConfig().catch(error => console.warn('[CCTV Alignment]', error.message));
         grid.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--text-muted);">No CCTV cameras configured. Use the form above to add one.</div>';
         return;
       }
 
+      const active = cctvCamerasList.find(cam => cam.cctv_id === activeCctvId);
+      const nextRole = active ? cameraRole(active) : activeCameraRole;
+      if (nextRole !== activeCameraRole) { activeCameraRole = nextRole; initCompartmentTrackers(); }
+      if (cctvConfigLoaded) syncCctvAlignmentConfig().catch(error => console.warn('[CCTV Alignment]', error.message));
       grid.innerHTML = cctvCamerasList.map(cam => {
         const maskedRtsp = cam.rtsp_url && cam.rtsp_url.includes('@')
           ? cam.rtsp_url.replace(/:[^:@]+@/, ':***@')
           : (cam.rtsp_url || '0');
 
         const encodedJson = encodeURIComponent(JSON.stringify(cam));
+        const role = cameraRole(cam);
 
         return `
           <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; gap: 10px;">
@@ -4997,6 +5144,7 @@
                   <span style="font-size: 13px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono);">${cam.cctv_id}</span>
                   <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">${cam.camera_name || ''}</span>
                 </div>
+                <span class="badge" style="font-size: 10px;">${role}</span>
                 ${cam.is_active ? `<span class="badge badge-online" style="font-size: 10px;">Active</span>` : `<span class="badge badge-offline" style="font-size: 10px;">Inactive</span>`}
               </div>
 
@@ -5043,6 +5191,12 @@
     function useCctvAsTrackerSource(rtspUrl, cctvId = 'CCTV_01') {
       if (isPoseRunning) stopMediaPipeTracker();
       activeCctvId = cctvId;
+      activeCameraRole = cameraRole(cctvCamerasList.find(cam => cam.cctv_id === cctvId) || { cctv_id: cctvId });
+      const calibSelect = document.getElementById('cctvCalibShelfSelect');
+      if (calibSelect) {
+        for (const option of calibSelect.options) option.hidden = activeCameraRole === 'SIDE_PRESENCE' ? option.value !== 'RACK_ENTRY_ZONE' : option.value === 'RACK_ENTRY_ZONE';
+        calibSelect.value = activeCameraRole === 'SIDE_PRESENCE' ? 'RACK_ENTRY_ZONE' : 'SHELF_R1_C1';
+      }
       activeCctvRois = loadStoredRois();
       initCompartmentTrackers();
       updateCalibCoordsText();
@@ -5075,6 +5229,7 @@
         document.getElementById('cctvIpInput').value = cleanCameraHost(cam.ip_address) || '192.168.0.101';
         document.getElementById('cctvRtspInput').value = cam.rtsp_url || '';
         document.getElementById('cctvActiveCheck').checked = cam.is_active !== false;
+        document.getElementById('cctvRoleSelect').value = cameraRole(cam);
         document.getElementById('cctvCameraManagerPanel').scrollIntoView({ behavior: 'smooth' });
         showToast(`Loaded ${cam.cctv_id} into form`, 'info');
       } catch (err) {
@@ -5133,6 +5288,7 @@
     checkLocalBridgeHealth();
     initOtaInfo();
     initCanvasRoiEventListeners();
+    initCctvConsensusMode();
     updateCalibCoordsText();
 
     // Prevent Background Tab Throttling for CCTV Triggers:

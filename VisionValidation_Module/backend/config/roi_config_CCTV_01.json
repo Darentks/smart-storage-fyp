@@ -1,0 +1,16 @@
+{
+  "rack_id": "RACK_01",
+  "compartments": [
+    {
+      "shelf_id": "SHELF_R1_C1",
+      "mqtt_client_id": "ESP32_R1_C1",
+      "camera_name": "ESP32 Node (SHELF_R1_C1)",
+      "container_id": null,
+      "x_min": 385,
+      "y_min": 93,
+      "x_max": 516,
+      "y_max": 201,
+      "dwell_threshold_seconds": 1.2
+    }
+  ]
+}

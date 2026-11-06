@@ -24,6 +24,7 @@ from collections import deque
 import concurrent.futures
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -98,18 +99,133 @@ LAST_TM_BASE_URL: str = "https://teachablemachine.withgoogle.com/models/0cQO4TjO
 # Running YOLO11n-Pose CCTV pipeline process manager
 RUNNING_PIPELINES: Dict[str, Dict[str, Any]] = {}
 
-# Multi-CCTV Trigger deduplication & debounce tracking (6s window)
+# Every enabled camera must align within four seconds; absent votes never disable a camera.
+CCTV_ALIGN_STATE: Dict[str, Dict[str, Any]] = {}
+CONSENSUS_WINDOW_SEC = 4.0
+CONSENSUS_COOLDOWN_SEC = 4.0
+CCTV_CAMERA_IDS = {"CCTV_01", "CCTV_02", "CCTV_03"}
+CCTV_CAMERA_CONFIG = {
+    "CCTV_01": {"camera_role": "GRID_6_ROI", "is_active": True},
+    "CCTV_02": {"camera_role": "GRID_6_ROI", "is_active": True},
+    "CCTV_03": {"camera_role": "SIDE_PRESENCE", "is_active": True},
+}
+CCTV_LAST_SEEN_TS = {}
+CCTV_CONSENSUS_LOCK = threading.RLock()
 LAST_SHELF_TRIGGER_TS: Dict[str, float] = {}
-MULTI_CCTV_DEBOUNCE_SEC = 6.0
+CCTV_SEEN_TRIGGER_IDS: Dict[str, float] = {}
 
 # In-memory cache for Supabase compartments and local ring buffer for comparison logs (cap: 5)
 SUPABASE_COMPARTMENTS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
 LATEST_COMPARISONS_DEQUE: deque = deque(maxlen=5)
 SUPABASE_CACHE_TTL_SEC: float = 300.0
-HEARTBEAT_TTL = 45.0
+HEARTBEAT_TTL = 60.0
 LAST_CLOUD_BASELINE_SYNC_TS: Dict[str, float] = {}
 BRIDGE_PUBLIC_URL: str = (os.getenv("NEXT_PUBLIC_BRIDGE_URL") or os.getenv("VITE_CAMERA_BRIDGE_URL") or "").strip().rstrip("/")
 BRIDGE_SSL_ENABLED: bool = False
+
+
+def configure_cctv_alignment(cameras):
+    """Synchronize CRUD roles and enabled flags without inferring availability from votes."""
+    if not isinstance(cameras, list):
+        raise ValueError("cameras must be a list")
+    config = {}
+    for camera in cameras:
+        if not isinstance(camera, dict):
+            raise ValueError("Each camera must be an object")
+        cid, role = camera.get("cctv_id"), camera.get("camera_role")
+        if cid not in CCTV_CAMERA_IDS or cid in config:
+            raise ValueError("Camera IDs must be unique CCTV_01/CCTV_02/CCTV_03")
+        if role not in {"GRID_6_ROI", "SIDE_PRESENCE"}:
+            raise ValueError("Invalid camera_role")
+        if not isinstance(camera.get("is_active"), bool):
+            raise ValueError("is_active must be boolean")
+        config[cid] = {"camera_role": role, "is_active": camera["is_active"]}
+    with CCTV_CONSENSUS_LOCK:
+        if config != CCTV_CAMERA_CONFIG:
+            CCTV_CAMERA_CONFIG.clear()
+            CCTV_CAMERA_CONFIG.update(config)
+            CCTV_ALIGN_STATE.clear()
+            # Discard unclaimed events from the superseded camera configuration.
+            PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("claimed")]
+    return {"status": "success", "required_cameras": sum(c["is_active"] for c in config.values())}
+
+
+def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=None,
+                          trigger_id=None, dwell_duration_seconds=1.2):
+    """Atomically align distinct enabled cameras and queue one claimable validation."""
+    shelves = {f"SHELF_R1_C{i}" for i in range(1, 7)}
+    if action not in {"BORROW", "RETURN"}:
+        raise ValueError("expected_action must be BORROW or RETURN")
+    if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+        raise ValueError("oks_confidence must be finite and between 0 and 1")
+    if not math.isfinite(dwell_duration_seconds) or dwell_duration_seconds < 1.2:
+        raise ValueError("dwell_duration_seconds must be at least 1.2")
+    with CCTV_CONSENSUS_LOCK:
+        camera = CCTV_CAMERA_CONFIG.get(camera_id)
+        if not camera or not camera["is_active"]:
+            raise ValueError("Camera is not enabled")
+        role = camera_role or camera["camera_role"]
+        if role != camera["camera_role"]:
+            raise ValueError("camera_role does not match camera configuration")
+        if (role == "SIDE_PRESENCE" and shelf_id != "ANY_SHELF") or (
+                role == "GRID_6_ROI" and shelf_id not in shelves):
+            raise ValueError("Grid cameras require an exact shelf; side cameras require ANY_SHELF")
+        now = time.time()
+        active = {cid: cam for cid, cam in CCTV_CAMERA_CONFIG.items() if cam["is_active"]}
+        for cid, vote in list(CCTV_ALIGN_STATE.items()):
+            if now - vote["ts"] > CONSENSUS_WINDOW_SEC:
+                del CCTV_ALIGN_STATE[cid]
+        for tid, timestamp in list(CCTV_SEEN_TRIGGER_IDS.items()):
+            if now - timestamp > 60.0:
+                del CCTV_SEEN_TRIGGER_IDS[tid]
+        if trigger_id and trigger_id in CCTV_SEEN_TRIGGER_IDS:
+            return {"status": "debounced", "consensus_met": False, "shelf_id": shelf_id,
+                    "required_cameras": len(active)}
+        if trigger_id:
+            CCTV_SEEN_TRIGGER_IDS[trigger_id] = now
+        CCTV_ALIGN_STATE[camera_id] = {
+            "ts": now, "action": action, "conf": confidence, "shelf_id": shelf_id, "camera_role": role,
+        }
+        # Exact shelf and action must agree across all enabled grid views.
+        grid_votes = [CCTV_ALIGN_STATE[cid] for cid, cam in active.items()
+                      if cam["camera_role"] == "GRID_6_ROI" and cid in CCTV_ALIGN_STATE]
+        target = grid_votes[0]["shelf_id"] if grid_votes else None
+        supporters = {cid: vote for cid, vote in CCTV_ALIGN_STATE.items()
+                      if cid in active and vote["action"] == action
+                      and (vote["camera_role"] == "SIDE_PRESENCE" or vote["shelf_id"] == target)}
+        all_grids_present = all(cid in CCTV_ALIGN_STATE for cid, cam in active.items()
+                                if cam["camera_role"] == "GRID_6_ROI")
+        aligned = (target in shelves and all_grids_present and len(supporters) == len(active))
+        if not aligned:
+            return {"status": "pending_consensus", "consensus_met": False, "shelf_id": shelf_id,
+                    "confirmed_count": len(supporters), "required_cameras": len(active),
+                    "window_seconds": CONSENSUS_WINDOW_SEC}
+        last_ts = LAST_SHELF_TRIGGER_TS.get(target)
+        if last_ts is not None and now - last_ts < CONSENSUS_COOLDOWN_SEC:
+            return {"status": "debounced", "consensus_met": False, "shelf_id": target,
+                    "retry_after": CONSENSUS_COOLDOWN_SEC - (now - last_ts)}
+        confirmed_id = f"trig_{target}_{uuid.uuid4().hex}"
+        result = {"status": "consensus_confirmed", "consensus_met": True,
+                  "shelf_id": target, "confirmed_shelf_id": target, "trigger_id": confirmed_id,
+                  "expected_action": action, "required_cameras": len(active),
+                  "confirmed_count": len(supporters), "confirmed_cameras": sorted(supporters),
+                  "confidence": min(v["conf"] for v in supporters.values())}
+        PENDING_CCTV_TRIGGERS.append({**result, "source": "CCTV", "timestamp": now})
+        del PENDING_CCTV_TRIGGERS[:-20]
+        LAST_SHELF_TRIGGER_TS[target] = now
+        CCTV_ALIGN_STATE.clear()  # Consume all evidence so presence cannot validate another shelf.
+        return result
+
+
+def claim_cctv_trigger(trigger_id):
+    """Let only one dashboard tab consume each queued validation event."""
+    with CCTV_CONSENSUS_LOCK:
+        for trigger in PENDING_CCTV_TRIGGERS:
+            if (trigger.get("trigger_id") == trigger_id and not trigger.get("claimed")
+                    and time.time() - trigger["timestamp"] < 60.0):
+                trigger["claimed"] = True
+                return True
+    return False
 
 
 def get_cached_compartments(force_refresh: bool = False) -> list:
@@ -143,7 +259,11 @@ mqtt_bridge = MQTTClientNode(
 
 
 def node_is_online(node):
-    return bool(node) and node.get("status", "ONLINE") != "OFFLINE" and time.time() - node.get("last_seen_ts", 0) <= HEARTBEAT_TTL
+    if not node:
+        return False
+    if time.time() - node.get("last_seen_ts", 0) > HEARTBEAT_TTL:
+        node["status"] = "OFFLINE"
+    return node.get("status", "ONLINE") != "OFFLINE"
 
 
 def record_probe_result(ip, data=None):
@@ -965,11 +1085,14 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             service_dir / "models",
             service_dir / "backend" / "models",
         ]
-        for base in model_bases:
+        for base_dir in model_bases:
             try:
-                base_resolved = base.resolve()
-                target = (base_resolved / filename).resolve()
-                if not target.is_relative_to(base_resolved) or not target.is_file():
+                base = base_dir.resolve()
+                target = (base / filename).resolve()
+                if not target.is_relative_to(base):
+                    self._send_json(403, {"error": "Model path is outside the model directory"})
+                    return
+                if not target.is_file():
                     continue
                 data_bytes = None if head_only else target.read_bytes()
                 content_length = target.stat().st_size if head_only else len(data_bytes)
@@ -1123,6 +1246,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             if not source_param:
                 source_param = get_active_rtsp_url(default_source=0)
             result = capture_single_frame(source_param)
+            camera_id = query.get("cctv_id", [None])[0]
+            if camera_id in CCTV_CAMERA_IDS and result.get("status") == "success":
+                with CCTV_CONSENSUS_LOCK:
+                    CCTV_LAST_SEEN_TS[camera_id] = time.time()
             self._send_json(200 if result.get("status") == "success" else 502, result)
             return
 
@@ -1134,7 +1261,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             # Expose pending CCTV triggers (retain recent items within last 60s, max 20)
             # Dashboard deduplicates by trigger_id via processedCctvTriggers set
             now = time.time()
-            pending = [t for t in PENDING_CCTV_TRIGGERS if (now - t.get("timestamp", 0)) < 60.0][-20:]
+            with CCTV_CONSENSUS_LOCK:
+                pending = [dict(t) for t in PENDING_CCTV_TRIGGERS
+                           if not t.get("claimed") and (now - t.get("timestamp", 0)) < 60.0][-20:]
 
             active_pipes = [
                 {"cctv_id": k, "pid": v["proc"].pid, "source": v["source"], "running": (v["proc"].poll() is None)}
@@ -1164,18 +1293,18 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        if path == "/esp32_snapshot_raw":
+        if path in ("/esp32_raw_snapshot", "/esp32_snapshot_raw"):
             host = str(query.get("ip", [""])[0]).split("//")[-1].split("/")[0].strip()
             mode = query.get("mode", ["live"])[0]
             try:
-                duty = max(0, min(255, int(query.get("flash", ["0"])[0])))
+                flash = max(0, min(255, int(query.get("flash", ["0"])[0])))
                 if not host or not re.fullmatch(r"[A-Za-z0-9.:-]+", host) or mode not in ("live", "baseline"):
                     raise ValueError("Invalid snapshot IP or mode")
             except (TypeError, ValueError) as exc:
                 self._send_json(400, {"error": str(exc)})
                 return
             try:
-                req = urllib.request.Request(f"http://{host}/capture?mode={mode}&duty={duty}",
+                req = urllib.request.Request(f"http://{host}/capture?mode={mode}&flash={flash}",
                                              headers={"User-Agent": "SmartStorageSnapshot/1.0"})
                 with urllib.request.urlopen(req, timeout=5.0) as response:
                     image_bytes = response.read()
@@ -1319,6 +1448,17 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         body = self._read_json_body()
 
+        if path == "/cctv_alignment_config":
+            try:
+                self._send_json(200, configure_cctv_alignment(body.get("cameras")))
+            except (ValueError, TypeError) as exc:
+                self._send_json(400, {"status": "error", "error": str(exc)})
+            return
+
+        if path == "/cctv_trigger_claim":
+            self._send_json(200, {"claimed": claim_cctv_trigger(body.get("trigger_id"))})
+            return
+
         if path == "/run_calibration":
             source = body.get("source") or get_active_rtsp_url(default_source=0)
             cctv_id = body.get("cctv_id") or "CCTV_01"
@@ -1422,7 +1562,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # ASSIGN DUAL CAMERA IPs TO SHELF: Immediately update ACTIVE_ESP32_IPS and Supabase public.compartments
+        # ASSIGN DUAL CAMERA IPs TO SHELF: Update runtime mappings; never PATCH compartment IP/telemetry columns
         if path == "/esp32_assign_ips":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
             raw_ip1 = str(body.get("ip_address") or body.get("ip") or "192.168.0.201").split("//")[-1].split("/")[0].strip()
@@ -1468,19 +1608,26 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
             source = str(body.get("source", "MANUAL")).upper()
 
-            # Multi-CCTV Debounce: When 2 or 3 CCTVs see the same hand interaction simultaneously
-            if command == "CAPTURE_STATE" and source == "CCTV":
-                now_ts = time.time()
-                last_ts = LAST_SHELF_TRIGGER_TS.get(shelf_id, 0.0)
-                if (now_ts - last_ts) < MULTI_CCTV_DEBOUNCE_SEC:
-                    print(f"[CameraService] Debounced duplicate multi-CCTV trigger for {shelf_id} ({now_ts - last_ts:.2f}s < {MULTI_CCTV_DEBOUNCE_SEC}s)")
-                    self._send_json(200, {
-                        "status": "debounced",
-                        "shelf_id": shelf_id,
-                        "message": "Duplicate multi-CCTV trigger ignored within 6s window",
-                    })
+            consensus = None
+            if source in {"CCTV", "CCTV_BROWSER_DWELL"}:
+                try:
+                    consensus = record_cctv_consensus(
+                        shelf_id=shelf_id,
+                        camera_id=str(body.get("camera_id") or body.get("cctv_id") or "CCTV_01").strip(),
+                        action=expected_action,
+                        confidence=float(body.get("oks_confidence", body.get("confidence", body.get("conf", 1.0)))),
+                        camera_role=body.get("camera_role"),
+                        trigger_id=body.get("trigger_id"),
+                        dwell_duration_seconds=float(body.get("dwell_duration_seconds", 1.2)),
+                    )
+                except (ValueError, TypeError) as exc:
+                    self._send_json(400, {"status": "error", "error": str(exc)})
                     return
-                LAST_SHELF_TRIGGER_TS[shelf_id] = now_ts
+                if not consensus["consensus_met"]:
+                    self._send_json(200, consensus)
+                    return
+                shelf_id = consensus["shelf_id"]
+                command = "CAPTURE_STATE"
 
             # Guardrail 1: Freeze 30s baseline for 10s during interaction
             esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
@@ -1495,27 +1642,30 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     rack_id=rack_id,
                 )
             else:
-                # Record CCTV / State trigger for UI browser Teachable Machine processing (keep up to 20)
-                trigger_id = f"trig_{shelf_id}_{int(time.time() * 1000)}"
-                PENDING_CCTV_TRIGGERS.append({
-                    "trigger_id": trigger_id,
-                    "shelf_id": shelf_id,
-                    "expected_action": expected_action,
-                    "source": source,
-                    "timestamp": time.time(),
-                })
-                if len(PENDING_CCTV_TRIGGERS) > 20:
-                    del PENDING_CCTV_TRIGGERS[:-20]
+                # CCTV events were queued atomically at consensus; manual triggers remain direct.
+                if consensus is None:
+                    with CCTV_CONSENSUS_LOCK:
+                        trigger_id = f"trig_{shelf_id}_{int(time.time() * 1000)}"
+                        PENDING_CCTV_TRIGGERS.append({
+                            "trigger_id": trigger_id,
+                            "shelf_id": shelf_id,
+                            "expected_action": expected_action,
+                            "source": source,
+                            "timestamp": time.time(),
+                        })
+                        if len(PENDING_CCTV_TRIGGERS) > 20:
+                            del PENDING_CCTV_TRIGGERS[:-20]
 
                 dispatched = mqtt_bridge.publish_trigger(
                     shelf_id=shelf_id,
                     expected_action=expected_action,
-                    confidence=1.0,
+                    confidence=consensus["confidence"] if consensus else 1.0,
                     rack_id=rack_id,
                 )
 
             self._send_json(200, {
                 "status": "success",
+                **(consensus or {}),
                 "mqtt_connected": mqtt_bridge.is_connected,
                 "dispatched": dispatched,
             })
@@ -1614,8 +1764,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     }
                 log_entry["before_image_url"] = before_img
                 log_entry["after_image_url"] = after_img
+                log_entry["log_id"] = str(uuid.uuid4())
+                log_entry["state_delta"] = "ITEM_REMOVED" if delta_val < 0 else ("ITEM_RETURNED" if delta_val > 0 else "NO_CHANGE")
                 LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
-                PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
+                with CCTV_CONSENSUS_LOCK:
+                    PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
 
             self._send_json(200, {
                 "status": "success",

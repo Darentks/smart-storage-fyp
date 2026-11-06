@@ -7,7 +7,7 @@
       "destination": "/models/:path*"
     },
     {
-      "source": "/((?!models/|src/|VisionValidation_Module/|.*\\.[^/]+$).*)",
+      "source": "/((?!models/|src/|VisionValidation_Module/).*)",
       "destination": "/index.html"
     }
   ],
