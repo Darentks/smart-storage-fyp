@@ -344,6 +344,7 @@ def get_merged_compartments_and_nodes():
             "container_id": comp.get("container_id") or db_row.get("container_id"),
             "ip_address": ip_addr,
             "secondary_ip_address": sec_ip_addr,
+            **({"vertices": comp["vertices"], "coordinate_space": "pixels"} if "vertices" in comp else {}),
             "x_min": comp["x_min"],
             "y_min": comp["y_min"],
             "x_max": comp["x_max"],

@@ -7,6 +7,8 @@ Complies with FR-02 (Dynamic ROI Mapping), NFR-06 (Maintainability), and NFR-07 
 
 import json
 import os
+import numpy as np
+from .roi_geometry import roi_vertices, contains_point
 from typing import Any, Dict, List, Optional
 cv2: Any
 try:
@@ -56,6 +58,8 @@ class SpatialMapper:
                 data = json.load(f)
                 self.rack_id = data.get("rack_id", "RACK_01")
                 raw_comps = data.get("compartments", [])
+                if isinstance(raw_comps, dict):
+                    raw_comps = [{"shelf_id": sid, **({"vertices": roi} if isinstance(roi, list) else roi)} for sid, roi in raw_comps.items()]
                 # Ensure each compartment has standard ESP32 mapping keys
                 self.compartments = []
                 for idx, comp in enumerate(raw_comps, start=1):
@@ -72,6 +76,13 @@ class SpatialMapper:
                         "y_max": int(comp.get("y_max", 350)),
                         "dwell_threshold_seconds": float(comp.get("dwell_threshold_seconds", 1.2)),
                     })
+                    if "vertices" in comp:
+                        points = roi_vertices(comp)
+                        if comp.get("coordinate_space") == "normalized":
+                            points = points * np.asarray(data.get("camera_resolution", [640, 480]), dtype=np.float32)
+                        self.compartments[-1].update(vertices=points.tolist(),
+                            x_min=float(points[:, 0].min()), y_min=float(points[:, 1].min()),
+                            x_max=float(points[:, 0].max()), y_max=float(points[:, 1].max()))
             print(f"[SpatialMapper] Loaded {len(self.compartments)} compartment ROIs from {self.config_file}")
         except Exception as e:
             print(f"[SpatialMapper] Error reading ROI config: {e}")
@@ -80,10 +91,14 @@ class SpatialMapper:
 
     def save_roi_config(self) -> None:
         """Saves current ROI configuration and ESP32 bindings to external JSON file."""
-        data = {
+        data = {}
+        if os.path.isfile(self.config_file):
+            with open(self.config_file, encoding="utf-8") as existing:
+                data = json.load(existing)
+        data.update({
             "rack_id": self.rack_id,
             "compartments": self.compartments,
-        }
+        })
         os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
         with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -115,7 +130,7 @@ class SpatialMapper:
         x, y = point_xy
         matches = []
         for comp in self.compartments:
-            if comp["x_min"] <= x <= comp["x_max"] and comp["y_min"] <= y <= comp["y_max"]:
+            if contains_point(comp, (x, y)):
                 matches.append(comp)
         return matches
 
@@ -137,6 +152,7 @@ class SpatialMapper:
         mqtt_client_id: Optional[str] = None,
         camera_name: Optional[str] = None,
         container_id: Optional[str] = None,
+        vertices=None,
     ) -> Dict[str, Any]:
         """
         CREATE / UPDATE: Adds a new compartment ROI or updates an existing compartment by shelf_id.
@@ -175,6 +191,17 @@ class SpatialMapper:
             "y_max": y2,
             "dwell_threshold_seconds": float(dwell_threshold_seconds),
         }
+
+        if vertices is not None:
+            points = roi_vertices({"vertices": vertices})
+            new_comp.update(vertices=points.tolist(), x_min=float(points[:,0].min()), y_min=float(points[:,1].min()),
+                            x_max=float(points[:,0].max()), y_max=float(points[:,1].max()))
+        elif existing and "vertices" in existing:
+            # Updating bindings or rectangle bounds must not silently discard polygon calibration.
+            points = roi_vertices(existing).copy()
+            points[:,0] = x1 + (points[:,0]-existing["x_min"])*(x2-x1)/max(1e-6,existing["x_max"]-existing["x_min"])
+            points[:,1] = y1 + (points[:,1]-existing["y_min"])*(y2-y1)/max(1e-6,existing["y_max"]-existing["y_min"])
+            new_comp["vertices"] = points.tolist()
 
         updated = False
         for i, c in enumerate(self.compartments):
@@ -220,10 +247,16 @@ class SpatialMapper:
                 box_color = (255, 120, 0)
                 fill_color = (255, 120, 0)
 
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), fill_color, -1)
-            cv2.rectangle(frame, (x1, y1), (x2, y2), box_color, 2)
+            if state_info.get("ambiguous"):
+                box_color, fill_color = (0, 128, 255), (0, 64, 128)
+            points = np.rint(roi_vertices(comp)).astype(np.int32)
+            cv2.fillPoly(overlay, [points], fill_color)
+            cv2.polylines(frame, [points], True, box_color, 2)
+            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
 
             header_text = f" {shelf_id} [{esp_id}] " if esp_id else f" {shelf_id} "
+            if state_info.get("ambiguous"):
+                header_text += "AMBIGUOUS"
             (tw, th), _ = cv2.getTextSize(header_text, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
             cv2.rectangle(frame, (x1, max(0, y1 - th - 10)), (x1 + tw + 6, y1), box_color, -1)
             cv2.putText(

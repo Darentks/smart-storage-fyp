@@ -30,6 +30,7 @@ import os
 import sys
 import json
 import time
+import numpy as np
 from typing import Any, Optional
 try:
     import cv2
@@ -38,6 +39,7 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src.spatial_mapper import SpatialMapper
+from src.roi_geometry import roi_vertices, contains_point, validate_vertices
 from src.video_processor import VideoProcessor
 from src.config_loader import get_active_rtsp_url
 from src.mqtt_client import MQTTClientNode
@@ -70,11 +72,13 @@ def set_status(msg, color=(0, 255, 255), duration=4.0):
 
 
 def is_inside_box(x, y, comp):
-    return comp["x_min"] <= x <= comp["x_max"] and comp["y_min"] <= y <= comp["y_max"]
+    return contains_point(comp, (x,y))
 
 
 def get_handles_for_box(comp):
     """Returns coordinates for 8 handles: 4 corners + 4 edge midpoints."""
+    if "vertices" in comp:
+        return [tuple(map(int, point)) for point in roi_vertices(comp)]
     x1, y1 = comp["x_min"], comp["y_min"]
     x2, y2 = comp["x_max"], comp["y_max"]
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
@@ -138,6 +142,22 @@ def spawn_center_compartment(frame_w=640, frame_h=480):
     add_new_compartment(cx - bw // 2, cy - bh // 2, cx + bw // 2, cy + bh // 2)
 
 
+def set_polygon_vertices(comp, points):
+    points = validate_vertices(points)
+    comp.update(vertices=points.tolist(), x_min=int(points[:,0].min()), y_min=int(points[:,1].min()),
+                x_max=int(points[:,0].max()), y_max=int(points[:,1].max()))
+
+
+def transform_polygon_bounds(comp, before):
+    if "vertices" not in comp:
+        return
+    x1,y1,x2,y2 = before
+    points = roi_vertices(comp).copy()
+    points[:,0] = comp["x_min"] + (points[:,0]-x1)*(comp["x_max"]-comp["x_min"])/max(1,x2-x1)
+    points[:,1] = comp["y_min"] + (points[:,1]-y1)*(comp["y_max"]-comp["y_min"])/max(1,y2-y1)
+    set_polygon_vertices(comp, points)
+
+
 def mouse_callback(event, x, y, flags, param):
     global selected_idx, drawing_new, dragging_box, active_handle, hover_handle
     global drag_offset, start_pt, current_pt, spatial_mapper
@@ -194,6 +214,19 @@ def mouse_callback(event, x, y, flags, param):
     elif event == opencv.EVENT_MOUSEMOVE:
         current_pt = (x, y)
 
+        if 0 <= selected_idx < len(spatial_mapper.compartments):
+            comp = spatial_mapper.compartments[selected_idx]
+            if "vertices" in comp and (active_handle >= 0 or dragging_box):
+                points = roi_vertices(comp).copy()
+                if active_handle >= 0:
+                    points[active_handle] = [max(0,x), max(45,y)]
+                else:
+                    points += np.array([max(0,x-drag_offset[0])-comp["x_min"], max(45,y-drag_offset[1])-comp["y_min"]])
+                try:
+                    set_polygon_vertices(comp, points)
+                except ValueError:
+                    pass  # Reject crossed/collapsed corner edits.
+                return
         if drawing_new:
             pass  # Rendered in main loop
 
@@ -266,7 +299,17 @@ def load_calibration_mapper(base_config_path, cctv_config_path=None):
         with open(cctv_config_path, "r", encoding="utf-8") as config_file:
             camera_config = json.load(config_file)
         merged = {comp["shelf_id"]: comp.copy() for comp in mapper.compartments}
-        for comp in camera_config.get("compartments", []):
+        camera_comps = camera_config.get("compartments", [])
+        if isinstance(camera_comps, dict):
+            camera_comps = [{"shelf_id": sid, **({"vertices": roi} if isinstance(roi,list) else roi)} for sid,roi in camera_comps.items()]
+        for comp in camera_comps:
+            comp = comp.copy()
+            if "vertices" in comp:
+                points = roi_vertices(comp)
+                if comp.get("coordinate_space") == "normalized":
+                    points = points * np.asarray(camera_config.get("camera_resolution", [640,480]))
+                comp.pop("coordinate_space", None)
+                set_polygon_vertices(comp,points)
             shelf_id = comp["shelf_id"]
             merged[shelf_id] = {**merged.get(shelf_id, {}), **comp}
         mapper.compartments = list(merged.values())
@@ -374,7 +417,7 @@ def main() -> int:
 
             # 1. Render all configured compartments
             for i, comp in enumerate(spatial_mapper.compartments):
-                x1, y1, x2, y2 = comp["x_min"], comp["y_min"], comp["x_max"], comp["y_max"]
+                x1, y1, x2, y2 = map(int, (comp["x_min"], comp["y_min"], comp["x_max"], comp["y_max"]))
                 is_sel = (i == selected_idx)
 
                 # Colors: Selected = Amber/Yellow, Normal = Blue/Cyan
@@ -383,11 +426,12 @@ def main() -> int:
 
                 # Semi-transparent fill
                 overlay = canvas.copy()
-                opencv.rectangle(overlay, (x1, y1), (x2, y2), color, -1)
+                points = np.rint(roi_vertices(comp)).astype(np.int32)
+                opencv.fillPoly(overlay, [points], color)
                 opencv.addWeighted(overlay, 0.25 if is_sel else 0.10, canvas, 0.75 if is_sel else 0.90, 0, canvas)
 
                 # Outline border
-                opencv.rectangle(canvas, (x1, y1), (x2, y2), color, thickness)
+                opencv.polylines(canvas, [points], True, color, thickness)
 
                 # Header pill
                 bw = x2 - x1
@@ -428,10 +472,11 @@ def main() -> int:
 
             sel_name = spatial_mapper.compartments[selected_idx]['shelf_id'] if 0 <= selected_idx < len(spatial_mapper.compartments) else "None"
             opencv.putText(canvas, f"Selected: [{sel_name}] | {status_disp}", (12, 18), opencv.FONT_HERSHEY_SIMPLEX, 0.42, curr_color, 1, opencv.LINE_AA)
-            opencv.putText(canvas, "[Click]:Select [Handles]:Resize [S]:SAVE [Q]:Exit", (12, 36), opencv.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, opencv.LINE_AA)
+            opencv.putText(canvas, "[Click]:Select [Handles]:Resize [P]:Polygon [S]:SAVE [Q]:Exit", (12, 36), opencv.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, opencv.LINE_AA)
 
             opencv.imshow(window_name, canvas)
             key = opencv.waitKey(20) & 0xFF
+            before_bounds = {id(comp): tuple(comp[k] for k in ("x_min","y_min","x_max","y_max")) for comp in spatial_mapper.compartments}
 
             if key in [ord('q'), 27]:
                 break
@@ -452,6 +497,12 @@ def main() -> int:
             elif key in [ord('a'), ord('A')]:
                 # Spawn new compartment box
                 spawn_center_compartment(frame_w=w, frame_h=h)
+            elif key in [ord('p'), ord('P')]:
+                if 0 <= selected_idx < len(spatial_mapper.compartments):
+                    comp = spatial_mapper.compartments[selected_idx]
+                    if comp["shelf_id"] != "RACK_ENTRY_ZONE":
+                        set_polygon_vertices(comp, roi_vertices(comp))
+                        set_status("Polygon editing: drag any of four corner handles, then [S] to save.")
             elif key in [ord('s'), ord('S'), 13]:  # 'S' or ENTER: Save
                 save_calibration_rois(spatial_mapper, save_paths)
                 mqtt_notifier.notify_roi_reload(reason="ROI_CALIBRATED")
@@ -483,6 +534,12 @@ def main() -> int:
                         c["x_max"] -= 5
                         c["y_max"] -= 5
                         set_status(f"Shrunk size of {c['shelf_id']}. Press [S] to save.")
+
+            for comp in spatial_mapper.compartments:
+                before = before_bounds.get(id(comp))
+                after = tuple(comp[k] for k in ("x_min","y_min","x_max","y_max"))
+                if before and before != after:
+                    transform_polygon_bounds(comp, before)
 
     finally:
         video.release_stream()

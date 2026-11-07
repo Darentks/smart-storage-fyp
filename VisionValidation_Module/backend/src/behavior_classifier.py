@@ -220,6 +220,8 @@ class BehaviorClassifier:
         # Key: shelf_id -> list of valid wrist detections inside that compartment
         compartment_wrists = {shelf_id: [] for shelf_id in self.trackers.keys()}
 
+        ambiguous_shelves = set()
+        self.ambiguous_detections = []
         for person in detections:
             for wrist in person["wrists"]:
                 if not wrist["is_valid"]:
@@ -229,6 +231,10 @@ class BehaviorClassifier:
                 conf = wrist["conf"]
 
                 matching_comps = self.spatial_mapper.check_intersection(pt)
+                if len(matching_comps) > 1:
+                    ambiguous_shelves.update(comp["shelf_id"] for comp in matching_comps)
+                    self.ambiguous_detections.append({"pt": pt, "person_id": person["person_id"], "side": wrist["side"]})
+                    continue
                 for comp in matching_comps:
                     shelf_id = comp["shelf_id"]
                     if shelf_id in compartment_wrists:
@@ -239,10 +245,20 @@ class BehaviorClassifier:
                             "person_id": person["person_id"],
                         })
 
+        self.ambiguous_shelves = ambiguous_shelves
         new_events = []
 
         # Update each compartment tracker
         for shelf_id, tracker in self.trackers.items():
+            if shelf_id in ambiguous_shelves:
+                # Cancel rather than treating ambiguity as withdrawal (which could fire a vote).
+                tracker.state = tracker.STATE_IDLE
+                tracker.dwell_start_time = None
+                tracker.last_seen_time = None
+                tracker.current_dwell_duration = 0.0
+                tracker.trigger_fired = False
+                tracker.trajectory_history.clear()
+                continue
             wrists_in_comp = compartment_wrists.get(shelf_id, [])
 
             if len(wrists_in_comp) > 0:
@@ -267,7 +283,8 @@ class BehaviorClassifier:
 
     def get_all_states(self):
         """Returns the dictionary of state snapshots for all compartments."""
-        return {sid: tracker.get_status_info() for sid, tracker in self.trackers.items()}
+        return {sid: {**tracker.get_status_info(), "ambiguous": sid in getattr(self, "ambiguous_shelves", set())}
+                for sid, tracker in self.trackers.items()}
 
     def reset_dwell_tracking(self):
         """Cancel unverified interactions when fresh camera evidence is lost."""
