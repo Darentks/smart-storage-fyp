@@ -1210,6 +1210,10 @@
             </button>
           </div>
 
+          <div id="cctvActiveSourceText" style="font-size: 11px; color: var(--text-muted);" aria-live="polite">
+            Tracking source: select Start YOLO or Calibrate ROI on a camera card.
+          </div>
+
           <!-- Interactive ROI Calibration Bar (Shown when Calibrate ROI is active) -->
           <div id="cctvCalibrationToolbar"
             style="display: none; background: rgba(56, 189, 248, 0.08); border: 1px dashed var(--primary); border-radius: 8px; padding: 8px 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;">
@@ -4021,6 +4025,7 @@
       'RACK_ENTRY_ZONE': { x_min: 0.35, y_min: 0.12, x_max: 0.68, y_max: 0.88 }
     };
 
+    let activeCctvSourceUrl = null;
     let activeCctvId = 'CCTV_01';
     let activeCameraRole = 'GRID_6_ROI';
     function roiStorageKey() { return `smart_storage_cctv_rois_${activeCctvId || 'CCTV_01'}`; }
@@ -4028,6 +4033,14 @@
     function loadStoredRois() {
       try {
         const raw = localStorage.getItem(roiStorageKey());
+        const metadata = localStorage.getItem(`${roiStorageKey()}_binding`);
+        if (metadata && typeof activeCctvSourceUrl !== 'undefined' && activeCctvSourceUrl) {
+          const saved = JSON.parse(metadata);
+          if (saved.source !== cctvSourceBinding(activeCctvSourceUrl) || saved.camera_role !== activeCameraRole) {
+            showToast(`Source or role changed for ${activeCctvId}; recalibrate its ROIs.`, 'info');
+            return { ...DEFAULT_COMPARTMENT_ROIS };
+          }
+        }
         if (raw) return { ...DEFAULT_COMPARTMENT_ROIS, ...JSON.parse(raw) };
       } catch (_) { }
       return { ...DEFAULT_COMPARTMENT_ROIS };
@@ -4836,8 +4849,7 @@
       simulationAnimId = requestAnimationFrame(loop);
     }
 
-    // RTSP URL of the CCTV currently selected for tracking (set by "Start YOLO" / "Calibrate ROI" on a CCTV card)
-    let activeCctvSourceUrl = null;
+    // RTSP polling uses the selected camera card, independently of the editable form.
 
     function startCctvBridgePollingLoop() {
       const generation = trackingGeneration;
@@ -4847,7 +4859,21 @@
         clearInterval(bridgeStreamInterval);
         bridgeStreamInterval = null;
       }
-      const source = (activeCctvSourceUrl || document.getElementById('cctvRtspInput')?.value || '0').trim();
+      const camera = cctvCamerasList.find(cam => cam.cctv_id === cameraId);
+      const source = (activeCctvSourceUrl || camera?.rtsp_url || '').trim();
+      try {
+        const binding = validateCctvBinding(cameraId, source, camera?.ip_address);
+        if (!camera || binding !== cctvSourceBinding(camera.rtsp_url)) throw new Error('Select the matching camera card before starting the bridge feed.');
+      } catch (error) {
+        stopMediaPipeTracker();
+        showToast(error.message, 'error');
+        return;
+      }
+      activeCctvSourceUrl = source;
+      activeCameraRole = cameraRole(camera);
+      activeCctvRois = loadStoredRois();
+      initCompartmentTrackers();
+      updateActiveCctvSourceText();
       const reusableImg = new Image();
       reusableImg.crossOrigin = 'anonymous';
       let lastSeq = -1;
@@ -4923,8 +4949,14 @@
 
     function saveCalibratedRois() {
       try {
+        const camera = cctvCamerasList.find(cam => cam.cctv_id === activeCctvId);
+        const binding = validateCctvBinding(activeCctvId, activeCctvSourceUrl, camera?.ip_address);
+        if (!camera || binding !== cctvSourceBinding(camera.rtsp_url) || cameraRole(camera) !== activeCameraRole) {
+          throw new Error('Camera binding or role changed. Select Calibrate ROI on the matching camera card again.');
+        }
         localStorage.setItem(roiStorageKey(), JSON.stringify(activeCctvRois));
-        showToast('Saved calibrated ROIs to local browser storage!', 'success');
+        localStorage.setItem(`${roiStorageKey()}_binding`, JSON.stringify({ source: binding, camera_role: activeCameraRole }));
+        showToast(`Saved ROIs for ${activeCctvId} (${activeCameraRole}) to this browser.`, 'success');
       } catch (err) {
         showToast(`Failed to save ROIs: ${err.message}`, 'error');
       }
@@ -4934,6 +4966,7 @@
       activeCctvRois = { ...DEFAULT_COMPARTMENT_ROIS };
       try {
         localStorage.removeItem(roiStorageKey());
+        localStorage.removeItem(`${roiStorageKey()}_binding`);
       } catch (_) { }
       updateCalibCoordsText();
       showToast('Reset all compartment ROIs to defaults.', 'info');
@@ -5021,6 +5054,40 @@
       window.addEventListener('touchend', onEnd, { passive: true });
     }
 
+    function cctvSourceBinding(source) {
+      const value = String(source || '').trim();
+      if (/^\d+$/.test(value)) return `device:${Number(value)}`;
+      const url = new URL(value);
+      if (!['rtsp:', 'rtsps:'].includes(url.protocol)) throw new Error('Use an RTSP stream URL or webcam index.');
+      // Credentials are deliberately excluded from identity, display and saved ROI metadata.
+      return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || '554'}${url.pathname}${url.search}`;
+    }
+
+    function validateCctvBinding(cameraId, source, ipAddress = null) {
+      const binding = cctvSourceBinding(source);
+      if (ipAddress && !binding.startsWith('device:')) {
+        const host = new URL(source).hostname.toLowerCase();
+        if (host !== cleanCameraHost(ipAddress).toLowerCase()) {
+          throw new Error(`${cameraId}: RTSP host does not match the IP Address field. Correct the camera form before saving.`);
+        }
+      }
+      const other = cctvCamerasList.find(cam => cam.cctv_id !== cameraId && (() => {
+        try {
+          const otherBinding = cctvSourceBinding(cam.rtsp_url);
+          return otherBinding === binding || (!binding.startsWith('device:') && !otherBinding.startsWith('device:')
+            && new URL(cam.rtsp_url).hostname.toLowerCase() === new URL(source).hostname.toLowerCase());
+        } catch (_) { return false; }
+      })());
+      if (other) throw new Error(`${cameraId}: this stream is already assigned to ${other.cctv_id}. Select the matching camera card.`);
+      return binding;
+    }
+
+    function updateActiveCctvSourceText() {
+      const label = document.getElementById('cctvActiveSourceText');
+      if (!label || !activeCctvSourceUrl) return;
+      label.textContent = `Tracking: ${activeCctvId} | ${activeCameraRole} | ${cctvSourceBinding(activeCctvSourceUrl)}`;
+    }
+
     function buildCctvRtspFromInputs() {
       const ip = (document.getElementById('cctvIpInput').value || '192.168.0.101').trim();
       const user = (document.getElementById('cctvUserInput').value || 'admin').trim();
@@ -5054,6 +5121,13 @@
 
       if (!cctvId || !rtspUrl) {
         showToast('Please enter both CCTV ID and RTSP URL', 'error');
+        return;
+      }
+
+      try {
+        validateCctvBinding(cctvId, rtspUrl, ipAddress);
+      } catch (error) {
+        showToast(error.message, 'error');
         return;
       }
 
@@ -5187,13 +5261,23 @@
     function calibrateCctvRoi(cctvId, rtspUrl) {
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
+      if (!useCctvAsTrackerSource(rtspUrl, cctvId)) return;
       toggleRoiCalibrationMode(true);
-      useCctvAsTrackerSource(rtspUrl, cctvId);
       showToast(`Ready to calibrate ROI for ${cctvId} on its CCTV feed. Drag box on canvas above.`, 'info');
     }
 
     // Point the tracker canvas at the selected CCTV (via local bridge) instead of the laptop webcam
     function useCctvAsTrackerSource(rtspUrl, cctvId = 'CCTV_01') {
+      const camera = cctvCamerasList.find(cam => cam.cctv_id === cctvId);
+      try {
+        const binding = validateCctvBinding(cctvId, rtspUrl, camera?.ip_address);
+        if (!camera || cctvSourceBinding(camera.rtsp_url) !== binding) {
+          throw new Error(`${cctvId}: camera card changed. Refresh CCTVs and select its card again.`);
+        }
+      } catch (error) {
+        showToast(error.message, 'error');
+        return false;
+      }
       if (isPoseRunning) stopMediaPipeTracker();
       activeCctvId = cctvId;
       activeCameraRole = cameraRole(cctvCamerasList.find(cam => cam.cctv_id === cctvId) || { cctv_id: cctvId });
@@ -5202,22 +5286,24 @@
         for (const option of calibSelect.options) option.hidden = activeCameraRole === 'SIDE_PRESENCE' ? option.value !== 'RACK_ENTRY_ZONE' : option.value === 'RACK_ENTRY_ZONE';
         calibSelect.value = activeCameraRole === 'SIDE_PRESENCE' ? 'RACK_ENTRY_ZONE' : 'SHELF_R1_C1';
       }
+      activeCctvSourceUrl = rtspUrl;
       activeCctvRois = loadStoredRois();
       initCompartmentTrackers();
       updateCalibCoordsText();
-      activeCctvSourceUrl = rtspUrl;
       const sourceSelect = document.getElementById('cctvPoseSourceSelect');
       if (sourceSelect) sourceSelect.value = 'cctv_bridge';
-      const rtspInput = document.getElementById('cctvRtspInput');
-      if (rtspInput && rtspUrl) rtspInput.value = rtspUrl;
-      if (isPoseRunning) stopMediaPipeTracker();
-      setTimeout(startMediaPipeTracker, 200);
+      updateActiveCctvSourceText();
+      const generation = trackingGeneration;
+      setTimeout(() => {
+        if (generation === trackingGeneration && activeCctvId === cctvId) startMediaPipeTracker();
+      }, 200);
+      return true;
     }
 
     function startCctvPipeline(cctvId, rtspUrl) {
       const panel = document.getElementById('cctvCameraManagerPanel');
       if (panel) panel.scrollIntoView({ behavior: 'smooth' });
-      useCctvAsTrackerSource(rtspUrl, cctvId);
+      if (!useCctvAsTrackerSource(rtspUrl, cctvId)) return;
       showToast(`Running YOLO11n-Pose ONNX (Vercel Web) on ${cctvId} CCTV feed`, 'success');
     }
 
