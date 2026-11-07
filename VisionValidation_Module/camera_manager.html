@@ -1235,6 +1235,11 @@
                 <option value="rectangle">Draw rectangle</option>
               </select>
               <button type="button" class="btn-action" onclick="insetSelectedRoi()">Inset 5%</button>
+              <span id="cctvRoiSwapControls" style="display:inline-flex;align-items:center;gap:6px;">
+                <label for="cctvRoiSwapSelect" style="font-size:11px;">Swap with:</label>
+                <select id="cctvRoiSwapSelect" class="form-control" style="font-size:11px;width:145px;height:28px;"></select>
+                <button type="button" id="cctvRoiSwapBtn" class="btn-action" onclick="swapSelectedRoi()">Swap ROIs</button>
+              </span>
               <button type="button" class="btn-action" onclick="resetRoiEditor()">Cancel drawing</button>
 
               <span style="font-size: 11px; color: var(--text-muted);">Grid: draw 4 corners in perimeter order, or edit handles. Side: drag a rectangle.</span>
@@ -4274,6 +4279,48 @@
       return { vertices: points.map(p=>[...p]), coordinate_space:'normalized', x_min:Math.min(...xs), y_min:Math.min(...ys), x_max:Math.max(...xs), y_max:Math.max(...ys) };
     }
     function selectedRoiId() { return document.getElementById('cctvCalibShelfSelect')?.value || 'SHELF_R1_C1'; }
+    function syncRoiSwapOptions() {
+      const select = document.getElementById('cctvRoiSwapSelect');
+      const controls = document.getElementById('cctvRoiSwapControls');
+      if (!select || !controls) return;
+      controls.hidden = activeCameraRole === 'SIDE_PRESENCE';
+      controls.style.display = controls.hidden ? 'none' : 'inline-flex';
+      const choices = ALL_SHELF_IDS.filter(id => id !== selectedRoiId());
+      const previous = select.value;
+      select.innerHTML = choices.map(id=>`<option value="${id}">${id}</option>`).join('');
+      select.value = choices.includes(previous) ? previous : (choices[0] || '');
+      document.getElementById('cctvRoiSwapBtn').disabled = controls.hidden || !choices.length;
+    }
+    function swapSelectedRoi() {
+      if (!isCalibratingRoi || activeCameraRole !== 'GRID_6_ROI') return;
+      const source = selectedRoiId();
+      const target = document.getElementById('cctvRoiSwapSelect')?.value;
+      if (source === target || !ALL_SHELF_IDS.includes(source) || !ALL_SHELF_IDS.includes(target)) {
+        showToast('Select two different shelf compartments to swap.', 'info');
+        return;
+      }
+      const first = activeCctvRois[source] || DEFAULT_COMPARTMENT_ROIS[source];
+      const second = activeCctvRois[target] || DEFAULT_COMPARTMENT_ROIS[target];
+      const canvas = document.getElementById('cctvPoseCanvas');
+      if (![first,second].every(roi=>validQuad(roiVertices(roi,canvas.width,canvas.height)))) {
+        showToast('Both compartments need valid ROIs before swapping.', 'error');
+        return;
+      }
+      // Exchange geometry only: shelf IDs, device bindings and any shelf settings stay in place.
+      const keys = ['vertices','coordinate_space','x_min','y_min','x_max','y_max'];
+      const geometry = roi => Array.isArray(roi) ? quadRoi(roi) : Object.fromEntries(
+        keys.filter(key=>Object.hasOwn(roi,key)).map(key=>[key,JSON.parse(JSON.stringify(roi[key]))]));
+      const settings = roi => Array.isArray(roi) ? {} : Object.fromEntries(Object.entries(roi).filter(([key])=>!keys.includes(key)));
+      const nextFirst = {...settings(first),...geometry(second)};
+      const nextSecond = {...settings(second),...geometry(first)};
+      resetRoiEditor();
+      activeCctvRois[source] = nextFirst;
+      activeCctvRois[target] = nextSecond;
+      initCompartmentTrackers();
+      updateCalibCoordsText();
+      syncRoiSwapOptions();
+      showToast(`Swapped ${source} and ${target} on ${activeCctvId}. Click Save ROIs to keep the change.`, 'success');
+    }
     function setEditedRoi(points) {
       const id = selectedRoiId(), roi = quadRoi(points);
       if (activeCameraRole === 'SIDE_PRESENCE') delete roi.vertices;
@@ -5015,6 +5062,8 @@
     }
 
     function onCalibShelfChanged() {
+      resetRoiEditor();
+      syncRoiSwapOptions();
       updateCalibCoordsText();
     }
 
@@ -5075,6 +5124,7 @@
     }
 
     function initCanvasRoiEventListeners() {
+      syncRoiSwapOptions();
       const canvas = document.getElementById('cctvPoseCanvas');
       if (!canvas) return;
       canvas.style.touchAction = 'none';
@@ -5365,6 +5415,7 @@
         calibSelect.value = activeCameraRole === 'SIDE_PRESENCE' ? 'RACK_ENTRY_ZONE' : 'SHELF_R1_C1';
       }
       activeCctvSourceUrl = rtspUrl;
+      syncRoiSwapOptions();
       activeCctvRois = loadStoredRois();
       initCompartmentTrackers();
       updateCalibCoordsText();
