@@ -4113,6 +4113,7 @@
           `${getBridgeUrl()}/models/yolo11n-pose.onnx`,
           '/VisionValidation_Module/backend/models/yolo11n-pose.onnx'
         ];
+        const modelErrors = [];
         for (const path of candidatePaths) {
           try {
             const response = await fetch(path, { method: 'HEAD' });
@@ -4121,11 +4122,15 @@
             if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml')) {
               throw new Error('Model URL returned HTML instead of an ONNX file.');
             }
-            yoloOrtSession = await ort.InferenceSession.create(path, { executionProviders: ['webgl', 'wasm'] });
+            yoloOrtSession = await ort.InferenceSession.create(path, { executionProviders: ['wasm'] });
             return yoloOrtSession;
-          } catch (error) { console.warn('[YOLO ONNX]', path, error.message); }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            modelErrors.push(`${path}: ${message}`);
+            console.warn('[YOLO ONNX]', path, message);
+          }
         }
-        throw new Error('YOLO pose model unavailable from the site or camera bridge. Export yolo11n-pose.onnx into a models directory and check the bridge URL.');
+        throw new Error('YOLO pose initialization failed. ' + modelErrors.join(' | '));
       })();
       try { return await yoloSessionPromise; }
       finally { yoloSessionPromise = null; }
