@@ -1260,6 +1260,30 @@
             </div>
           </div>
 
+          <div id="cctvReplayTools" hidden style="padding:10px;border:1px solid var(--border);border-radius:8px;">
+            <strong>Recorded-video consensus test ? no ESP32 or inventory changes</strong>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+              <label>Session <input id="cctvReplaySession" value="roi-test" maxlength="64" style="width:110px;" /></label>
+              <label>Clip start (seconds) <input id="cctvReplayOffset" type="number" min="0" step="0.1" value="0" style="width:75px;" /></label>
+              <button type="button" class="btn-action" onclick="prepareCctvReplay()">Ready this clip</button>
+              <button type="button" class="btn-action" onclick="controlCctvReplay('start')">Start all 3 / Restart</button>
+              <button type="button" class="btn-action" onclick="controlCctvReplay('pause')">Pause all</button>
+              <button type="button" class="btn-action" onclick="controlCctvReplay('reset')">Reset test</button>
+            </div>
+            <p style="font-size:12px;">Use the same session in all browsers. Set each clip's start to the same filmed moment, then ready all three. Loading a clip waits for Start all 3.</p>
+            <div id="cctvReplayStatus" role="status">Load one camera clip per visible browser window.</div>
+            <div id="cctvReplayVotes" style="font-size:12px;"></div>
+          </div>
+          <div id="cctvConsensusResult" role="status" style="font-size:13px;"></div>
+          <div id="cctvConsensusPopup" hidden role="alertdialog" aria-modal="true" aria-labelledby="cctvConsensusPopupTitle"
+            style="position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:10000;align-items:center;justify-content:center;">
+            <div style="max-width:480px;padding:24px;border:2px solid #10b981;border-radius:12px;background:#111827;color:white;">
+              <h3 id="cctvConsensusPopupTitle">All 3 cameras agree</h3>
+              <p id="cctvConsensusPopupText"></p>
+              <button type="button" class="btn-action" onclick="closeCctvConsensusPopup()">Close</button>
+            </div>
+          </div>
+
           <!-- Canvas & Video Viewport (Single Full-Box Canvas — No Split Screen) -->
           <div class="preview-canvas-box" id="cctvTestContainer"
             style="position: relative; width: 100%; aspect-ratio: 4 / 3; display: block; background: #070b14; border-radius: 8px; overflow: hidden;">
@@ -4067,7 +4091,9 @@
     // Compartment Dwell State Machine (mirrors behavior_classifier.py)
     const compartmentTrackers = {};
 
+    let poseEvidenceGeneration = 0;
     function initCompartmentTrackers() {
+      poseEvidenceGeneration++;
       for (const s of [...ALL_SHELF_IDS, 'RACK_ENTRY_ZONE']) {
         compartmentTrackers[s] = {
           shelfId: s,
@@ -4165,6 +4191,7 @@
     async function runYoloPoseOnSource(sourceEl) {
       if (isYoloInferencing || !isPoseRunning) return;
       const generation = trackingGeneration;
+      const evidenceGeneration = poseEvidenceGeneration;
       let tensor;
       let outputs;
       try {
@@ -4191,7 +4218,8 @@
         tensor = new ort.Tensor('float32', input, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
         const feeds = { [session.inputNames[0]]: tensor };
         outputs = await session.run(feeds);
-        if (!isPoseRunning || generation !== trackingGeneration) return;
+        if (!isPoseRunning || generation !== trackingGeneration || evidenceGeneration !== poseEvidenceGeneration) return;
+        if (isRecordedCctvTest() && (cctvReplaySnapshot?.status !== 'playing' || sourceEl.paused || sourceEl.seeking)) return;
         const output = outputs[session.outputNames[0]];
         if (output.dims.length !== 3 || output.dims[1] !== 56) throw new Error('Expected YOLO pose output [1,56,anchors]. Export without NMS.');
         const anchors = output.dims[2], data = output.data;
@@ -4664,12 +4692,138 @@
       if (!response.ok) throw new Error(`Camera alignment configuration failed: HTTP ${response.status}`);
     }
 
+    let cctvReplayRegistration = null;
+    let cctvReplaySnapshot = null;
+    let cctvReplayTimer = null;
+    let cctvReplayBusy = false;
+    let cctvReplayLeavePromise = Promise.resolve();
+    let cctvReplayClockOffset = 0;
+    const cctvReplayClientId = `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const cctvSeenConsensusResults = new Set();
+    function isRecordedCctvTest() { return document.getElementById('cctvPoseSourceSelect')?.value === 'video_file'; }
+    function closeCctvConsensusPopup() {
+      const popup=document.getElementById('cctvConsensusPopup');popup.hidden=true;popup.style.display='none';
+    }
+    function showCctvConsensusResult(result) {
+      if (!result.consensus_met || cctvSeenConsensusResults.has(result.trigger_id)) return;
+      cctvSeenConsensusResults.add(result.trigger_id);
+      const cameras=result.confirmed_cameras || [];
+      const message=`${result.shelf_id} ? ${result.expected_action}: ${cameras.join(' + ')} agree. ${result.test_only ? 'TEST ONLY: no ESP32 capture or inventory update was sent.' : 'Live validation confirmed.'}`;
+      document.getElementById('cctvConsensusResult').textContent=message;
+      document.getElementById('cctvConsensusPopupTitle').textContent=cameras.length===3?'All 3 cameras agree':`${cameras.length} cameras agree`;
+      document.getElementById('cctvConsensusPopupText').textContent=message;
+      const popup=document.getElementById('cctvConsensusPopup');popup.hidden=false;popup.style.display='flex';
+      showToast(message,'success');
+    }
+    async function cctvReplayRequest(action, extra = {}, registration = cctvReplayRegistration) {
+      const sessionId=registration?.session_id || document.getElementById('cctvReplaySession').value.trim();
+      const before=Date.now();
+      const response=await fetch(`${getBridgeUrl()}/cctv_replay`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({session_id:sessionId,camera_id:registration?.camera_id || activeCctvId,client_id:cctvReplayClientId,action,...extra})
+      });
+      const result=await response.json();
+      if(!response.ok) throw new Error(result.error || `Replay HTTP ${response.status}`);
+      if(Number.isFinite(result.server_time)) cctvReplayClockOffset=result.server_time*1000-(before+Date.now())/2;
+      return result;
+    }
+    function leaveCctvReplay() {
+      if(cctvReplayTimer!==null)clearTimeout(cctvReplayTimer);
+      cctvReplayTimer=null;
+      const registration=cctvReplayRegistration;
+      cctvReplayRegistration=null;cctvReplaySnapshot=null;
+      if(registration)cctvReplayLeavePromise=cctvReplayRequest('leave',{},registration).catch(error=>console.warn('[Replay]',error.message));
+    }
+    async function prepareCctvReplay() {
+      const video=document.getElementById('cctvPoseVideo');
+      if(!isRecordedCctvTest() || !isPoseRunning || !Number.isFinite(video.duration)) {
+        showToast('Load a playable MP4 for the selected camera first.','info');return;
+      }
+      video.pause();initCompartmentTrackers();
+      const generation=trackingGeneration;
+      const registration={session_id:document.getElementById('cctvReplaySession').value.trim(),camera_id:activeCctvId};
+      try {
+        await cctvReplayLeavePromise;
+        if(generation!==trackingGeneration)return;
+        if(cctvReplayRegistration && cctvReplayRegistration.session_id!==registration.session_id) {
+          await cctvReplayRequest('leave',{},cctvReplayRegistration);
+        }
+        const result=await cctvReplayRequest('ready',{offset:Number(document.getElementById('cctvReplayOffset').value),duration:video.duration},registration);
+        if(generation!==trackingGeneration){cctvReplayRequest('leave',{},registration).catch(()=>{});return;}
+        cctvReplayRegistration=registration;cctvReplaySnapshot=result;
+        video.currentTime=result.clip.offset;
+        video.onseeked=()=>{if(isRecordedCctvTest() && video.paused && generation===trackingGeneration)onPoseResults({image:video,poseLandmarks:null});};
+        if(video.readyState>=2)onPoseResults({image:video,poseLandmarks:null});
+        closeCctvConsensusPopup();document.getElementById('cctvConsensusResult').textContent='';
+        pollCctvReplay();
+      }catch(error){showToast('Replay setup failed: '+error.message,'error');}
+    }
+    async function controlCctvReplay(action) {
+      try {
+        if(!cctvReplayRegistration)throw new Error('Load and ready this clip first.');
+        const registration=cctvReplayRegistration;
+        const result=await cctvReplayRequest(action);
+        if(registration!==cctvReplayRegistration)return;
+        cctvReplaySnapshot=null;initCompartmentTrackers();
+        if(action==='start'||action==='reset'){closeCctvConsensusPopup();document.getElementById('cctvConsensusResult').textContent='';}
+        await applyCctvReplayState(result);
+      }catch(error){showToast(error.message,'error');}
+    }
+    async function applyCctvReplayState(state) {
+      if(cctvReplaySnapshot && state.session_token===cctvReplaySnapshot.session_token && state.epoch<cctvReplaySnapshot.epoch)return;
+      const video=document.getElementById('cctvPoseVideo');
+      const changed=!cctvReplaySnapshot || cctvReplaySnapshot.epoch!==state.epoch;
+      cctvReplaySnapshot=state;
+      if(changed)initCompartmentTrackers();
+      document.getElementById('cctvReplayStatus').textContent=`${state.status.toUpperCase()} | Ready: ${state.ready_cameras.join(', ') || 'none'} (${state.ready_cameras.length}/3) | ${activeCctvId} @ ${video.currentTime.toFixed(2)}s`;
+      document.getElementById('cctvReplayVotes').textContent=['CCTV_01','CCTV_02','CCTV_03'].map(id=>{
+        const vote=state.votes[id];return `${id}: ${vote ? `${vote.shelf_id} ${vote.action}` : 'waiting for a vote'}`;
+      }).join(' | ');
+      for(const result of state.results)showCctvConsensusResult(result);
+      if(!state.owned)throw new Error('This window is no longer registered; ready this clip again.');
+      const elapsed=state.start_at===null ? state.elapsed : (Date.now()+cctvReplayClockOffset)/1000-state.start_at;
+      const target=Math.min(video.duration,state.clip.offset+Math.max(0,elapsed));
+      if(state.status!=='playing'||elapsed<0){video.pause();if(changed)video.currentTime=target;return;}
+      if(changed || Math.abs(video.currentTime-target)>.75){initCompartmentTrackers();video.currentTime=target;}
+      const drift=target-video.currentTime;
+      video.playbackRate=Math.abs(drift)>.12 ? (drift>0?1.03:.97) : 1;
+      if(video.paused && target<video.duration)await video.play();
+    }
+    async function pollCctvReplay() {
+      if(cctvReplayBusy || !cctvReplayRegistration || !isRecordedCctvTest() || !isPoseRunning)return;
+      if(cctvReplayTimer!==null)clearTimeout(cctvReplayTimer);
+      const registration=cctvReplayRegistration;
+      cctvReplayBusy=true;
+      try {
+        const result=await cctvReplayRequest('status',{},registration);
+        if(registration===cctvReplayRegistration)await applyCctvReplayState(result);
+      }catch(error){
+        document.getElementById('cctvPoseVideo').pause();initCompartmentTrackers();cctvReplaySnapshot=null;
+        document.getElementById('cctvReplayStatus').textContent='Replay paused: '+error.message;
+      }finally{
+        cctvReplayBusy=false;
+        if(cctvReplayRegistration && isRecordedCctvTest() && isPoseRunning)cctvReplayTimer=setTimeout(pollCctvReplay,250);
+      }
+    }
+
     async function dispatchDwellTrigger(shelfId, action, dwellDuration, conf) {
       const triggerEl = document.getElementById('cctvLastTriggerText');
       const cameraId = activeCctvId;
       const role = activeCameraRole;
       const triggerId = `dwell-${cameraId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       try {
+        if (isRecordedCctvTest()) {
+          if (!cctvReplayRegistration || cctvReplaySnapshot?.status !== 'playing') return null;
+          const registration=cctvReplayRegistration, epoch=cctvReplaySnapshot.epoch;
+          const result = await cctvReplayRequest('vote', {
+            epoch, trigger_id:triggerId, camera_role:role,
+            shelf_id:shelfId, expected_action:action, oks_confidence:conf, dwell_duration_seconds:dwellDuration
+          },registration);
+          if(registration!==cctvReplayRegistration || cctvReplaySnapshot?.epoch!==epoch)return null;
+          if(triggerEl)triggerEl.textContent=result.consensus_met ? `${result.shelf_id}: ALL 3 AGREE (TEST)` : `${shelfId}: Test vote (${result.confirmed_count || 0}/3)`;
+          showCctvConsensusResult(result);
+          return result;
+        }
         await syncCctvAlignmentConfig();
         const response = await fetch(`${getBridgeUrl()}/esp32_trigger`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -4688,6 +4842,7 @@
               : `${shelfId}: Waiting for consensus (${result.confirmed_count}/${result.required_cameras})`;
         }
         if (result.consensus_met === true) {
+          showCctvConsensusResult(result);
           await consumeCctvTrigger({ ...result, expected_action: action, source: 'CCTV' });
         }
         return result;
@@ -4774,7 +4929,7 @@
           videoEl.srcObject = null;
           videoEl.src = recordedVideoUrl;
           videoEl.loop = false;
-          videoEl.onended = () => stopMediaPipeTracker();
+          videoEl.onended = () => { videoEl.pause(); initCompartmentTrackers(); };
         } else {
           const stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 640 }, height: { ideal: 480 } },
@@ -4786,11 +4941,16 @@
         }
         await videoEl.play();
         if (generation !== trackingGeneration) return;
+        if (selectedSource === 'video_file') {
+          videoEl.pause();
+          document.getElementById('cctvReplayTools').hidden=false;
+          await prepareCctvReplay();
+        }
 
         const loop = async () => {
           if (!isPoseRunning || generation !== trackingGeneration) return;
           try {
-            if (videoEl.readyState >= 2) await runYoloPoseOnSource(videoEl);
+            if (videoEl.readyState >= 2 && !videoEl.paused && !videoEl.seeking) await runYoloPoseOnSource(videoEl);
           } catch (error) {
             stopMediaPipeTracker();
             showToast('YOLO inference failed: ' + error.message, 'error');
@@ -4802,9 +4962,9 @@
 
         if (badge) {
           badge.className = 'badge badge-online';
-          badge.textContent = selectedSource === 'video_file' ? 'Recorded Video Tracking Active' : 'Webcam Tracking Active';
+          badge.textContent = selectedSource === 'video_file' ? 'Recorded Replay Ready (Test Only)' : 'Webcam Tracking Active';
         }
-        showToast(selectedSource === 'video_file' ? 'Recorded MP4 tracking started.' : 'Webcam connected! Tracking wrist keypoints in real time.', 'success');
+        showToast(selectedSource === 'video_file' ? 'Clip ready. Load the other camera clips, then click Start all 3.' : 'Webcam connected! Tracking wrist keypoints in real time.', 'success');
       } catch (camErr) {
         if (generation !== trackingGeneration) return;
         if (selectedSource === 'video_file') {
@@ -4824,6 +4984,7 @@
     }
 
     function stopMediaPipeTracker() {
+      leaveCctvReplay();
       isPoseRunning = false;
       trackingGeneration++;
       initCompartmentTrackers();
@@ -4854,6 +5015,8 @@
         videoEl.pause();
         videoEl.srcObject = null;
         videoEl.onended = null;
+        videoEl.onseeked = null;
+        videoEl.playbackRate = 1;
         videoEl.removeAttribute('src');
         videoEl.load();
       }
@@ -4891,6 +5054,7 @@
     }
 
     function onCctvSourceChanged() {
+      document.getElementById('cctvReplayTools').hidden=!isRecordedCctvTest();
       const fileInput = document.getElementById('cctvVideoFileInput');
       fileInput.style.display = document.getElementById('cctvPoseSourceSelect').value === 'video_file' ? 'block' : 'none';
       initCompartmentTrackers();

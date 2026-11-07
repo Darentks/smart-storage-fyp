@@ -71,6 +71,7 @@ from src.config_loader import (  # type: ignore
     apply_inventory_delta_in_supabase,
     list_comparison_logs,
 )
+from src.replay_manager import CctvReplayManager
 from src.spatial_mapper import SpatialMapper  # type: ignore
 from src.mqtt_client import MQTTClientNode  # type: ignore
 from src.reference_validator import (  # type: ignore
@@ -151,8 +152,14 @@ def configure_cctv_alignment(cameras):
 
 
 def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=None,
-                          trigger_id=None, dwell_duration_seconds=1.2):
+                          trigger_id=None, dwell_duration_seconds=1.2, consensus_context=None):
     """Atomically align distinct enabled cameras and queue one claimable validation."""
+    # Replays use isolated buffers/configuration and never enter the live trigger queue.
+    camera_config = CCTV_CAMERA_CONFIG if consensus_context is None else consensus_context["cameras"]
+    align_state = CCTV_ALIGN_STATE if consensus_context is None else consensus_context["votes"]
+    seen_ids = CCTV_SEEN_TRIGGER_IDS if consensus_context is None else consensus_context["seen_ids"]
+    last_triggers = LAST_SHELF_TRIGGER_TS if consensus_context is None else consensus_context["last_triggers"]
+    pending = PENDING_CCTV_TRIGGERS if consensus_context is None else consensus_context["events"]
     shelves = {f"SHELF_R1_C{i}" for i in range(1, 7)}
     if action not in {"BORROW", "RETURN"}:
         raise ValueError("expected_action must be BORROW or RETURN")
@@ -161,7 +168,7 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
     if not math.isfinite(dwell_duration_seconds) or dwell_duration_seconds < 1.2:
         raise ValueError("dwell_duration_seconds must be at least 1.2")
     with CCTV_CONSENSUS_LOCK:
-        camera = CCTV_CAMERA_CONFIG.get(camera_id)
+        camera = camera_config.get(camera_id)
         if not camera or not camera["is_active"]:
             raise ValueError("Camera is not enabled")
         role = camera_role or camera["camera_role"]
@@ -171,36 +178,36 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
                 role == "GRID_6_ROI" and shelf_id not in shelves):
             raise ValueError("Grid cameras require an exact shelf; side cameras require ANY_SHELF")
         now = time.time()
-        active = {cid: cam for cid, cam in CCTV_CAMERA_CONFIG.items() if cam["is_active"]}
-        for cid, vote in list(CCTV_ALIGN_STATE.items()):
+        active = {cid: cam for cid, cam in camera_config.items() if cam["is_active"]}
+        for cid, vote in list(align_state.items()):
             if now - vote["ts"] > CONSENSUS_WINDOW_SEC:
-                del CCTV_ALIGN_STATE[cid]
-        for tid, timestamp in list(CCTV_SEEN_TRIGGER_IDS.items()):
+                del align_state[cid]
+        for tid, timestamp in list(seen_ids.items()):
             if now - timestamp > 60.0:
-                del CCTV_SEEN_TRIGGER_IDS[tid]
-        if trigger_id and trigger_id in CCTV_SEEN_TRIGGER_IDS:
+                del seen_ids[tid]
+        if trigger_id and trigger_id in seen_ids:
             return {"status": "debounced", "consensus_met": False, "shelf_id": shelf_id,
                     "required_cameras": len(active)}
         if trigger_id:
-            CCTV_SEEN_TRIGGER_IDS[trigger_id] = now
-        CCTV_ALIGN_STATE[camera_id] = {
+            seen_ids[trigger_id] = now
+        align_state[camera_id] = {
             "ts": now, "action": action, "conf": confidence, "shelf_id": shelf_id, "camera_role": role,
         }
         # Exact shelf and action must agree across all enabled grid views.
-        grid_votes = [CCTV_ALIGN_STATE[cid] for cid, cam in active.items()
-                      if cam["camera_role"] == "GRID_6_ROI" and cid in CCTV_ALIGN_STATE]
+        grid_votes = [align_state[cid] for cid, cam in active.items()
+                      if cam["camera_role"] == "GRID_6_ROI" and cid in align_state]
         target = grid_votes[0]["shelf_id"] if grid_votes else None
-        supporters = {cid: vote for cid, vote in CCTV_ALIGN_STATE.items()
+        supporters = {cid: vote for cid, vote in align_state.items()
                       if cid in active and vote["action"] == action
                       and (vote["camera_role"] == "SIDE_PRESENCE" or vote["shelf_id"] == target)}
-        all_grids_present = all(cid in CCTV_ALIGN_STATE for cid, cam in active.items()
+        all_grids_present = all(cid in align_state for cid, cam in active.items()
                                 if cam["camera_role"] == "GRID_6_ROI")
         aligned = (target in shelves and all_grids_present and len(supporters) == len(active))
         if not aligned:
             return {"status": "pending_consensus", "consensus_met": False, "shelf_id": shelf_id,
                     "confirmed_count": len(supporters), "required_cameras": len(active),
                     "window_seconds": CONSENSUS_WINDOW_SEC}
-        last_ts = LAST_SHELF_TRIGGER_TS.get(target)
+        last_ts = last_triggers.get(target)
         if last_ts is not None and now - last_ts < CONSENSUS_COOLDOWN_SEC:
             return {"status": "debounced", "consensus_met": False, "shelf_id": target,
                     "retry_after": CONSENSUS_COOLDOWN_SEC - (now - last_ts)}
@@ -210,12 +217,16 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
                   "expected_action": action, "required_cameras": len(active),
                   "confirmed_count": len(supporters), "confirmed_cameras": sorted(supporters),
                   "confidence": min(v["conf"] for v in supporters.values())}
-        PENDING_CCTV_TRIGGERS.append({**result, "source": "CCTV", "timestamp": now})
-        del PENDING_CCTV_TRIGGERS[:-20]
-        LAST_SHELF_TRIGGER_TS[target] = now
-        CCTV_ALIGN_STATE.clear()  # Consume all evidence so presence cannot validate another shelf.
+        if consensus_context is not None:
+            result["test_only"] = True
+        pending.append({**result, "source": "CCTV", "timestamp": now})
+        del pending[:-20]
+        last_triggers[target] = now
+        align_state.clear()  # Consume all evidence so presence cannot validate another shelf.
         return result
 
+
+CCTV_REPLAY_MANAGER = CctvReplayManager(record_cctv_consensus, window_seconds=CONSENSUS_WINDOW_SEC)
 
 def claim_cctv_trigger(trigger_id):
     """Let only one dashboard tab consume each queued validation event."""
@@ -1448,6 +1459,13 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         body = self._read_json_body()
+
+        if path == "/cctv_replay":
+            try:
+                self._send_json(200, CCTV_REPLAY_MANAGER.request(body))
+            except (ValueError, TypeError, KeyError) as exc:
+                self._send_json(400, {"status": "error", "error": str(exc)})
+            return
 
         if path == "/cctv_alignment_config":
             try:
