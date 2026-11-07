@@ -1263,6 +1263,7 @@
           <div id="cctvReplayTools" hidden style="padding:10px;border:1px solid var(--border);border-radius:8px;">
             <strong>Recorded-video consensus test ? no ESP32 or inventory changes</strong>
             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px;">
+              <label>Camera <select id="cctvReplayCameraSelect" onchange="onReplayCameraSelectChanged(this.value)" style="width:95px;"><option value="CCTV_01">CCTV_01</option><option value="CCTV_02">CCTV_02</option><option value="CCTV_03">CCTV_03</option></select></label>
               <label>Session <input id="cctvReplaySession" value="roi-test" maxlength="64" style="width:110px;" /></label>
               <label>Clip start (seconds) <input id="cctvReplayOffset" type="number" min="0" step="0.1" value="0" style="width:75px;" /></label>
               <button type="button" class="btn-action" onclick="prepareCctvReplay()">Ready this clip</button>
@@ -4715,13 +4716,166 @@
       const popup=document.getElementById('cctvConsensusPopup');popup.hidden=false;popup.style.display='flex';
       showToast(message,'success');
     }
+    function localCctvReplayContext() {
+      return {
+        cameras: {
+          CCTV_01: { is_active: true, camera_role: 'GRID_6_ROI' },
+          CCTV_02: { is_active: true, camera_role: 'GRID_6_ROI' },
+          CCTV_03: { is_active: true, camera_role: 'SIDE_PRESENCE' }
+        },
+        votes: {}, seen_ids: {}, last_triggers: {}, events: []
+      };
+    }
+    function evaluateLocalReplayVote(session, cameraId, body, now) {
+      const ctx = session.context;
+      const role = ctx.cameras[cameraId]?.camera_role || 'GRID_6_ROI';
+      const shelfId = String(body.shelf_id || '').trim();
+      const action = String(body.expected_action || '').trim();
+      const conf = Number(body.oks_confidence || 0);
+      const dwell = Number(body.dwell_duration_seconds || 0);
+      const triggerId = String(body.trigger_id || `local-${cameraId}-${Date.now()}`);
+      ctx.votes[cameraId] = { shelf_id: shelfId, action, conf, role, ts: now, trigger_id: triggerId, dwell };
+      const gridVotes = ['CCTV_01', 'CCTV_02'].map(id => [id, ctx.votes[id]]).filter(([, v]) => v);
+      const sideVote = ctx.votes.CCTV_03;
+      if (gridVotes.length === 2 && sideVote && gridVotes[0][1].shelf_id === gridVotes[1][1].shelf_id && gridVotes[0][1].action === gridVotes[1][1].action && ['RACK_ENTRY_ZONE', gridVotes[0][1].shelf_id].includes(sideVote.shelf_id) && ['PRESENT', gridVotes[0][1].action].includes(sideVote.action)) {
+        const targetShelf = gridVotes[0][1].shelf_id;
+        const targetAction = gridVotes[0][1].action;
+        const lastTs = ctx.last_triggers[targetShelf] || 0;
+        if (now - lastTs < 3.0) {
+          return { ok: true, status: 'debounced', consensus_met: false, shelf_id: targetShelf, expected_action: targetAction, confirmed_cameras: ['CCTV_01', 'CCTV_02', 'CCTV_03'], confirmed_count: 3, required_cameras: 3, test_only: true };
+        }
+        ctx.last_triggers[targetShelf] = now;
+        delete ctx.votes.CCTV_01; delete ctx.votes.CCTV_02; delete ctx.votes.CCTV_03;
+        const event = { ok: true, status: 'confirmed', trigger_id: `consensus-${targetShelf}-${Math.round(now * 1000)}`, consensus_met: true, shelf_id: targetShelf, expected_action: targetAction, confirmed_cameras: ['CCTV_01', 'CCTV_02', 'CCTV_03'], confirmed_count: 3, required_cameras: 3, oks_confidence: Number(((gridVotes[0][1].conf + gridVotes[1][1].conf + sideVote.conf) / 3).toFixed(2)), dwell_duration_seconds: Math.max(gridVotes[0][1].dwell || 0, gridVotes[1][1].dwell || 0), test_only: true };
+        ctx.events.push(event);
+        return event;
+      }
+      const matchingCount = Object.values(ctx.votes).filter(v => v.shelf_id === shelfId || (v.role === 'SIDE_PRESENCE' && v.shelf_id === 'RACK_ENTRY_ZONE')).length;
+      return { ok: true, status: 'pending', trigger_id: triggerId, consensus_met: false, shelf_id: shelfId, expected_action: action, confirmed_cameras: Object.keys(ctx.votes), confirmed_count: matchingCount, required_cameras: 3, test_only: true };
+    }
+    function localCctvReplayRequest(body) {
+      const sessionId = String(body.session_id || '').trim();
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) throw new Error('Replay session must use 1-64 letters, digits, underscores or hyphens');
+      const cameraId = body.camera_id, clientId = body.client_id, action = body.action || 'status';
+      if (!['CCTV_01', 'CCTV_02', 'CCTV_03'].includes(cameraId) || typeof clientId !== 'string' || !clientId.length) {
+        throw new Error('Replay needs a valid camera ID and browser client ID');
+      }
+      const storageKey = `smart_storage_cctv_replay_${sessionId}`;
+      const now = Date.now() / 1000;
+      let session = null;
+      try { session = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (_) { session = null; }
+      if (!session || now - (session.updated || 0) > 3600) {
+        session = { session_token: `local-${Date.now()}-${Math.random().toString(36).slice(2)}`, status: 'waiting', epoch: 0, start_at: null, clients: {}, context: localCctvReplayContext(), updated: now, elapsed: 0 };
+      }
+      session.updated = now;
+      const clients = session.clients || (session.clients = {});
+      let mine = clients[cameraId] || null;
+      let owned = Boolean(mine && mine.client_id === clientId);
+      if (mine && owned) mine.last_seen = now;
+      if (action === 'ready') {
+        if (mine && !owned && now - mine.last_seen <= 10) {
+          throw new Error(`${cameraId} is already loaded in another window; select a different Camera (CCTV_01/02/03) in this window.`);
+        }
+        const offset = Number(body.offset ?? 0), duration = Number(body.duration ?? 0);
+        if (!Number.isFinite(offset) || !Number.isFinite(duration) || offset < 0 || offset >= duration) {
+          throw new Error('Clip start offset must be inside a finite playable video');
+        }
+        session.status = 'waiting'; session.epoch += 1; session.start_at = null; session.elapsed = 0; session.context = localCctvReplayContext();
+        clients[cameraId] = { client_id: clientId, last_seen: now, offset, duration };
+        mine = clients[cameraId]; owned = true;
+      } else if (action !== 'status' && !owned) {
+        throw new Error('Load and ready this camera\'s clip before controlling replay');
+      }
+      for (const [cid, vote] of Object.entries(session.context.votes || {})) {
+        if (now - vote.ts > 4.0) delete session.context.votes[cid];
+      }
+      const stale = Object.entries(clients).filter(([, c]) => now - c.last_seen > 10).map(([cid]) => cid);
+      if (session.status === 'playing' && (stale.length || Object.keys(clients).length !== 3)) {
+        session.status = 'waiting'; session.epoch += 1; session.start_at = null; session.elapsed = 0; session.context.votes = {};
+      }
+      if (action === 'start') {
+        const readySet = new Set(Object.keys(clients));
+        if (!['CCTV_01', 'CCTV_02', 'CCTV_03'].every(id => readySet.has(id)) || stale.length) {
+          throw new Error('All three camera clips (CCTV_01, CCTV_02, CCTV_03) must be ready and connected');
+        }
+        session.status = 'playing'; session.epoch += 1; session.start_at = now + 2.0; session.elapsed = 0; session.context = localCctvReplayContext();
+      } else if (['pause', 'reset', 'leave'].includes(action)) {
+        const elapsed = session.start_at ? Math.max(0, now - session.start_at) : (session.elapsed || 0);
+        session.status = action === 'pause' ? 'paused' : 'waiting';
+        session.epoch += 1; session.start_at = null; session.elapsed = action === 'pause' ? elapsed : 0;
+        session.context.votes = {};
+        if (action === 'reset' || action === 'leave') session.context = localCctvReplayContext();
+        if (action === 'leave') { delete clients[cameraId]; mine = null; owned = false; }
+      } else if (action === 'vote') {
+        if (session.status !== 'playing' || body.epoch !== session.epoch || now < session.start_at) {
+          throw new Error('Replay is not running or this vote belongs to an old run');
+        }
+        const limit = Math.min(...Object.values(clients).map(c => c.duration - c.offset));
+        if (now - session.start_at >= limit) {
+          session.status = 'finished'; session.elapsed = limit; session.start_at = null; session.context.votes = {};
+          localStorage.setItem(storageKey, JSON.stringify(session));
+          throw new Error('Replay has finished; restart all three clips for another test');
+        }
+        const expectedRole = session.context.cameras[cameraId].camera_role;
+        if (body.camera_role !== expectedRole) {
+          throw new Error('Replay requires CCTV_01/02 grid roles and CCTV_03 side presence');
+        }
+        const voteResult = evaluateLocalReplayVote(session, cameraId, body, now);
+        localStorage.setItem(storageKey, JSON.stringify(session));
+        return voteResult;
+      }
+      if (session.status === 'playing') {
+        const limit = Math.min(...Object.values(clients).map(c => c.duration - c.offset));
+        if (now - session.start_at >= limit) {
+          session.status = 'finished'; session.elapsed = limit; session.start_at = null; session.context.votes = {};
+        }
+      }
+      localStorage.setItem(storageKey, JSON.stringify(session));
+      return {
+        session_id: sessionId, session_token: session.session_token, server_time: now, status: session.status,
+        epoch: session.epoch, start_at: session.start_at, elapsed: session.elapsed, test_only: true, owned,
+        ready_cameras: Object.entries(clients).filter(([, c]) => now - c.last_seen <= 10).map(([cid]) => cid),
+        clip: mine && owned ? { offset: mine.offset, duration: mine.duration } : null,
+        votes: { ...(session.context.votes || {}) }, results: [...(session.context.events || [])]
+      };
+    }
+    function onReplayCameraSelectChanged(cctvId) {
+      const cam = cctvCamerasList.find(c => c.cctv_id === cctvId) || DEFAULT_3_CCTV_CAMERAS.find(c => c.cctv_id === cctvId) || { cctv_id: cctvId };
+      leaveCctvReplay();
+      activeCctvId = cctvId;
+      activeCameraRole = cameraRole(cam);
+      if (cam.rtsp_url) activeCctvSourceUrl = cam.rtsp_url;
+      const tool = document.getElementById('cctvRoiTool');
+      if (tool) {
+        tool.value = 'edit';
+        for (const option of tool.options) if (option.value === 'polygon') option.disabled = activeCameraRole === 'SIDE_PRESENCE';
+      }
+      const calibSelect = document.getElementById('cctvCalibShelfSelect');
+      if (calibSelect) {
+        for (const option of calibSelect.options) option.hidden = activeCameraRole === 'SIDE_PRESENCE' ? option.value !== 'RACK_ENTRY_ZONE' : option.value === 'RACK_ENTRY_ZONE';
+        calibSelect.value = activeCameraRole === 'SIDE_PRESENCE' ? 'RACK_ENTRY_ZONE' : 'SHELF_R1_C1';
+      }
+      syncRoiSwapOptions();
+      activeCctvRois = loadStoredRois();
+      initCompartmentTrackers();
+      updateCalibCoordsText();
+      updateActiveCctvSourceText();
+      setCctvReplayStatus(`Switched replay camera to ${cctvId} (${activeCameraRole}). Click Ready this clip.`);
+    }
     async function cctvReplayRequest(action, extra = {}, registration = cctvReplayRegistration) {
       const sessionId=registration?.session_id || document.getElementById('cctvReplaySession').value.trim();
+      const payload={session_id:sessionId,camera_id:registration?.camera_id || activeCctvId,client_id:cctvReplayClientId,action,...extra};
       const before=Date.now();
-      const response=await fetch(`${getBridgeUrl()}/cctv_replay`,{
-        method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({session_id:sessionId,camera_id:registration?.camera_id || activeCctvId,client_id:cctvReplayClientId,action,...extra})
-      });
+      let response;
+      try {
+        response=await fetch(`${getBridgeUrl()}/cctv_replay`,{
+          method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(payload)
+        });
+      } catch (networkErr) {
+        if (typeof localStorage !== 'undefined') return localCctvReplayRequest(payload);
+        throw networkErr;
+      }
       const contentType=response.headers.get('content-type') || '';
       if(!contentType.includes('application/json'))throw new Error(`Replay endpoint returned HTTP ${response.status} instead of JSON. Check the bridge URL and restart the updated camera_service.py.`);
       const result=await response.json();
@@ -4761,7 +4915,17 @@
     }
     async function prepareCctvReplay() {
       const video=document.getElementById('cctvPoseVideo');
-      if(!isRecordedCctvTest())return false;
+      if(!isRecordedCctvTest()) {
+        if(document.getElementById('cctvVideoFileInput')?.files[0]) {
+          const sourceSelect=document.getElementById('cctvPoseSourceSelect');
+          if(sourceSelect)sourceSelect.value='video_file';
+          if(isPoseRunning)stopMediaPipeTracker();
+        } else {
+          setCctvReplayStatus('Switch Source to Recorded Video File (.mp4) and choose an MP4 file first.');
+          showToast('Switch Source to Recorded Video File (.mp4) and choose an MP4 file first.','info');
+          return false;
+        }
+      }
       if(!isPoseRunning) {
         if(document.getElementById('cctvVideoFileInput')?.files[0]) {
           await startMediaPipeTracker();
@@ -5653,8 +5817,11 @@
       activeCctvRois = loadStoredRois();
       initCompartmentTrackers();
       updateCalibCoordsText();
+      const replayCamSelect = document.getElementById('cctvReplayCameraSelect');
+      if (replayCamSelect) replayCamSelect.value = cctvId;
       const sourceSelect = document.getElementById('cctvPoseSourceSelect');
-      if (sourceSelect) sourceSelect.value = 'cctv_bridge';
+      const keepVideoMode = sourceSelect && (sourceSelect.value === 'video_file' || (!document.getElementById('cctvReplayTools')?.hidden && document.getElementById('cctvVideoFileInput')?.files?.[0]));
+      if (sourceSelect) sourceSelect.value = keepVideoMode ? 'video_file' : 'cctv_bridge';
       updateActiveCctvSourceText();
       const generation = trackingGeneration;
       setTimeout(() => {
