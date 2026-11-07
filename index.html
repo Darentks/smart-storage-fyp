@@ -1288,7 +1288,7 @@
           <div class="preview-canvas-box" id="cctvTestContainer"
             style="position: relative; width: 100%; aspect-ratio: 4 / 3; display: block; background: #070b14; border-radius: 8px; overflow: hidden;">
             <input type="file" id="cctvVideoFileInput" accept=".mp4,video/mp4" style="display:none;" aria-label="Recorded MP4 video" onchange="onCctvVideoFileChanged()" />
-            <video id="cctvPoseVideo" playsinline muted style="display:none;"></video>
+            <video id="cctvPoseVideo" playsinline muted preload="auto" style="position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;"></video>
             <canvas id="cctvPoseCanvas" width="640" height="480"
               style="width: 100%; height: 100%; display: block;"></canvas>
             <div id="cctvTestPlaceholder" class="snapshot-placeholder"
@@ -4722,6 +4722,8 @@
         method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({session_id:sessionId,camera_id:registration?.camera_id || activeCctvId,client_id:cctvReplayClientId,action,...extra})
       });
+      const contentType=response.headers.get('content-type') || '';
+      if(!contentType.includes('application/json'))throw new Error(`Replay endpoint returned HTTP ${response.status} instead of JSON. Check the bridge URL and restart the updated camera_service.py.`);
       const result=await response.json();
       if(!response.ok) throw new Error(result.error || `Replay HTTP ${response.status}`);
       if(Number.isFinite(result.server_time)) cctvReplayClockOffset=result.server_time*1000-(before+Date.now())/2;
@@ -4734,10 +4736,42 @@
       cctvReplayRegistration=null;cctvReplaySnapshot=null;
       if(registration)cctvReplayLeavePromise=cctvReplayRequest('leave',{},registration).catch(error=>console.warn('[Replay]',error.message));
     }
+    let cctvSourceStartTimer = null;
+    function setCctvReplayStatus(message) {
+      const status=document.getElementById('cctvReplayStatus');
+      if(status)status.textContent=message;
+    }
+    function waitForRecordedVideo(video, generation, timeoutMs = 20000) {
+      return new Promise((resolve,reject)=>{
+        let timer;
+        const cleanup=()=>{clearTimeout(timer);for(const name of ['loadedmetadata','loadeddata','canplay'])video.removeEventListener(name,check);video.removeEventListener('error',failed);video.removeEventListener('emptied',cancelled);};
+        const done=error=>{cleanup();error?reject(error):resolve();};
+        const failed=()=>done(new Error(`Browser cannot decode this MP4${video.error?.message ? ': '+video.error.message : ''}. Try an H.264-encoded MP4.`));
+        const cancelled=()=>{if(generation!==trackingGeneration)done(new Error('Video loading cancelled. Select the clip again.'));};
+        const check=()=>{
+          if(generation!==trackingGeneration){done(new Error('Video source changed during loading.'));return;}
+          if(video.error){failed();return;}
+          if(Number.isFinite(video.duration)&&video.duration>0&&video.readyState>=2&&video.videoWidth>0)done();
+        };
+        for(const name of ['loadedmetadata','loadeddata','canplay'])video.addEventListener(name,check);
+        video.addEventListener('error',failed);video.addEventListener('emptied',cancelled);
+        timer=setTimeout(()=>done(new Error('Timed out loading the clip. Check that the file plays in Chrome and is H.264 MP4.')),timeoutMs);
+        check();
+      });
+    }
     async function prepareCctvReplay() {
       const video=document.getElementById('cctvPoseVideo');
-      if(!isRecordedCctvTest() || !isPoseRunning || !Number.isFinite(video.duration)) {
-        showToast('Load a playable MP4 for the selected camera first.','info');return;
+      if(!isRecordedCctvTest())return false;
+      if(!isPoseRunning) {
+        if(document.getElementById('cctvVideoFileInput')?.files[0]) {
+          await startMediaPipeTracker();
+          return Boolean(cctvReplayRegistration);
+        }
+        setCctvReplayStatus('Choose an MP4 file for this camera first.');
+        showToast('Choose an MP4 file for this camera first.','info');return false;
+      }
+      if(!Number.isFinite(video.duration)||video.readyState<2) {
+        setCctvReplayStatus('Video is still loading. Wait for its first frame, then click Ready this clip.');return false;
       }
       video.pause();initCompartmentTrackers();
       const generation=trackingGeneration;
@@ -4748,6 +4782,7 @@
         if(cctvReplayRegistration && cctvReplayRegistration.session_id!==registration.session_id) {
           await cctvReplayRequest('leave',{},cctvReplayRegistration);
         }
+        setCctvReplayStatus(`Registering ${activeCctvId} with the bridge?`);
         const result=await cctvReplayRequest('ready',{offset:Number(document.getElementById('cctvReplayOffset').value),duration:video.duration},registration);
         if(generation!==trackingGeneration){cctvReplayRequest('leave',{},registration).catch(()=>{});return;}
         cctvReplayRegistration=registration;cctvReplaySnapshot=result;
@@ -4755,8 +4790,15 @@
         video.onseeked=()=>{if(isRecordedCctvTest() && video.paused && generation===trackingGeneration)onPoseResults({image:video,poseLandmarks:null});};
         if(video.readyState>=2)onPoseResults({image:video,poseLandmarks:null});
         closeCctvConsensusPopup();document.getElementById('cctvConsensusResult').textContent='';
+        await applyCctvReplayState(result);
+        const badge=document.getElementById('cctvPoseStatusBadge');
+        if(badge){badge.className='badge badge-online';badge.textContent='Recorded Replay Ready (Test Only)';}
         pollCctvReplay();
-      }catch(error){showToast('Replay setup failed: '+error.message,'error');}
+        return true;
+      }catch(error){
+        setCctvReplayStatus('Replay setup failed: '+error.message+' ? check the bridge URL and restart the updated camera service.');
+        showToast('Replay setup failed: '+error.message,'error');return false;
+      }
     }
     async function controlCctvReplay(action) {
       try {
@@ -4879,9 +4921,12 @@
         badge.textContent = 'Initializing...';
       }
 
+      if(selectedSource==='video_file')setCctvReplayStatus('Initializing YOLO model for the selected clip?');
       try {
         if (selectedSource !== 'simulation') await getYoloPoseSession();
       } catch (error) {
+        if(generation!==trackingGeneration)return;
+        if(selectedSource==='video_file')setCctvReplayStatus('YOLO initialization failed: '+error.message);
         showToast(error.message, 'error');
         if (badge) {
           badge.className = 'badge badge-offline';
@@ -4929,6 +4974,12 @@
           videoEl.srcObject = null;
           videoEl.src = recordedVideoUrl;
           videoEl.loop = false;
+          videoEl.preload = 'auto';
+          videoEl.load();
+          setCctvReplayStatus('Loading video metadata and first frame?');
+          await waitForRecordedVideo(videoEl,generation);
+          if(generation!==trackingGeneration)return;
+          videoEl.pause();
           videoEl.onended = () => { videoEl.pause(); initCompartmentTrackers(); };
         } else {
           const stream = await navigator.mediaDevices.getUserMedia({
@@ -4939,13 +4990,15 @@
           activeMediaStream = stream;
           videoEl.srcObject = stream;
         }
-        await videoEl.play();
-        if (generation !== trackingGeneration) return;
         if (selectedSource === 'video_file') {
-          videoEl.pause();
           document.getElementById('cctvReplayTools').hidden=false;
-          await prepareCctvReplay();
+          if(!await prepareCctvReplay()) {
+            if(badge)badge.textContent='Clip loaded ? registration failed';
+          }
+        } else {
+          await videoEl.play();
         }
+        if (generation !== trackingGeneration) return;
 
         const loop = async () => {
           if (!isPoseRunning || generation !== trackingGeneration) return;
@@ -4962,13 +5015,14 @@
 
         if (badge) {
           badge.className = 'badge badge-online';
-          badge.textContent = selectedSource === 'video_file' ? 'Recorded Replay Ready (Test Only)' : 'Webcam Tracking Active';
+          badge.textContent = selectedSource === 'video_file' ? (cctvReplayRegistration ? 'Recorded Replay Ready (Test Only)' : 'Clip loaded ? click Ready to retry') : 'Webcam Tracking Active';
         }
-        showToast(selectedSource === 'video_file' ? 'Clip ready. Load the other camera clips, then click Start all 3.' : 'Webcam connected! Tracking wrist keypoints in real time.', 'success');
+        if(selectedSource !== 'video_file' || cctvReplayRegistration)showToast(selectedSource === 'video_file' ? 'Clip ready. Load the other camera clips, then click Start all 3.' : 'Webcam connected! Tracking wrist keypoints in real time.', 'success');
       } catch (camErr) {
         if (generation !== trackingGeneration) return;
         if (selectedSource === 'video_file') {
           stopMediaPipeTracker();
+          setCctvReplayStatus('Recorded video failed: '+camErr.message);
           showToast('Recorded video failed: ' + camErr.message, 'error');
           return;
         }
@@ -4984,6 +5038,8 @@
     }
 
     function stopMediaPipeTracker() {
+      if(cctvSourceStartTimer!==null)clearTimeout(cctvSourceStartTimer);
+      cctvSourceStartTimer=null;
       leaveCctvReplay();
       isPoseRunning = false;
       trackingGeneration++;
@@ -5046,7 +5102,9 @@
     }
 
     function onCctvVideoFileChanged() {
-      if (isPoseRunning) stopMediaPipeTracker();
+      if(cctvSourceStartTimer!==null)clearTimeout(cctvSourceStartTimer);
+      cctvSourceStartTimer=null;
+      stopMediaPipeTracker();
       if (document.getElementById('cctvVideoFileInput').files[0]) {
         document.getElementById('cctvPoseSourceSelect').value = 'video_file';
         startMediaPipeTracker();
@@ -5054,13 +5112,25 @@
     }
 
     function onCctvSourceChanged() {
-      document.getElementById('cctvReplayTools').hidden=!isRecordedCctvTest();
-      const fileInput = document.getElementById('cctvVideoFileInput');
-      fileInput.style.display = document.getElementById('cctvPoseSourceSelect').value === 'video_file' ? 'block' : 'none';
-      initCompartmentTrackers();
-      if (isPoseRunning) {
-        stopMediaPipeTracker();
-        setTimeout(startMediaPipeTracker, 300);
+      if(cctvSourceStartTimer!==null)clearTimeout(cctvSourceStartTimer);
+      cctvSourceStartTimer=null;
+      const selected=document.getElementById('cctvPoseSourceSelect').value;
+      document.getElementById('cctvReplayTools').hidden=selected!=='video_file';
+      const fileInput=document.getElementById('cctvVideoFileInput');
+      fileInput.style.display=selected==='video_file'?'block':'none';
+      const restart=isPoseRunning;
+      stopMediaPipeTracker();
+      if(selected==='video_file') {
+        setCctvReplayStatus('Choose an MP4 file for this camera, then wait for Ready.');
+        if(fileInput.files[0])startMediaPipeTracker();
+        return;
+      }
+      if(restart) {
+        const generation=trackingGeneration;
+        cctvSourceStartTimer=setTimeout(()=>{
+          cctvSourceStartTimer=null;
+          if(generation===trackingGeneration && document.getElementById('cctvPoseSourceSelect').value===selected)startMediaPipeTracker();
+        },300);
       }
     }
 
