@@ -45,10 +45,10 @@ class CctvReplayManager:
             clients = session["clients"]
             mine = clients.get(camera_id)
             owned = mine is not None and mine["client_id"] == client_id
-            if owned:
+            if mine is not None and owned:
                 mine["last_seen"] = now
             if action == "ready":
-                if mine and not owned and now-mine["last_seen"] <= 10:
+                if mine is not None and not owned and now-mine["last_seen"] <= 10:
                     raise ValueError(f"{camera_id} is already loaded in another window; stop that tracker first")
                 offset, duration = float(body.get("offset",0)), float(body.get("duration",0))
                 if not math.isfinite(offset) or not math.isfinite(duration) or not 0 <= offset < duration:
@@ -78,6 +78,7 @@ class CctvReplayManager:
                     session["context"] = self.context()
                 if action == "leave":
                     del clients[camera_id]
+                    mine = None
                     owned = False
             elif action == "vote":
                 if session["status"] != "playing" or body.get("epoch") != session["epoch"] or now < session["start_at"]:
@@ -103,5 +104,5 @@ class CctvReplayManager:
             return {"session_id":session_id,"session_token":session["session_token"],"server_time":now,"status":session["status"],"epoch":session["epoch"],
                     "start_at":session["start_at"],"elapsed":session["elapsed"],"test_only":True,"owned":owned,
                     "ready_cameras":[cid for cid,c in clients.items() if now-c["last_seen"] <= 10],
-                    "clip":{k:mine[k] for k in ("offset","duration")} if owned else None,
+                    "clip":{k:mine[k] for k in ("offset","duration")} if mine is not None and owned else None,
                     "votes":dict(session["context"]["votes"]),"results":list(session["context"]["events"])}
