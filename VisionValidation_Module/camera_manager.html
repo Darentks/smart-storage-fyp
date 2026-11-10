@@ -4248,7 +4248,7 @@
         }
         // COCO's 17 keypoints mapped to the existing MediaPipe-style landmark indices.
         const cocoToPose = [0, 2, 5, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28];
-        const allPersonsLandmarks = kept.map(([, , , , , anchorIdx]) => {
+        const allPersonsLandmarks = kept.map(([cx, cy, , , score, anchorIdx]) => {
           const mappedLandmarks = Array.from({ length: 33 }, () => ({ x: 0, y: 0, visibility: 0 }));
           cocoToPose.forEach((poseIndex, keypoint) => {
             const rawX = data[(5 + keypoint * 3) * anchors + anchorIdx];
@@ -4259,6 +4259,12 @@
               visibility: data[(7 + keypoint * 3) * anchors + anchorIdx]
             };
           });
+          mappedLandmarks.personBox = {
+            x: Math.max(0, Math.min(1, (cx - padX) / newW)),
+            y: Math.max(0, Math.min(1, (cy - padY) / newH)),
+            visibility: score,
+            name: 'Body'
+          };
           return mappedLandmarks;
         });
         onPoseResults({ image: sourceEl, poseLandmarks: allPersonsLandmarks[0] || null, multiPoseLandmarks: allPersonsLandmarks });
@@ -4414,9 +4420,30 @@
           drawBasicSkeleton(ctx, landmarks, canvas.width, canvas.height);
         }
 
-        for (let index = 11; index <= 16; index++) {
+        const prefix = persons.length > 1 ? `P${personIndex + 1} ` : '';
+        const sidePresenceCandidates = [
+          [15, `${prefix}L-Wrist`, 0.30], [16, `${prefix}R-Wrist`, 0.30],
+          [13, `${prefix}L-Elbow`, 0.25], [14, `${prefix}R-Elbow`, 0.25],
+          [11, `${prefix}L-Shoulder`, 0.25], [12, `${prefix}R-Shoulder`, 0.25],
+          [23, `${prefix}L-Hip`, 0.30], [24, `${prefix}R-Hip`, 0.30],
+          [0, `${prefix}Head`, 0.30], [7, `${prefix}L-Ear`, 0.30], [8, `${prefix}R-Ear`, 0.30]
+        ];
+        const torsoPts = [11, 12, 23, 24].map(idx => landmarks[idx]).filter(pt => pt && pt.visibility >= 0.25);
+        if (torsoPts.length >= 2) {
+          upperBodyPoints.push({
+            x: torsoPts.reduce((s, p) => s + p.x, 0) / torsoPts.length,
+            y: torsoPts.reduce((s, p) => s + p.y, 0) / torsoPts.length,
+            visibility: Math.max(...torsoPts.map(p => p.visibility)),
+            personIndex,
+            name: `${prefix}Torso`
+          });
+        }
+        for (const [index, label, minVis] of sidePresenceCandidates) {
           const point = landmarks[index];
-          if (point && point.visibility >= 0.40) upperBodyPoints.push({ ...point, personIndex });
+          if (point && point.visibility >= minVis) upperBodyPoints.push({ ...point, personIndex, name: label });
+        }
+        if (landmarks.personBox && landmarks.personBox.visibility >= 0.45) {
+          upperBodyPoints.push({ ...landmarks.personBox, personIndex, name: `${prefix}Body` });
         }
 
         // Wrist landmarks: 15 (LEFT_WRIST), 16 (RIGHT_WRIST).
@@ -4429,12 +4456,16 @@
         }
       }
 
-      // Update Wrist UI telemetry for all detected persons.
+      // Update Wrist / Side-Presence UI telemetry for all detected persons.
       const wristsEl = document.getElementById('cctvWristsText');
       if (wristsEl) {
-        wristsEl.textContent = detectedWrists.length
-          ? detectedWrists.map(w => `${w.name} (${w.x.toFixed(2)}, ${w.y.toFixed(2)})`).join(' | ')
-          : 'L: -- | R: --';
+        if (detectedWrists.length) {
+          wristsEl.textContent = detectedWrists.map(w => `${w.name} (${w.x.toFixed(2)}, ${w.y.toFixed(2)})`).join(' | ');
+        } else if (activeCameraRole === 'SIDE_PRESENCE' && upperBodyPoints.length) {
+          wristsEl.textContent = upperBodyPoints.slice(0, 2).map(p => `${p.name || 'Body'} (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`).join(' | ');
+        } else {
+          wristsEl.textContent = 'L: -- | R: --';
+        }
       }
 
       // Evaluate Dwell State Machine for each compartment ROI
@@ -4494,15 +4525,23 @@
               tracker.lastConfirmedAction = classifyTrajectoryAction(tracker.trajectoryHistory);
               if (activeCameraRole === 'SIDE_PRESENCE' && !tracker.triggerFired) {
                 tracker.triggerFired = true;
+                tracker.lastPresenceVoteTime = now;
                 dispatchDwellTrigger('ANY_SHELF', tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
               }
             }
           } else if (tracker.state === 'INTENT_CONFIRMED') {
             tracker.currentDwellDuration = (now - tracker.dwellStartTime) / 1000;
-            // Over-dwell fallback: if sustained > 3.5s without withdrawal, trigger immediately
-            if (tracker.currentDwellDuration >= 3.5 && !tracker.triggerFired) {
+            if (activeCameraRole === 'SIDE_PRESENCE') {
+              // Refresh side-presence vote every 2.5s while person stays in RACK_ENTRY_ZONE so 4s consensus window never expires early
+              if (now - (tracker.lastPresenceVoteTime || 0) >= 2500) {
+                tracker.lastPresenceVoteTime = now;
+                tracker.lastConfirmedConf = insideWrist.visibility || tracker.lastConfirmedConf || 0.88;
+                dispatchDwellTrigger('ANY_SHELF', tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+              }
+            } else if (tracker.currentDwellDuration >= 3.5 && !tracker.triggerFired) {
+              // Over-dwell fallback: if sustained > 3.5s without withdrawal, trigger immediately
               tracker.triggerFired = true;
-              dispatchDwellTrigger(activeCameraRole === 'SIDE_PRESENCE' ? 'ANY_SHELF' : shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+              dispatchDwellTrigger(shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
             }
           }
         } else {
@@ -4536,13 +4575,18 @@
         drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height);
       }
 
-      // Draw Wrist Highlight Markers
-      for (const w of detectedWrists) {
+      // Draw Wrist Highlight Markers (or Side-Presence Body Markers when wrists are occluded)
+      const highlightMarkers = detectedWrists.length
+        ? detectedWrists.map(w => ({ ...w, label: `${w.name} Wrist`, color: '#fbbf24' }))
+        : (activeCameraRole === 'SIDE_PRESENCE'
+          ? upperBodyPoints.slice(0, 3).map(p => ({ ...p, label: p.name || 'Presence', color: '#38bdf8' }))
+          : []);
+      for (const w of highlightMarkers) {
         const px = w.x * canvas.width;
         const py = w.y * canvas.height;
         ctx.beginPath();
         ctx.arc(px, py, 8, 0, 2 * Math.PI);
-        ctx.fillStyle = '#fbbf24';
+        ctx.fillStyle = w.color;
         ctx.fill();
         ctx.lineWidth = 2;
         ctx.strokeStyle = '#ffffff';
@@ -4550,7 +4594,7 @@
 
         ctx.font = '10px monospace';
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(`${w.name} Wrist`, px + 12, py + 4);
+        ctx.fillText(w.label, px + 12, py + 4);
       }
 
       // Update Dwell Status badge and meter
@@ -4561,7 +4605,7 @@
           dwellStatusEl.textContent = `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`;
           dwellStatusEl.style.color = activeDwellState === 'INTENT_CONFIRMED' ? 'var(--success)' : 'var(--warning)';
         } else {
-          dwellStatusEl.textContent = 'Idle (No Wrist in ROI)';
+          dwellStatusEl.textContent = activeCameraRole === 'SIDE_PRESENCE' ? 'Idle (No Presence in Entry Zone)' : 'Idle (No Wrist in ROI)';
           dwellStatusEl.style.color = 'var(--text-muted)';
         }
       }
@@ -4737,7 +4781,7 @@
       ctx.votes[cameraId] = { shelf_id: shelfId, action, conf, role, ts: now, trigger_id: triggerId, dwell };
       const gridVotes = ['CCTV_01', 'CCTV_02'].map(id => [id, ctx.votes[id]]).filter(([, v]) => v);
       const sideVote = ctx.votes.CCTV_03;
-      if (gridVotes.length === 2 && sideVote && gridVotes[0][1].shelf_id === gridVotes[1][1].shelf_id && gridVotes[0][1].action === gridVotes[1][1].action && ['RACK_ENTRY_ZONE', gridVotes[0][1].shelf_id].includes(sideVote.shelf_id) && ['PRESENT', gridVotes[0][1].action].includes(sideVote.action)) {
+      if (gridVotes.length === 2 && sideVote && gridVotes[0][1].shelf_id === gridVotes[1][1].shelf_id && gridVotes[0][1].action === gridVotes[1][1].action && ['ANY_SHELF', 'RACK_ENTRY_ZONE', gridVotes[0][1].shelf_id].includes(sideVote.shelf_id)) {
         const targetShelf = gridVotes[0][1].shelf_id;
         const targetAction = gridVotes[0][1].action;
         const lastTs = ctx.last_triggers[targetShelf] || 0;
@@ -4750,7 +4794,7 @@
         ctx.events.push(event);
         return event;
       }
-      const matchingCount = Object.values(ctx.votes).filter(v => v.shelf_id === shelfId || (v.role === 'SIDE_PRESENCE' && v.shelf_id === 'RACK_ENTRY_ZONE')).length;
+      const matchingCount = Object.values(ctx.votes).filter(v => v.shelf_id === shelfId || (v.role === 'SIDE_PRESENCE' && ['ANY_SHELF', 'RACK_ENTRY_ZONE'].includes(v.shelf_id))).length;
       return { ok: true, status: 'pending', trigger_id: triggerId, consensus_met: false, shelf_id: shelfId, expected_action: action, confirmed_cameras: Object.keys(ctx.votes), confirmed_count: matchingCount, required_cameras: 3, test_only: true };
     }
     function localCctvReplayRequest(body) {

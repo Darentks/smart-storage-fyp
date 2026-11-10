@@ -245,6 +245,26 @@ class BehaviorClassifier:
                             "person_id": person["person_id"],
                         })
 
+            # Side-presence fallback: when wrists are occluded from the side view, evaluate elbows, shoulders, and torso/box center for RACK_ENTRY_ZONE
+            if "RACK_ENTRY_ZONE" in compartment_wrists and not compartment_wrists["RACK_ENTRY_ZONE"]:
+                fallback_pts = [p for group in ("elbows", "shoulders") for p in person.get(group, []) if p.get("is_valid")]
+                box = person.get("box")
+                if box is not None and len(box) == 4 and (box[2] > box[0] or box[3] > box[1]):
+                    fallback_pts.append({
+                        "pt": ((float(box[0]) + float(box[2])) * 0.5, (float(box[1]) + float(box[3])) * 0.5),
+                        "conf": float(person.get("box_conf", 0.75)),
+                        "side": "body",
+                    })
+                for fp in fallback_pts:
+                    for comp in self.spatial_mapper.check_intersection(fp["pt"]):
+                        if comp["shelf_id"] == "RACK_ENTRY_ZONE":
+                            compartment_wrists["RACK_ENTRY_ZONE"].append({
+                                "pt": fp["pt"],
+                                "conf": fp["conf"],
+                                "side": fp.get("side", "body"),
+                                "person_id": person["person_id"],
+                            })
+
         self.ambiguous_shelves = ambiguous_shelves
         new_events = []
 

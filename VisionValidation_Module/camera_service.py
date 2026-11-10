@@ -193,17 +193,19 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
         align_state[camera_id] = {
             "ts": now, "action": action, "conf": confidence, "shelf_id": shelf_id, "camera_role": role,
         }
-        # Exact shelf and action must agree across all enabled grid views.
+        # Exact shelf and action must agree across all enabled grid views; side presence validates entry-zone presence.
         grid_votes = [align_state[cid] for cid, cam in active.items()
                       if cam["camera_role"] == "GRID_6_ROI" and cid in align_state]
         target = grid_votes[0]["shelf_id"] if grid_votes else None
+        target_action = grid_votes[0]["action"] if grid_votes else action
         supporters = {cid: vote for cid, vote in align_state.items()
-                      if cid in active and vote["action"] == action
-                      and (vote["camera_role"] == "SIDE_PRESENCE" or vote["shelf_id"] == target)}
+                      if cid in active
+                      and (vote["camera_role"] == "SIDE_PRESENCE"
+                           or (vote["shelf_id"] == target and vote["action"] == target_action))}
         all_grids_present = all(cid in align_state for cid, cam in active.items()
                                 if cam["camera_role"] == "GRID_6_ROI")
-        aligned = (target in shelves and all_grids_present and len(supporters) == len(active))
-        if not aligned:
+        aligned = (target is not None and target in shelves and all_grids_present and len(supporters) == len(active))
+        if not aligned or target is None:
             return {"status": "pending_consensus", "consensus_met": False, "shelf_id": shelf_id,
                     "confirmed_count": len(supporters), "required_cameras": len(active),
                     "window_seconds": CONSENSUS_WINDOW_SEC}
@@ -214,7 +216,7 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
         confirmed_id = f"trig_{target}_{uuid.uuid4().hex}"
         result = {"status": "consensus_confirmed", "consensus_met": True,
                   "shelf_id": target, "confirmed_shelf_id": target, "trigger_id": confirmed_id,
-                  "expected_action": action, "required_cameras": len(active),
+                  "expected_action": target_action, "required_cameras": len(active),
                   "confirmed_count": len(supporters), "confirmed_cameras": sorted(supporters),
                   "confidence": min(v["conf"] for v in supporters.values())}
         if consensus_context is not None:
@@ -1106,8 +1108,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     return
                 if not target.is_file():
                     continue
-                data_bytes = None if head_only else target.read_bytes()
-                content_length = target.stat().st_size if head_only else len(data_bytes)
+                if head_only:
+                    data_bytes = None
+                    content_length = target.stat().st_size
+                else:
+                    data_bytes = target.read_bytes()
+                    content_length = len(data_bytes)
             except (OSError, ValueError):
                 continue
             self.send_response(200)
