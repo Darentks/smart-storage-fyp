@@ -4538,10 +4538,7 @@
                 tracker.lastConfirmedConf = insideWrist.visibility || tracker.lastConfirmedConf || 0.88;
                 dispatchDwellTrigger('ANY_SHELF', tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
               }
-            } else if (tracker.currentDwellDuration >= 3.5 && !tracker.triggerFired) {
-              // Over-dwell fallback: if sustained > 3.5s without withdrawal, trigger immediately
-              tracker.triggerFired = true;
-              dispatchDwellTrigger(shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+            // Shelf interactions dispatch only after withdrawal, regardless of dwell length.
             }
           }
         } else {

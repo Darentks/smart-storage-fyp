@@ -81,19 +81,7 @@ class CompartmentTracker:
                 self.current_dwell_duration = now - start_t
                 self.last_confirmed_conf = float(wrist_conf)
 
-                # Fallback: if hand stays inside for more than 3.5s, fire trigger so action isn't lost
-                if self.current_dwell_duration >= 3.5 and not self.trigger_fired:
-                    self.trigger_fired = True
-                    classified_action = self._classify_trajectory_action()
-                    event_to_dispatch = {
-                        "command": "CAPTURE_STATE",
-                        "shelf_id": self.shelf_id,
-                        "expected_action": classified_action,
-                        "oks_confidence": self.last_confirmed_conf,
-                        "dwell_duration_seconds": round(self.current_dwell_duration, 2),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                    self.last_confirmed_event = event_to_dispatch
+                # Wait for withdrawal even during a slow removal or return.
 
         else:
             # Wrist is NOT detected inside ROI in this frame

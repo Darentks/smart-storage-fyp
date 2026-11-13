@@ -1638,27 +1638,35 @@
     }
 
     // Low-light canvas enhancement fallback (CLAHE approximation + shadow gamma correction)
-    // Always returns a full 640x480 (naturalWidth x naturalHeight) canvas to prevent 16:9 CSS box cropping
-    function enhanceCanvasLowLight(sourceEl, boostMode = 'off') {
-      if (!sourceEl) return sourceEl;
+    // Full-frame display by default; cropToSquare produces geometrically centered 224x224
+    // inference input for 224-input models (not pixel-identical to library rounding).
+    // Cropping precedes luminance sampling and gamma enhancement.
+    function enhanceCanvasLowLight(sourceEl, boostMode = 'off', cropToSquare = false) {
+      if (!sourceEl) return cropToSquare ? null : sourceEl;
       try {
         const srcW = sourceEl.naturalWidth || sourceEl.videoWidth || sourceEl.width || 640;
         const srcH = sourceEl.naturalHeight || sourceEl.videoHeight || sourceEl.height || 480;
-        if (!srcW || !srcH) return sourceEl;
+        if (!srcW || !srcH) return cropToSquare ? null : sourceEl;
 
         const canvas = document.createElement('canvas');
-        canvas.width = srcW;
-        canvas.height = srcH;
+        canvas.width = cropToSquare ? 224 : srcW;
+        canvas.height = cropToSquare ? 224 : srcH;
         const ctx = canvas.getContext('2d');
 
-        // Draw full 640x480 uncropped frame
-        ctx.drawImage(sourceEl, 0, 0, srcW, srcH);
+        if (cropToSquare) {
+          const side = Math.min(srcW, srcH);
+          const sx = Math.round((srcW - side) / 2);
+          const sy = Math.round((srcH - side) / 2);
+          ctx.drawImage(sourceEl, sx, sy, side, side, 0, 0, 224, 224);
+        } else {
+          ctx.drawImage(sourceEl, 0, 0, srcW, srcH);
+        }
 
         if (boostMode === 'off') {
           return canvas;
         }
 
-        const imgData = ctx.getImageData(0, 0, srcW, srcH);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imgData.data;
 
         let totalL = 0;
@@ -1698,7 +1706,7 @@
         return canvas;
       } catch (err) {
         console.warn('[Enhance] Canvas preprocess error:', err);
-        return sourceEl;
+        return cropToSquare ? null : sourceEl;
       }
     }
 
@@ -1736,8 +1744,23 @@
       // Check boost mode and apply canvas brightness/gamma enhancer fallback if enabled
       const boostSelect = document.getElementById('visionBoostSelect');
       const boostMode = overrideBoost || (boostSelect ? boostSelect.value : 'auto');
-      const backTarget = enhanceCanvasLowLight(backImgEl, boostMode);
-      const frontTarget = enhanceCanvasLowLight(frontImgEl, boostMode);
+      const backTarget = enhanceCanvasLowLight(backImgEl, boostMode, true);
+      const frontTarget = enhanceCanvasLowLight(frontImgEl, boostMode, true);
+      const validTarget = target => target instanceof HTMLCanvasElement && target.width === 224 && target.height === 224;
+      if (!validTarget(backTarget) || !validTarget(frontTarget)) {
+        return {
+          backClass: backTarget ? 'Back_Loaded' : 'Back_Preprocess_Error',
+          backCount: 0,
+          backConfidence: 0,
+          frontClass: frontTarget ? 'Front_Loaded' : 'Front_Preprocess_Error',
+          frontCount: 0,
+          frontConfidence: 0,
+          totalBoxes: null,
+          scenarioLabel: 'Validation aborted: Preprocessing failed (224x224 target unavailable)',
+          confidence: 0,
+          degraded: true
+        };
+      }
 
       // 1. Predict Back Camera (strictly filter with /^back_(\d+)/i)
       let bestBack = null;
@@ -2335,38 +2358,67 @@
       homeTestFrontDataUrl = frontSrc;
 
       const loadImgPromise = (img, src) => new Promise(resolve => {
-        img.onload = () => resolve(true);
+        img.onload = () => resolve(img.naturalWidth > 0);
         img.onerror = () => resolve(false);
         img.src = src;
       });
 
-      // 1. Load into preview elements
+      // Capture one mode for display, inference, and the validation payload.
+      const boostSelect = document.getElementById('visionBoostSelect');
+      const boostMode = boostSelect ? boostSelect.value : 'auto';
+      const rawBackImg = new Image();
+      const rawFrontImg = new Image();
+      const rawLoaded = await Promise.all([
+        loadImgPromise(rawBackImg, backSrc),
+        loadImgPromise(rawFrontImg, frontSrc)
+      ]);
+      if (!rawLoaded.every(Boolean) || !rawBackImg.naturalWidth || !rawFrontImg.naturalWidth) {
+        showToast('Offline test aborted: original photo failed to load.', 'error');
+        return;
+      }
+
+      // Display enhancement is independent of the untouched inference sources.
+      let displayBackSrc = backSrc;
+      let displayFrontSrc = frontSrc;
+      if (boostMode !== 'off') {
+        try {
+          const enhBack = enhanceCanvasLowLight(rawBackImg, boostMode, false);
+          const enhFront = enhanceCanvasLowLight(rawFrontImg, boostMode, false);
+          if (!(enhBack instanceof HTMLCanvasElement) || !(enhFront instanceof HTMLCanvasElement)) {
+            throw new Error('Full-frame enhancement failed');
+          }
+          displayBackSrc = enhBack.toDataURL('image/jpeg', 0.9);
+          displayFrontSrc = enhFront.toDataURL('image/jpeg', 0.9);
+        } catch (err) {
+          console.warn('[Offline] Display enhancement/serialization failed:', err);
+          showToast('Offline test aborted: photo enhancement or serialization failed.', 'error');
+          return;
+        }
+      }
+
       backPreviewImg.style.display = 'block';
       backPlaceholder.style.display = 'none';
       frontPreviewImg.style.display = 'block';
       frontPlaceholder.style.display = 'none';
-
-      await Promise.all([
-        loadImgPromise(backPreviewImg, backSrc),
-        loadImgPromise(frontPreviewImg, frontSrc)
+      const previewsLoaded = await Promise.all([
+        loadImgPromise(backPreviewImg, displayBackSrc),
+        loadImgPromise(frontPreviewImg, displayFrontSrc)
       ]);
-
-      // Apply client-side low-light boost to uploaded offline test photos if enabled
-      const boostSelect = document.getElementById('visionBoostSelect');
-      const boostMode = boostSelect ? boostSelect.value : 'auto';
-      if (boostMode !== 'off') {
-        const enhBack = enhanceCanvasLowLight(backPreviewImg, boostMode);
-        const enhFront = enhanceCanvasLowLight(frontPreviewImg, boostMode);
-        if (enhBack instanceof HTMLCanvasElement) {
-          backPreviewImg.src = enhBack.toDataURL('image/jpeg', 0.9);
-        }
-        if (enhFront instanceof HTMLCanvasElement) {
-          frontPreviewImg.src = enhFront.toDataURL('image/jpeg', 0.9);
-        }
+      if (!previewsLoaded.every(Boolean) || !backPreviewImg.naturalWidth || !frontPreviewImg.naturalWidth) {
+        showToast('Offline test aborted: preview photo failed to load.', 'error');
+        return;
       }
 
-      // 2. Draw side-by-side onto canvas for combined view
-      const stitchedDataUrl = stitchTwoImages(backPreviewImg, frontPreviewImg);
+      // Stitch only decoded full-frame previews, preserving each aspect ratio.
+      let stitchedDataUrl;
+      try {
+        stitchedDataUrl = stitchTwoImages(backPreviewImg, frontPreviewImg);
+        if (!stitchedDataUrl) throw new Error('Empty stitched image');
+      } catch (err) {
+        console.warn('[Offline] Photo stitching failed:', err);
+        showToast('Offline test aborted: photo stitching or serialization failed.', 'error');
+        return;
+      }
       livePreviewImg.src = stitchedDataUrl;
       livePreviewImg.style.display = 'block';
       previewPlaceholder.style.display = 'none';
@@ -2383,7 +2435,7 @@
         return;
       }
 
-      const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
+      const tmRes = await predictDualCamerasWithTM(rawBackImg, rawFrontImg, boostMode);
       if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null || !Number.isFinite(tmRes.confidence) || tmRes.confidence < 65) {
         const abortMsg = 'Validation aborted: dual-angle evidence or confidence is insufficient.';
         if (tmLivePredictionBanner) {
@@ -4538,10 +4590,7 @@
                 tracker.lastConfirmedConf = insideWrist.visibility || tracker.lastConfirmedConf || 0.88;
                 dispatchDwellTrigger('ANY_SHELF', tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
               }
-            } else if (tracker.currentDwellDuration >= 3.5 && !tracker.triggerFired) {
-              // Over-dwell fallback: if sustained > 3.5s without withdrawal, trigger immediately
-              tracker.triggerFired = true;
-              dispatchDwellTrigger(shelfId, tracker.lastConfirmedAction, tracker.currentDwellDuration, tracker.lastConfirmedConf);
+            // Shelf interactions dispatch only after withdrawal, regardless of dwell length.
             }
           }
         } else {
