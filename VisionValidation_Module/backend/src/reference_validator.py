@@ -318,7 +318,7 @@ class ESP32ReferenceManager:
 
     def freeze_baseline(self, shelf_id: str, duration_sec: float = 10.0) -> None:
         """Sets freeze lock on shelf baseline so 30s poller won't overwrite during active user hand interaction."""
-        self.baseline_freeze_until[shelf_id.strip()] = time.time() + duration_sec
+        self.baseline_freeze_until[shelf_id.strip()] = max(self.baseline_freeze_until.get(shelf_id.strip(), 0), time.time() + duration_sec)
 
     def fetch_esp32_frame(
         self,

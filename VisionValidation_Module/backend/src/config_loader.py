@@ -470,7 +470,7 @@ def apply_inventory_delta_in_supabase(
     saved_rows = _supabase_rest(
         method="PATCH",
         table="compartments",
-        query=f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}",
+        query=f"?shelf_id=eq.{urllib.parse.quote(shelf_id)}&current_quantity=eq.{quantity_before}",
         payload=update_data,
         prefer="return=representation",
     )

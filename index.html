@@ -2328,6 +2328,22 @@
     // OFFLINE HOME PHOTO TESTER
     // =========================================================================
     async function runOfflinePhotoTest() {
+      const shelfId = refShelfSelect.value;
+      if (validatingShelves.has(shelfId)) return;
+      validatingShelves.add(shelfId);
+      let token;
+      try {
+        ({token} = await bridgePost('/validation_begin', {shelf_id:shelfId}));
+        if (!token) throw new Error('Shelf is already being validated');
+        await runOfflinePhotoTestLocked(shelfId, token);
+      } catch (error) {
+        showToast(`Photo test: ${error.message}`, 'error');
+      } finally {
+        if (token) await bridgePost('/validation_end', {shelf_id:shelfId, token}).catch(console.warn);
+        validatingShelves.delete(shelfId);
+      }
+    }
+    async function runOfflinePhotoTestLocked(shelfId, validationToken) {
       const file1 = testBackFileInput && testBackFileInput.files ? testBackFileInput.files[0] : null;
       const file2 = testFrontFileInput && testFrontFileInput.files ? testFrontFileInput.files[0] : null;
 
@@ -2456,7 +2472,6 @@
       tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
 
       // 5. Send result to POST /esp32_validate or directly update Supabase
-      const shelfId = refShelfSelect.value;
       const comp = compartmentsData.find(c => c.shelf_id === shelfId) || { shelf_id: shelfId, current_quantity: 4 };
       const beforeBoxes = comp.current_quantity != null ? comp.current_quantity : 4;
       const ip1 = refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201';
@@ -2464,6 +2479,8 @@
 
       const valPayload = {
         shelf_id: shelfId,
+        validation_token: validationToken,
+        source: "MANUAL",
         expected_action: "BORROW",
         ip: ip1,
         ip2: ip2,
@@ -2511,43 +2528,8 @@
         console.warn('Local bridge offline during offline photo test:', bridgeErr);
       }
 
-      // If local bridge was offline, directly update Supabase
-      if (!bridgeSuccess) {
-        const delta = tmRes.totalBoxes - beforeBoxes;
-        const stateDelta = delta < 0 ? 'ITEM_REMOVED' : (delta > 0 ? 'ITEM_RETURNED' : 'NO_CHANGE');
-        const newQty = tmRes.totalBoxes;
-        try {
-          const savedRows = await sbRest('compartments', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}`, {
-            current_quantity: newQty
-          }, 'return=representation');
-          if (!Array.isArray(savedRows) || !savedRows.some(row => row.shelf_id === shelfId && row.current_quantity === newQty)) {
-            throw new Error('Inventory update was not confirmed by the database');
-          }
-
-          prependLatestAction({
-            log_id: `local-${Date.now()}`,
-            created_at: new Date().toISOString(),
-            shelf_id: shelfId,
-            rack_id: comp.rack_id || 'RACK_01',
-            mqtt_client_id: comp.mqtt_client_id || `ESP32_${shelfId.replace('SHELF_', '')}`,
-            trigger_action: 'BORROW',
-            before_image_url: comp.baseline_image_url || null,
-            after_image_url: stitchedDataUrl,
-            diff_score: null,
-            similarity_score: tmRes.confidence,
-            matched_box_count: newQty,
-            scenario_label: tmRes.scenarioLabel,
-            state_delta: stateDelta,
-            quantity_before: beforeBoxes,
-            quantity_after: newQty
-          });
-          const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
-          showToast(`Offline Test (Direct Supabase): ${stateDelta} (${deltaSign}) | ${tmRes.scenarioLabel}`, 'success');
-        } catch (sbErr) {
-          console.warn('Direct Supabase update failed:', sbErr);
-          showToast(`Offline Test: ${tmRes.scenarioLabel} (${tmRes.totalBoxes}/4 boxes)`, 'info');
-        }
-      }
+      // Never bypass a rejected/failed bridge write or its cross-browser lease.
+      if (!bridgeSuccess) showToast('Photo test inventory update failed; database unchanged or unconfirmed. Check the bridge.', 'error');
 
       refreshAllData();
     }
@@ -2556,6 +2538,75 @@
     // DUAL-CAMERA TEACHABLE MACHINE VALIDATION PIPELINE
     // =========================================================================
     const validatingShelves = new Set();
+    const PERIODIC_CONFIRM_DELAY_MS = 2000;
+    async function bridgePost(path, payload) {
+      const response = await fetch(`${getBridgeUrl()}${path}`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+      return response.json();
+    }
+    function validPeriodicPrediction(result) {
+      return !!result && !result.degraded && Number.isInteger(result.totalBoxes)
+        && result.totalBoxes >= 0 && result.totalBoxes <= 4
+        && Number.isFinite(result.confidence) && result.confidence >= 65;
+    }
+    function periodicCountsAgree(first, second) {
+      return validPeriodicPrediction(first) && validPeriodicPrediction(second)
+        && first.totalBoxes === second.totalBoxes;
+    }
+    async function runPeriodicRecheckValidation(shelfId, trigger) {
+      if (validatingShelves.has(shelfId)) return;
+      validatingShelves.add(shelfId);
+      let token;
+      try {
+        ({token} = await bridgePost('/validation_begin', {shelf_id: shelfId}));
+        if (!token) throw new Error('Shelf busy; periodic recheck deferred');
+        const comp = compartmentsData.find(c => c.shelf_id === shelfId);
+        if (!comp?.ip_address || !comp?.secondary_ip_address) throw new Error('Both assigned cameras are required');
+        const capture = async () => {
+          // Fixed lighting/processing for both confirmation samples.
+          const response = await fetch(`${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(comp.ip_address)}&ip2=${encodeURIComponent(comp.secondary_ip_address)}&shelf_id=${encodeURIComponent(shelfId)}&boost=off&duty=90&_t=${Date.now()}`, {cache:'no-store'});
+          if (!response.ok) throw new Error('Periodic dual-camera capture failed');
+          const preview = await response.json();
+          if (!preview.image_back || !preview.image_front || !preview.image) throw new Error('Missing dual-angle evidence');
+          const load = src => new Promise((resolve, reject) => {
+            const img = new Image(); img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Invalid periodic image')); img.src = src;
+          });
+          const [back, front] = await Promise.all([load(preview.image_back), load(preview.image_front)]);
+          const prediction = await predictDualCamerasWithTM(back, front, 'off');
+          if (!validPeriodicPrediction(prediction)) throw new Error('Periodic confidence insufficient');
+          return {preview, prediction};
+        };
+        const first = await capture();
+        // Always confirm, even when local quantity matches: browser inventory may be stale.
+        await new Promise(resolve => setTimeout(resolve, PERIODIC_CONFIRM_DELAY_MS));
+        const second = await capture();
+        if (!periodicCountsAgree(first.prediction, second.prediction)) throw new Error('Periodic counts disagree; inventory unchanged');
+        const result = await bridgePost('/esp32_validate', {
+          shelf_id: shelfId, source: 'PERIODIC_RECHECK', expected_action: 'RECHECK',
+          validation_token: token, ip: comp.ip_address, ip2: comp.secondary_ip_address,
+          image: second.preview.image, image_back: second.preview.image_back, image_front: second.preview.image_front,
+          predicted_box_count: second.prediction.totalBoxes, tm_confidence: second.prediction.confidence,
+          scenario_label: second.prediction.scenarioLabel, boost: 'off',
+          periodic_evidence: {first_count: first.prediction.totalBoxes,
+            first_confidence: first.prediction.confidence, delay_ms: PERIODIC_CONFIRM_DELAY_MS}
+        });
+        if (result.comparison?.delta) {
+          const delta = result.comparison.delta;
+          showToast(`${shelfId}: ${result.comparison.state_delta} (${delta > 0 ? '+' : ''}${delta}) ? periodic recheck`, 'info');
+          if (result.log) prependLatestAction(result.log);
+        }
+        await refreshAllData();
+      } catch (error) {
+        console.warn('[Periodic Recheck]', error.message);
+      } finally {
+        if (token) await bridgePost('/validation_end', {shelf_id:shelfId, token, trigger_id:trigger.trigger_id}).catch(console.warn);
+        validatingShelves.delete(shelfId);
+      }
+    }
+
     async function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
       if (validatingShelves.has(shelfId)) return null;
       validatingShelves.add(shelfId);
@@ -2566,7 +2617,10 @@
       const prefix = isCctvTrigger ? 'CCTV Trigger' : 'Dual-Camera Validation';
       showToast(`${prefix}: Running validation for ${shelfId} (${action})...`, 'info');
 
+      let validationToken;
       try {
+        ({token: validationToken} = await bridgePost('/validation_begin', {shelf_id: shelfId}));
+        if (!validationToken) throw new Error('Another dashboard is validating this shelf; try again shortly');
         const loadImgPromise = (img, src) => new Promise(resolve => {
           img.onload = () => resolve(true);
           img.onerror = () => resolve(false);
@@ -2694,10 +2748,13 @@
         const boostVal = acceptedSettings.boost;
         const valPayload = {
           shelf_id: shelfId,
+          validation_token: validationToken,
+          source: isCctvTrigger ? "CCTV" : "MANUAL",
           expected_action: action,
           ip: ip1,
           ip2: ip2,
           image: previewData.image,
+          image_back: previewData.image_back, image_front: previewData.image_front,
           predicted_box_count: tmRes.totalBoxes,
           scenario_label: tmRes.scenarioLabel,
           tm_confidence: tmRes.confidence,
@@ -2743,6 +2800,7 @@
         showToast(`Dual-camera validation failed: ${err.message}`, 'error');
         return null;
       } finally {
+        if (validationToken) await bridgePost('/validation_end', {shelf_id:shelfId, token:validationToken}).catch(console.warn);
         validatingShelves.delete(shelfId);
       }
     }
@@ -2802,7 +2860,7 @@
 
     // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
     async function consumeCctvTrigger(trigger) {
-      if (!trigger.trigger_id || processedTriggerIds.has(trigger.trigger_id)) return;
+      if (!trigger.trigger_id || processedTriggerIds.has(trigger.trigger_id) || validatingShelves.has(trigger.shelf_id)) return;
       if (trigger.source === 'CCTV' && trigger.consensus_met !== true) return;
       if (!ALL_SHELF_IDS.includes(trigger.shelf_id)) return;
       processedTriggerIds.add(trigger.trigger_id);
@@ -2814,7 +2872,8 @@
         if (!response.ok) throw new Error(`Trigger claim failed: HTTP ${response.status}`);
         const result = await response.json();
         if (result.claimed) {
-          await runFullDualCamValidation(trigger.shelf_id, trigger.expected_action || 'BORROW', true);
+          if (trigger.source === 'PERIODIC_RECHECK') await runPeriodicRecheckValidation(trigger.shelf_id, trigger);
+          else await runFullDualCamValidation(trigger.shelf_id, trigger.expected_action || 'BORROW', true);
         }
       } catch (error) {
         processedTriggerIds.delete(trigger.trigger_id);

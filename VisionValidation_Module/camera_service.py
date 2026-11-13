@@ -70,7 +70,10 @@ from src.config_loader import (  # type: ignore
     update_compartment_baseline_in_supabase,
     apply_inventory_delta_in_supabase,
     list_comparison_logs,
+    SupabaseRestFallback,
 )
+from src.periodic_recheck import (RecheckCoordinator, StaggeredPollSchedule, inspect_candidate,
+                                  has_pending_shelf, queue_periodic_trigger)
 from src.replay_manager import CctvReplayManager
 from src.spatial_mapper import SpatialMapper  # type: ignore
 from src.mqtt_client import MQTTClientNode  # type: ignore
@@ -85,6 +88,10 @@ ROI_CONFIG_PATH = os.path.join(BACKEND_DIR, "config", "roi_config.json")
 spatial_mapper = SpatialMapper(ROI_CONFIG_PATH)
 
 esp32_ref_manager = ESP32ReferenceManager()
+RECHECKS = RecheckCoordinator()
+PERIODIC_DIFF_THRESHOLD = float(os.getenv("PERIODIC_DIFF_THRESHOLD", "3.5"))
+if not 0 < PERIODIC_DIFF_THRESHOLD <= 100:
+    raise ValueError("PERIODIC_DIFF_THRESHOLD must be between 0 and 100")
 
 ACTIVE_ESP32_IPS: Dict[str, Any] = {
     "SHELF_R1_C1": {
@@ -147,7 +154,7 @@ def configure_cctv_alignment(cameras):
             CCTV_CAMERA_CONFIG.update(config)
             CCTV_ALIGN_STATE.clear()
             # Discard unclaimed events from the superseded camera configuration.
-            PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("claimed")]
+            PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("claimed") or t.get("source") == "PERIODIC_RECHECK"]
     return {"status": "success", "required_cameras": sum(c["is_active"] for c in config.values())}
 
 
@@ -1383,17 +1390,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 )
                 latency_ms = int((time.time() - t0) * 1000)
 
-                cached = esp32_ref_manager.baseline_cache.get(shelf_id)
-                if not cached or not cached.get("data_url"):
-                    esp32_ref_manager.update_30s_baseline(
-                        shelf_id=shelf_id,
-                        esp32_ip=esp32_ip,
-                        esp32_ip2=esp32_ip2,
-                        image_data_url=combined_url,
-                        image_2_data_url=url2,
-                        sync_supabase=False,
-                    )
-
                 self._send_json(200, {
                     "status": "success",
                     "shelf_id": shelf_id,
@@ -1408,16 +1404,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
             frame_bgr, data_url = esp32_ref_manager.fetch_esp32_frame(esp32_ip=esp32_ip, mode="live", flash=flash, duty=duty, boost_mode=boost)
             latency_ms = int((time.time() - t0) * 1000)
-
-            # If no baseline image exists yet for this shelf, populate it with this live frame
-            cached = esp32_ref_manager.baseline_cache.get(shelf_id)
-            if not cached or not cached.get("data_url"):
-                esp32_ref_manager.update_30s_baseline(
-                    shelf_id=shelf_id,
-                    esp32_ip=esp32_ip,
-                    image_data_url=data_url,
-                    sync_supabase=False,
-                )
 
             self._send_json(200, {
                 "status": "success",
@@ -1478,6 +1464,44 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, configure_cctv_alignment(body.get("cameras")))
             except (ValueError, TypeError) as exc:
                 self._send_json(400, {"status": "error", "error": str(exc)})
+            return
+
+        if path in ("/validation_begin", "/validation_end", "/validation_cancel", "/validation_renew", "/validation_enqueue"):
+            shelf = str(body.get("shelf_id", ""))
+            with RECHECKS.global_lock:
+                if path == "/validation_cancel":
+                    RECHECKS.cancel(body.get("request_id"))
+                    self._send_json(200, {"cancelled": True})
+                elif path == "/validation_enqueue":
+                    queued = RECHECKS.enqueue(shelf, body.get("source") or "MANUAL",
+                        body.get("request_id") or shelf, body.get("created_at"))
+                    self._send_json(200, {"queued": queued})
+                elif path == "/validation_begin":
+                    source = body.get("source") or "MANUAL"
+                    # An unclaimed live CCTV event in another tab also has priority.
+                    with CCTV_CONSENSUS_LOCK:
+                        live_waiting = any(t.get("source") == "CCTV" and not t.get("claimed")
+                            and time.time()-t.get("timestamp", 0) < 60 for t in PENDING_CCTV_TRIGGERS)
+                    if source == "PERIODIC_RECHECK" and live_waiting:
+                        self._send_json(200, {"token": None})
+                        return
+                    token = RECHECKS.begin(shelf, source, body.get("request_id"), body.get("created_at"))
+                    if token:
+                        esp32_ref_manager.freeze_baseline(shelf, 120)
+                    self._send_json(200, {"token": token})
+                elif path == "/validation_renew":
+                    renewed = RECHECKS.renew(shelf, body.get("token"))
+                    if renewed:
+                        esp32_ref_manager.freeze_baseline(shelf, 120)
+                    self._send_json(200, {"renewed": renewed})
+                else:
+                    ended = RECHECKS.end(shelf, body.get("token"))
+                    if ended:
+                        esp32_ref_manager.baseline_freeze_until.pop(shelf, None)
+                        trigger_id = body.get("trigger_id")
+                        with CCTV_CONSENSUS_LOCK:
+                            PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("trigger_id") != trigger_id]
+                    self._send_json(200, {"released": ended})
             return
 
         if path == "/cctv_trigger_claim":
@@ -1699,109 +1723,142 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # VALIDATE: Run 30s baseline + Teachable Machine validation and apply Supabase delta
         if path == "/esp32_validate":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
-            boost = body.get("boost") or "auto"
-            if boost in ("auto", "high", "off"):
-                esp32_ref_manager.vision_boost_mode = boost
-            # Guardrail 1: Freeze 30s baseline for 10s during interaction
-            esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
+            with RECHECKS.global_lock:
+                if RECHECKS.busy() and not RECHECKS.owns(shelf_id, body.get("validation_token")):
+                    self._send_json(409, {"error": "Shelf validation already active"})
+                    return
+                if (body.get("validation_token") or body.get("source") == "PERIODIC_RECHECK") and not RECHECKS.owns(shelf_id, body.get("validation_token")):
+                    self._send_json(409, {"error": "Periodic validation lease expired"})
+                    return
+                boost = body.get("boost") or "auto"
+                if boost in ("auto", "high", "off"):
+                    esp32_ref_manager.vision_boost_mode = boost
+                # Guardrail 1: Freeze 30s baseline for 10s during interaction
+                esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
 
-            mqtt_client_id = str(body.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}").strip()
-            expected_action = str(body.get("expected_action", "BORROW")).upper()
-            esp32_ip = body.get("ip_address") or body.get("ip")
-            esp32_ip2 = body.get("ip2") or body.get("secondary_ip_address") or body.get("secondary_ip")
-            after_image = body.get("image") or body.get("image_url")
-            baseline_box_count = body.get("baseline_box_count")
-            predicted_box_count = body.get("predicted_box_count")
-            if predicted_box_count is None and "box_count" in body:
-                predicted_box_count = body.get("box_count")
-            scenario_label = body.get("scenario_label")
-            tm_confidence = body.get("tm_confidence") or body.get("confidence")
+                mqtt_client_id = str(body.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}").strip()
+                expected_action = str(body.get("expected_action", "BORROW")).upper()
+                esp32_ip = body.get("ip_address") or body.get("ip")
+                esp32_ip2 = body.get("ip2") or body.get("secondary_ip_address") or body.get("secondary_ip")
+                after_image = body.get("image") or body.get("image_url")
+                baseline_box_count = body.get("baseline_box_count")
+                predicted_box_count = body.get("predicted_box_count")
+                if predicted_box_count is None and "box_count" in body:
+                    predicted_box_count = body.get("box_count")
+                scenario_label = body.get("scenario_label")
+                tm_confidence = body.get("tm_confidence") or body.get("confidence")
 
-            # Determine current quantity from local cache (zero Supabase egress)
-            curr_qty = 4
-            try:
-                for comp in get_cached_compartments(force_refresh=False):
-                    if comp.get("shelf_id") == shelf_id:
-                        curr_qty = int(comp.get("current_quantity", 4))
-                        if not esp32_ip2 and comp.get("secondary_ip_address"):
-                            esp32_ip2 = comp.get("secondary_ip_address")
-                        break
-            except Exception:
-                pass
-
-            previous_baseline = esp32_ref_manager.baseline_cache.get(shelf_id)
-            comp_res = esp32_ref_manager.compare_with_30s_baseline_and_references(
-                mqtt_client_id=mqtt_client_id,
-                shelf_id=shelf_id,
-                expected_action=expected_action,
-                current_quantity=curr_qty,
-                esp32_ip=esp32_ip,
-                esp32_ip2=esp32_ip2,
-                after_data_url=after_image,
-                baseline_box_count=int(baseline_box_count) if baseline_box_count is not None else None,
-                predicted_box_count=int(predicted_box_count) if predicted_box_count is not None else None,
-                scenario_label=scenario_label,
-                tm_confidence=float(tm_confidence) if tm_confidence is not None else None,
-            )
-
-            log_entry: Optional[Dict[str, Any]] = None
-            if predicted_box_count is not None:
-                delta_val = int(comp_res.get("delta", 0))
-                derived_action = "BORROW" if delta_val < 0 else ("RETURN" if delta_val > 0 else expected_action)
-                before_img = comp_res.get("before_image") or comp_res.get("before_image_url")
-                after_img = after_image or comp_res.get("after_image") or comp_res.get("after_image_url")
-
-                # ONLY update current_quantity in Supabase if box count actually changed (delta != 0)
-                if delta_val != 0:
-                    delta_res = apply_inventory_delta_in_supabase(
-                        shelf_id=shelf_id,
-                        mqtt_client_id=mqtt_client_id,
-                        trigger_action=derived_action,
-                        comparison_result=comp_res,
-                        current_quantity_hint=curr_qty,
-                    )
-                    if delta_res is False:
-                        if previous_baseline is None:
-                            esp32_ref_manager.baseline_cache.pop(shelf_id, None)
-                        else:
-                            esp32_ref_manager.baseline_cache[shelf_id] = previous_baseline
-                        self._send_json(502, {"status": "failed", "error": "Inventory update was not confirmed by the database"})
+                source = body.get("source") or "MANUAL"
+                periodic = source == "PERIODIC_RECHECK"
+                # Read authoritative quantity; cache refresh may silently return stale rows.
+                try:
+                    rows = SupabaseRestFallback().select("compartments", f"?select=shelf_id,current_quantity&shelf_id=eq.{urllib.parse.quote(shelf_id)}&limit=1")
+                    if not rows or rows[0].get("current_quantity") is None:
+                        raise ValueError("Fresh inventory unavailable")
+                    curr_qty = int(rows[0]["current_quantity"])
+                except Exception:
+                    self._send_json(503, {"error": "Fresh inventory unavailable; no update applied"})
+                    return
+                if periodic:
+                    evidence = body.get("periodic_evidence") or {}
+                    decoded = decode_data_url_to_bgr(after_image)
+                    first = evidence.get("first_count")
+                    count = predicted_box_count
+                    valid_count = lambda value: isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 4
+                    confidences = [evidence.get("first_confidence"), tm_confidence]
+                    if (decoded is None or not valid_count(count) or not valid_count(first) or first != count
+                        or not all(isinstance(c, (int, float)) and math.isfinite(c) and c >= 65 for c in confidences)
+                        or evidence.get("delay_ms", 0) < 2000 or not body.get("image_back") or not body.get("image_front")):
+                        self._send_json(400, {"error": "Periodic recheck requires two valid agreeing captures"})
                         return
-                    if isinstance(delta_res, dict):
-                        log_entry = delta_res
-                    get_cached_compartments(force_refresh=True)
 
-                if not isinstance(log_entry, dict):
-                    log_entry = {
-                        "log_id": str(uuid.uuid4()),
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                        "shelf_id": shelf_id,
-                        "rack_id": spatial_mapper.rack_id,
-                        "mqtt_client_id": mqtt_client_id,
-                        "trigger_action": derived_action,
-                        "diff_score": comp_res.get("diff_score", 0.0),
-                        "similarity_score": comp_res.get("similarity_score", 0.0),
-                        "matched_box_count": comp_res.get("matched_box_count", predicted_box_count),
-                        "scenario_label": comp_res.get("scenario_label") or scenario_label or f"{predicted_box_count} Boxes",
-                        "state_delta": "ITEM_REMOVED" if delta_val < 0 else ("ITEM_RETURNED" if delta_val > 0 else "NO_CHANGE"),
-                        "quantity_before": comp_res.get("quantity_before", curr_qty),
-                        "quantity_after": comp_res.get("quantity_after", predicted_box_count),
-                    }
-                log_entry["before_image_url"] = before_img
-                log_entry["after_image_url"] = after_img
-                log_entry["log_id"] = str(uuid.uuid4())
-                log_entry["state_delta"] = "ITEM_REMOVED" if delta_val < 0 else ("ITEM_RETURNED" if delta_val > 0 else "NO_CHANGE")
-                LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
-                with CCTV_CONSENSUS_LOCK:
-                    PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
+                previous_baseline = esp32_ref_manager.baseline_cache.get(shelf_id)
+                comp_res = esp32_ref_manager.compare_with_30s_baseline_and_references(
+                    mqtt_client_id=mqtt_client_id,
+                    shelf_id=shelf_id,
+                    expected_action=expected_action,
+                    current_quantity=curr_qty,
+                    esp32_ip=esp32_ip,
+                    esp32_ip2=esp32_ip2,
+                    after_data_url=after_image,
+                    baseline_box_count=int(baseline_box_count) if baseline_box_count is not None else None,
+                    predicted_box_count=int(predicted_box_count) if predicted_box_count is not None else None,
+                    scenario_label=scenario_label,
+                    tm_confidence=float(tm_confidence) if tm_confidence is not None else None,
+                )
 
-            self._send_json(200, {
-                "status": "success",
-                "comparison": comp_res,
-                "log": log_entry,
-                "latest_comparisons": list(LATEST_COMPARISONS_DEQUE),
-            })
-            return
+                log_entry: Optional[Dict[str, Any]] = None
+                if predicted_box_count is not None:
+                    delta_val = int(comp_res.get("delta", 0))
+                    derived_action = "BORROW" if delta_val < 0 else ("RETURN" if delta_val > 0 else expected_action)
+                    before_img = comp_res.get("before_image") or comp_res.get("before_image_url")
+                    after_img = after_image or comp_res.get("after_image") or comp_res.get("after_image_url")
+
+                    # ONLY update current_quantity in Supabase if box count actually changed (delta != 0)
+                    if delta_val != 0:
+                        delta_res = apply_inventory_delta_in_supabase(
+                            shelf_id=shelf_id,
+                            mqtt_client_id=mqtt_client_id,
+                            trigger_action=derived_action,
+                            comparison_result=comp_res,
+                            current_quantity_hint=curr_qty,
+                        )
+                        if delta_res is False:
+                            if previous_baseline is None:
+                                esp32_ref_manager.baseline_cache.pop(shelf_id, None)
+                            else:
+                                esp32_ref_manager.baseline_cache[shelf_id] = previous_baseline
+                            self._send_json(502, {"status": "failed", "error": "Inventory update was not confirmed by the database"})
+                            return
+                        if isinstance(delta_res, dict):
+                            log_entry = delta_res
+                        get_cached_compartments(force_refresh=True)
+
+                    if not isinstance(log_entry, dict):
+                        log_entry = {
+                            "log_id": str(uuid.uuid4()),
+                            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                            "shelf_id": shelf_id,
+                            "rack_id": spatial_mapper.rack_id,
+                            "mqtt_client_id": mqtt_client_id,
+                            "trigger_action": derived_action,
+                            "diff_score": comp_res.get("diff_score", 0.0),
+                            "similarity_score": comp_res.get("similarity_score", 0.0),
+                            "matched_box_count": comp_res.get("matched_box_count", predicted_box_count),
+                            "scenario_label": comp_res.get("scenario_label") or scenario_label or f"{predicted_box_count} Boxes",
+                            "state_delta": "ITEM_REMOVED" if delta_val < 0 else ("ITEM_RETURNED" if delta_val > 0 else "NO_CHANGE"),
+                            "quantity_before": comp_res.get("quantity_before", curr_qty),
+                            "quantity_after": comp_res.get("quantity_after", predicted_box_count),
+                        }
+                    log_entry["before_image_url"] = before_img
+                    log_entry["after_image_url"] = after_img
+                    log_entry["log_id"] = str(uuid.uuid4())
+                    log_entry["state_delta"] = "ITEM_REMOVED" if delta_val < 0 else ("ITEM_RETURNED" if delta_val > 0 else "NO_CHANGE")
+                    log_entry["source"] = source
+                    log_entry["trigger_source"] = source
+                    if periodic:
+                        log_entry["scenario_label"] = "Periodic Recheck (Backup) | " + str(log_entry.get("scenario_label") or "")
+                    if not periodic or delta_val != 0:
+                        LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
+                    else:
+                        log_entry = None
+                    with CCTV_CONSENSUS_LOCK:
+                        PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
+
+                if body.get("image_back") and body.get("image_front"):
+                    decoded = decode_data_url_to_bgr(after_image)
+                    if decoded is not None:
+                        esp32_ref_manager.baseline_cache[shelf_id] = dict(
+                            frame_bgr=decoded, data_url=after_image, data_url_2=body["image_front"],
+                            url_back=body["image_back"], url_front=body["image_front"],
+                            updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                self._send_json(200, {
+                    "status": "success",
+                    "comparison": comp_res,
+                    "log": log_entry,
+                    "latest_comparisons": list(LATEST_COMPARISONS_DEQUE),
+                })
+                return
 
         # PROXY NVS CONFIG PUSH TO ESP32-CAM (Avoids Vercel HTTPS -> LAN HTTP Mixed Content)
         if path == "/esp32_nvs_config":
@@ -1910,152 +1967,138 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "Endpoint not found"})
 
 
+def poll_periodic_shelf(shelf_id, ip_entry):
+    """Bounded health probes; capture only when both cameras report online."""
+    if isinstance(ip_entry, dict):
+        raw_ip1 = ip_entry.get("ip1")
+        raw_ip2 = ip_entry.get("ip2")
+    else:
+        raw_ip1 = ip_entry
+        raw_ip2 = None
+
+    if not raw_ip1 or not str(raw_ip1).strip():
+        return
+
+    clean_ip = str(raw_ip1).split("//")[-1].split("/")[0].strip()
+    status_url = f"http://{clean_ip}/status"
+    rssi_dbm = None
+    online = False
+
+    # 1. Quick probe to http://<ip>/status (1.5s timeout)
+    try:
+        req = urllib.request.Request(status_url, headers={"User-Agent": "SmartStoragePoller/1.0"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                online = True
+                raw = resp.read().decode("utf-8")
+                try:
+                    status_data = json.loads(raw)
+                    rssi_dbm = status_data.get("rssi_dbm") or status_data.get("rssi")
+                except Exception:
+                    pass
+    except Exception:
+        online = False
+
+    # 2. If reachable (or for baseline refresh), fetch baseline & sync Supabase
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    sec_ip = str(raw_ip2).split("//")[-1].split("/")[0].strip() if raw_ip2 else None
+    if not sec_ip:
+        return
+
+    if online:
+        dev_id1 = f"ESP32_{shelf_id.replace('SHELF_', '')}"
+        node_health = {
+            "device_id": dev_id1,
+            "mqtt_client_id": dev_id1,
+            "shelf_id": shelf_id,
+            "ip_address": clean_ip,
+            "rssi_dbm": rssi_dbm,
+            "status": "ONLINE",
+            "angle": "BACK",
+            "last_seen_at": now_iso,
+            "last_seen_ts": time.time(),
+        }
+        mqtt_bridge.edge_nodes[dev_id1] = node_health
+    else:
+        record_probe_result(clean_ip)
+
+    # Also probe secondary camera (CAM 2 Front Angle)
+    online_cam2 = False
+    rssi_cam2 = None
+    if sec_ip:
+        try:
+            req2 = urllib.request.Request(f"http://{sec_ip}/status", headers={"User-Agent": "SmartStoragePoller/1.0"})
+            with urllib.request.urlopen(req2, timeout=1.5) as resp2:
+                if resp2.status == 200:
+                    online_cam2 = True
+                    raw2 = resp2.read().decode("utf-8")
+                    try:
+                        s_data2 = json.loads(raw2)
+                        rssi_cam2 = s_data2.get("rssi_dbm") or s_data2.get("rssi")
+                    except Exception:
+                        pass
+        except Exception:
+            online_cam2 = False
+
+    if online_cam2:
+        dev_id2 = f"ESP32_{shelf_id.replace('SHELF_', '')}_CAM2"
+        node_health2 = {
+            "device_id": dev_id2,
+            "mqtt_client_id": dev_id2,
+            "shelf_id": shelf_id,
+            "ip_address": sec_ip,
+            "rssi_dbm": rssi_cam2,
+            "status": "ONLINE",
+            "angle": "FRONT",
+            "last_seen_at": now_iso,
+            "last_seen_ts": time.time(),
+        }
+        mqtt_bridge.edge_nodes[dev_id2] = node_health2
+    elif sec_ip:
+        record_probe_result(sec_ip)
+
+
+    if not (online and online_cam2):
+        return
+    with RECHECKS.global_lock:
+        # Baseline captures yield to queued/active validation traffic.
+        if RECHECKS.busy() or RECHECKS.waiting:
+            return
+        with CCTV_CONSENSUS_LOCK:
+            if has_pending_shelf(PENDING_CCTV_TRIGGERS, shelf_id, time.time()):
+                return
+        score = inspect_candidate(esp32_ref_manager, shelf_id, clean_ip, sec_ip, PERIODIC_DIFF_THRESHOLD)
+        if score is not None:
+            with CCTV_CONSENSUS_LOCK:
+                queue_periodic_trigger(PENDING_CCTV_TRIGGERS, shelf_id, score, time.time())
+
+
+def periodic_shelf_mappings():
+    """Only real dual-IP mappings, optionally narrowed for staged testing."""
+    configured = {}
+    for row in get_cached_compartments(force_refresh=False):
+        if row.get("shelf_id") and row.get("ip_address") and row.get("secondary_ip_address"):
+            configured[row["shelf_id"]] = {"ip1": row["ip_address"], "ip2": row["secondary_ip_address"]}
+    for shelf, entry in list(ACTIVE_ESP32_IPS.items()):
+        if isinstance(entry, dict) and entry.get("ip1") and entry.get("ip2"):
+            configured[shelf] = entry
+    selected = {s.strip() for s in os.getenv("PERIODIC_RECHECK_SHELVES", "").split(",") if s.strip()}
+    return {s: entry for s, entry in configured.items() if not selected or s in selected}
+
+
 def esp32_http_baseline_poller():
-    """
-    Background daemon thread running every 30 seconds:
-    - Polls ACTIVE_ESP32_IPS (defaulting SHELF_R1_C1 to ESP32_CAM_IP or 192.168.0.201).
-    - Queries http://<ip>/status (2s timeout) to verify node connectivity & extract rssi.
-    - Calls esp32_ref_manager.update_30s_baseline(shelf_id, esp32_ip=ip) to fetch
-      the ESP32-CAM's latest 30s resting baseline JPEG and sync it into public.compartments,
-      ensuring fresh baseline snapshots even if Mosquitto MQTT is offline.
-    """
-    time.sleep(2.0)  # Brief warm-up before first cycle
+    """One staggered shelf slot; slow/offline requests never cause catch-up bursts."""
+    schedule = StaggeredPollSchedule()
+    time.sleep(2.0)
     while True:
         try:
-            # Ensure default for SHELF_R1_C1 and populate configured shelves from Supabase
-            default_ip = os.getenv("ESP32_CAM_IP", "192.168.0.201")
-            default_ip2 = os.getenv("ESP32_CAM_IP2", "192.168.0.202")
-            ACTIVE_ESP32_IPS.setdefault("SHELF_R1_C1", {"ip1": default_ip, "ip2": default_ip2})
-
-            db_compartments = []
-            try:
-                db_compartments = get_cached_compartments(force_refresh=False)
-                for comp_row in db_compartments:
-                    s_id = comp_row.get("shelf_id")
-                    if s_id and s_id not in ACTIVE_ESP32_IPS:
-                        ACTIVE_ESP32_IPS[s_id] = {
-                            "ip1": comp_row.get("ip_address") or "192.168.0.201",
-                            "ip2": comp_row.get("secondary_ip_address") or "192.168.0.202",
-                        }
-            except Exception:
-                pass
-
-            for shelf_id, ip_entry in list(ACTIVE_ESP32_IPS.items()):
-                if isinstance(ip_entry, dict):
-                    raw_ip1 = ip_entry.get("ip1")
-                    raw_ip2 = ip_entry.get("ip2")
-                else:
-                    raw_ip1 = ip_entry
-                    raw_ip2 = None
-
-                if not raw_ip1 or not str(raw_ip1).strip():
-                    continue
-
-                clean_ip = str(raw_ip1).split("//")[-1].split("/")[0].strip()
-                status_url = f"http://{clean_ip}/status"
-                rssi_dbm = None
-                online = False
-
-                # 1. Quick probe to http://<ip>/status (1.5s timeout)
-                try:
-                    req = urllib.request.Request(status_url, headers={"User-Agent": "SmartStoragePoller/1.0"})
-                    with urllib.request.urlopen(req, timeout=1.5) as resp:
-                        if resp.status == 200:
-                            online = True
-                            raw = resp.read().decode("utf-8")
-                            try:
-                                status_data = json.loads(raw)
-                                rssi_dbm = status_data.get("rssi_dbm") or status_data.get("rssi")
-                            except Exception:
-                                pass
-                except Exception:
-                    online = False
-
-                # 2. If reachable (or for baseline refresh), fetch baseline & sync Supabase
-                now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-                sec_ip = str(raw_ip2).split("//")[-1].split("/")[0].strip() if raw_ip2 else None
-                if not sec_ip:
-                    for comp_row in db_compartments:
-                        if comp_row.get("shelf_id") == shelf_id:
-                            sec_ip = comp_row.get("secondary_ip_address") or "192.168.0.202"
-                            break
-                    if not sec_ip:
-                        sec_ip = "192.168.0.202"
-
-                if online:
-                    dev_id1 = f"ESP32_{shelf_id.replace('SHELF_', '')}"
-                    node_health = {
-                        "device_id": dev_id1,
-                        "mqtt_client_id": dev_id1,
-                        "shelf_id": shelf_id,
-                        "ip_address": clean_ip,
-                        "rssi_dbm": rssi_dbm,
-                        "status": "ONLINE",
-                        "angle": "BACK",
-                        "last_seen_at": now_iso,
-                        "last_seen_ts": time.time(),
-                    }
-                    mqtt_bridge.edge_nodes[dev_id1] = node_health
-                else:
-                    record_probe_result(clean_ip)
-
-                # Also probe secondary camera (CAM 2 Front Angle)
-                online_cam2 = False
-                rssi_cam2 = None
-                if sec_ip:
-                    try:
-                        req2 = urllib.request.Request(f"http://{sec_ip}/status", headers={"User-Agent": "SmartStoragePoller/1.0"})
-                        with urllib.request.urlopen(req2, timeout=1.5) as resp2:
-                            if resp2.status == 200:
-                                online_cam2 = True
-                                raw2 = resp2.read().decode("utf-8")
-                                try:
-                                    s_data2 = json.loads(raw2)
-                                    rssi_cam2 = s_data2.get("rssi_dbm") or s_data2.get("rssi")
-                                except Exception:
-                                    pass
-                    except Exception:
-                        online_cam2 = False
-
-                if online_cam2:
-                    dev_id2 = f"ESP32_{shelf_id.replace('SHELF_', '')}_CAM2"
-                    node_health2 = {
-                        "device_id": dev_id2,
-                        "mqtt_client_id": dev_id2,
-                        "shelf_id": shelf_id,
-                        "ip_address": sec_ip,
-                        "rssi_dbm": rssi_cam2,
-                        "status": "ONLINE",
-                        "angle": "FRONT",
-                        "last_seen_at": now_iso,
-                        "last_seen_ts": time.time(),
-                    }
-                    mqtt_bridge.edge_nodes[dev_id2] = node_health2
-                elif sec_ip:
-                    record_probe_result(sec_ip)
-
-                # Keep 30s baseline strictly in local RAM (sync_supabase=False) to prevent Base64 egress
-                if online or online_cam2:
-                    esp32_ref_manager.update_30s_baseline(
-                        shelf_id=shelf_id,
-                        esp32_ip=clean_ip,
-                        esp32_ip2=sec_ip,
-                        sync_supabase=False,
-                    )
-                else:
-                    cached = esp32_ref_manager.baseline_cache.get(shelf_id)
-                    if not cached or not cached.get("data_url"):
-                        esp32_ref_manager.update_30s_baseline(
-                            shelf_id=shelf_id,
-                            esp32_ip=clean_ip,
-                            esp32_ip2=sec_ip,
-                            sync_supabase=False,
-                        )
-
+            mappings = periodic_shelf_mappings()
+            shelf = schedule.take(mappings, time.monotonic())
+            if shelf is not None:
+                poll_periodic_shelf(shelf, mappings[shelf])
         except Exception as exc:
-            print(f"[CameraService Poller] Exception in baseline poller cycle: {exc}")
-
-        time.sleep(30.0)
+            print(f"[CameraService Poller] Exception in baseline poller slot: {exc}")
+        time.sleep(0.5)
 
 
 def ensure_local_tm_model_cached(model_id: str = "0cQO4TjOm") -> None:

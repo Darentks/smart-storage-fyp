@@ -180,26 +180,8 @@ class MQTTClientNode:
                 }
                 update_esp32_health_in_supabase(node_health)
 
-                # Resolve both CAM 1 (Back) and CAM 2 (Front) IPs so dual-camera baseline stitching is preserved
-                is_cam2 = str(device_id).upper().endswith("_CAM2")
-                base_mqtt_id = f"ESP32_{str(shelf_id).replace('SHELF_', '')}"
-                cam1_node = self.edge_nodes.get(base_mqtt_id) or self.edge_nodes.get(f"{base_mqtt_id}_CAM1") or {}
-                cam2_node = self.edge_nodes.get(f"{base_mqtt_id}_CAM2") or {}
-
-                ip1 = cam1_node.get("ip_address") if is_cam2 else (ip_address or cam1_node.get("ip_address"))
-                ip2 = (ip_address or cam2_node.get("ip_address")) if is_cam2 else cam2_node.get("ip_address")
-
-                if not ip1 or not ip2:
-                    try:
-                        for comp_row in list_esp32_cameras():
-                            if comp_row.get("shelf_id") == shelf_id:
-                                ip1 = ip1 or comp_row.get("ip_address")
-                                ip2 = ip2 or comp_row.get("secondary_ip_address")
-                                break
-                    except Exception:
-                        pass
-
-                self.esp32_validator.update_30s_baseline(shelf_id=shelf_id, esp32_ip=ip1, esp32_ip2=ip2)
+                # The HTTP poller owns resting baseline acceptance and change detection.
+                # MQTT health must not replace evidence before reconciliation.
 
         # 3. ESP32 Snapshot Verification / Capture Response
         elif topic.endswith("/response"):
