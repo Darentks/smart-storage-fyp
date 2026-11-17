@@ -451,15 +451,15 @@ def apply_inventory_delta_in_supabase(
     if current_quantity_hint is not None:
         quantity_before = int(current_quantity_hint)
     else:
-        quantity_before = 4
+        quantity_before = 6
         records = fallback.select(
             "compartments",
             f"?select=current_quantity&shelf_id=eq.{urllib.parse.quote(shelf_id)}&limit=1",
         )
         if records:
-            quantity_before = int(records[0].get("current_quantity", 4))
+            quantity_before = int(records[0].get("current_quantity", 6))
 
-    quantity_after = max(0, min(4, int(matched_box_count)))
+    quantity_after = max(0, min(6, int(matched_box_count)))
     if quantity_after == quantity_before:
         return None
 
@@ -490,7 +490,7 @@ def apply_inventory_delta_in_supabase(
         "after_image_url": None,
         "diff_score": float(diff_score) if diff_score is not None else None,
         "similarity_score": float(similarity_score) if similarity_score is not None else None,
-        "matched_box_count": int(matched_box_count),
+        "matched_box_count": quantity_after,
         "scenario_label": scenario_label,
         "state_delta": "ITEM_REMOVED" if quantity_after < quantity_before else "ITEM_RETURNED",
         "quantity_before": quantity_before,

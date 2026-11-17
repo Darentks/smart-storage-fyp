@@ -838,7 +838,7 @@
       <div class="panel-header">
         <div>
           <h2 class="panel-title">&#128247; Panel 2 &bull; Dual ESP32-CAM (<code>CAM1 Back</code> +
-            <code>CAM2 Front</code>) &amp; Google Teachable Machine (5-Scenario) Live Validator
+            <code>CAM2 Front</code>) &amp; Google Teachable Machine (7-Scenario) Live Validator
           </h2>
           <p class="panel-desc">Real-time dual-camera perspective (CAM 1 Back + CAM 2 Front) &amp; client-side Google
             Teachable Machine AI classification into 5 physical inventory scenarios.</p>
@@ -1547,18 +1547,30 @@
     let homeTestFrontDataUrl = null;
 
     // =========================================================================
-    // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 5 CORE SCENARIOS
+    // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 7 CORE SCENARIOS
     // =========================================================================
     const DEFAULT_TM_MODEL_URL = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
     const SCENARIO_LABELS = {
-      4: "Scenario 1: 4/4 Boxes Present",
-      3: "Scenario 2: 3/4 Boxes Present",
-      2: "Scenario 3: 2/4 Boxes Present",
-      1: "Scenario 4: 1/4 Box Present",
-      0: "Scenario 5: 0/4 No Box Present"
+      6: "Scenario 1: 6/6 Boxes Present",
+      5: "Scenario 2: 5/6 Boxes Present",
+      4: "Scenario 3: 4/6 Boxes Present",
+      3: "Scenario 4: 3/6 Boxes Present",
+      2: "Scenario 5: 2/6 Boxes Present",
+      1: "Scenario 6: 1/6 Box Present",
+      0: "Scenario 7: 0/6 No Box Present"
     };
 
     window.tmModel = null;
+
+    function requireSixBoxModel(model) {
+      const required = [0, 1, 2, 3, 4].map(n => `Back_${n}_Boxes`)
+        .concat([0, 1, 2].map(n => `Front_${n}_Boxes`));
+      const labels = model.getClassLabels().map(label => String(label).trim());
+      if (labels.length !== 8 || !required.every(label => labels.includes(label))) {
+        window.tmModel = null;
+        throw new Error('Six-box counting requires 8 classes: Back_0..4_Boxes and Front_0..2_Boxes. Retrain and load the new model.');
+      }
+    }
 
     async function loadTeachableMachineModel() {
       if (!window.tmImage) {
@@ -1584,6 +1596,7 @@
       try {
         console.log(`[TM Loader] Loading TM model via local bridge proxy: ${proxyModelURL}`);
         window.tmModel = await tmImage.load(proxyModelURL, proxyMetadataURL);
+        requireSixBoxModel(window.tmModel);
         console.log('[TM Loader] TM Model loaded successfully via proxy. Classes:', window.tmModel.getClassLabels());
         showToast('Teachable Machine model loaded fresh via proxy!', 'success');
         if (loadTmModelBtn) {
@@ -1603,6 +1616,7 @@
         const directMetadataURL = `${rawUrl}metadata.json?t=${ts}`;
         console.log(`[TM Loader] Loading Teachable Machine model directly from: ${directModelURL}`);
         window.tmModel = await tmImage.load(directModelURL, directMetadataURL);
+        requireSixBoxModel(window.tmModel);
         console.log('[TM Loader] Teachable Machine Model loaded directly. Classes:', window.tmModel.getClassLabels());
         showToast('Teachable Machine model loaded directly from cloud!', 'success');
         if (loadTmModelBtn) {
@@ -1616,6 +1630,7 @@
         try {
           // Guardrail 3: Offline local fallback when lab internet is disconnected
           window.tmModel = await tmImage.load(`./models/tm_0cQO4TjOm/model.json?t=${ts}`, `./models/tm_0cQO4TjOm/metadata.json?t=${ts}`);
+        requireSixBoxModel(window.tmModel);
           console.log('[TM Loader] Offline Local Teachable Machine Model loaded successfully.');
           showToast('Loaded offline local Teachable Machine model (./models/tm_0cQO4TjOm/)!', 'info');
           if (loadTmModelBtn) {
@@ -1626,7 +1641,7 @@
           }
         } catch (offlineErr) {
           console.error('[TM Loader] Both remote and local offline TM loads failed:', offlineErr);
-          showToast(`TM Model load failed: ${err.message}`, 'error');
+          showToast(`TM Model load failed: ${offlineErr.message}`, 'error');
           if (loadTmModelBtn) {
             loadTmModelBtn.disabled = false;
             loadTmModelBtn.textContent = 'Load TM Model';
@@ -1712,6 +1727,15 @@
 
     async function predictDualCamerasWithTM(backImgEl, frontImgEl, overrideBoost) {
       if (!window.tmModel) return null;
+      const requiredLabels = [0, 1, 2, 3, 4].map(n => `Back_${n}_Boxes`)
+        .concat([0, 1, 2].map(n => `Front_${n}_Boxes`));
+      const labels = window.tmModel.getClassLabels().map(label => String(label).trim());
+      if (labels.length !== requiredLabels.length || !requiredLabels.every(label => labels.includes(label))) {
+        return { totalBoxes: null, backCount: 0, frontCount: 0, confidence: 0,
+          backConfidence: 0, frontConfidence: 0, backClass: 'Back_Unmatched', frontClass: 'Front_Unmatched',
+          degraded: true, scenarioLabel: 'Validation aborted: Load an 8-class model (Back 0?4, Front 0?2)' };
+      }
+
 
       const isUsable = (img) => {
         if (!img) return false;
@@ -1762,38 +1786,38 @@
         };
       }
 
-      // 1. Predict Back Camera (strictly filter with /^back_(\d+)/i)
+      // 1. Predict Back Camera (strictly filter with /^Back_([0-4])_Boxes$/i)
       let bestBack = null;
       let backCount = 0;
       let backNormProb = 0;
       let backSum = 0;
       try {
         const backPreds = await window.tmModel.predict(backTarget);
-        const backOnly = backPreds.filter(p => /^back_(\d+)/i.test(String(p.className || '').trim()));
+        const backOnly = backPreds.filter(p => /^Back_([0-4])_Boxes$/i.test(String(p.className || '').trim()));
         if (backOnly.length > 0) {
           bestBack = backOnly.reduce((a, b) => a.probability > b.probability ? a : b);
           backSum = backOnly.reduce((s, p) => s + p.probability, 0);
           backNormProb = backSum > 0 ? bestBack.probability / backSum : 0;
-          const m = String(bestBack.className).trim().match(/^back_(\d+)/i);
-          backCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
+          const m = String(bestBack.className).trim().match(/^Back_([0-4])_Boxes$/i);
+          backCount = m ? Math.min(4, Math.max(0, parseInt(m[1], 10))) : 0;
         }
       } catch (e) {
         console.warn('[TM] Back camera predict failed:', e);
       }
 
-      // 2. Predict Front Camera (strictly filter with /^front_(\d+)/i)
+      // 2. Predict Front Camera (strictly filter with /^Front_([0-2])_Boxes$/i)
       let bestFront = null;
       let frontCount = 0;
       let frontNormProb = 0;
       let frontSum = 0;
       try {
         const frontPreds = await window.tmModel.predict(frontTarget);
-        const frontOnly = frontPreds.filter(p => /^front_(\d+)/i.test(String(p.className || '').trim()));
+        const frontOnly = frontPreds.filter(p => /^Front_([0-2])_Boxes$/i.test(String(p.className || '').trim()));
         if (frontOnly.length > 0) {
           bestFront = frontOnly.reduce((a, b) => a.probability > b.probability ? a : b);
           frontSum = frontOnly.reduce((s, p) => s + p.probability, 0);
           frontNormProb = frontSum > 0 ? bestFront.probability / frontSum : 0;
-          const m = String(bestFront.className).trim().match(/^front_(\d+)/i);
+          const m = String(bestFront.className).trim().match(/^Front_([0-2])_Boxes$/i);
           frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
       } catch (e) {
@@ -1815,8 +1839,8 @@
         };
       }
 
-      // 3. Compute totalBoxes = backCount + frontCount (0..4) and map to the 5 Scenarios (4/4 down to 0/4)
-      const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
+      // 3. Compute totalBoxes = backCount + frontCount (0..6) and map to the 7 Scenarios (6/6 down to 0/6)
+      const totalBoxes = Math.min(6, Math.max(0, backCount + frontCount));
       const avgConfidence = Number((((backNormProb + frontNormProb) / 2) * 100).toFixed(1));
 
       return {
@@ -1827,7 +1851,7 @@
         frontCount,
         frontConfidence: Number((frontNormProb * 100).toFixed(1)),
         totalBoxes,
-        scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/4 Boxes`,
+        scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/6 Boxes`,
         confidence: avgConfidence,
         degraded: false
       };
@@ -2226,10 +2250,13 @@
       }
     }
 
-    async function fetchLiveAnglePreview() {
-      const shelfId = refShelfSelect.value;
-      const ip1 = refEspIpInput.value.trim();
-      const ip2 = refEspIp2Input.value.trim();
+    function fetchLiveAnglePreview() {
+      return validationWorker.submit({shelfId:refShelfSelect.value, source:'MANUAL', kind:'PREVIEW',
+        ip1:refEspIpInput.value.trim(), ip2:refEspIp2Input.value.trim()});
+    }
+    async function fetchLiveAnglePreviewLocked(shelfId, assignedIp1, assignedIp2) {
+      const ip1 = assignedIp1;
+      const ip2 = assignedIp2;
       const boostSelect = document.getElementById('visionBoostSelect');
       const boostVal = boostSelect ? boostSelect.value : 'auto';
       const t0 = performance.now();
@@ -2327,21 +2354,8 @@
     // =========================================================================
     // OFFLINE HOME PHOTO TESTER
     // =========================================================================
-    async function runOfflinePhotoTest() {
-      const shelfId = refShelfSelect.value;
-      if (validatingShelves.has(shelfId)) return;
-      validatingShelves.add(shelfId);
-      let token;
-      try {
-        ({token} = await bridgePost('/validation_begin', {shelf_id:shelfId}));
-        if (!token) throw new Error('Shelf is already being validated');
-        await runOfflinePhotoTestLocked(shelfId, token);
-      } catch (error) {
-        showToast(`Photo test: ${error.message}`, 'error');
-      } finally {
-        if (token) await bridgePost('/validation_end', {shelf_id:shelfId, token}).catch(console.warn);
-        validatingShelves.delete(shelfId);
-      }
+    function runOfflinePhotoTest() {
+      return validationWorker.submit({shelfId:refShelfSelect.value, source:'MANUAL', kind:'PHOTO'});
     }
     async function runOfflinePhotoTestLocked(shelfId, validationToken) {
       const file1 = testBackFileInput && testBackFileInput.files ? testBackFileInput.files[0] : null;
@@ -2472,8 +2486,8 @@
       tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
 
       // 5. Send result to POST /esp32_validate or directly update Supabase
-      const comp = compartmentsData.find(c => c.shelf_id === shelfId) || { shelf_id: shelfId, current_quantity: 4 };
-      const beforeBoxes = comp.current_quantity != null ? comp.current_quantity : 4;
+      const comp = compartmentsData.find(c => c.shelf_id === shelfId) || { shelf_id: shelfId, current_quantity: 6 };
+      const beforeBoxes = comp.current_quantity != null ? comp.current_quantity : 6;
       const ip1 = refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201';
       const ip2 = refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202';
 
@@ -2548,23 +2562,183 @@
     }
     function validPeriodicPrediction(result) {
       return !!result && !result.degraded && Number.isInteger(result.totalBoxes)
-        && result.totalBoxes >= 0 && result.totalBoxes <= 4
+        && result.totalBoxes >= 0 && result.totalBoxes <= 6
         && Number.isFinite(result.confidence) && result.confidence >= 65;
     }
     function periodicCountsAgree(first, second) {
       return validPeriodicPrediction(first) && validPeriodicPrediction(second)
         && first.totalBoxes === second.totalBoxes;
     }
-    async function runPeriodicRecheckValidation(shelfId, trigger) {
-      if (validatingShelves.has(shelfId)) return;
-      validatingShelves.add(shelfId);
-      let token;
+    const VALIDATION_MAX_ROUNDS = 3;
+    async function captureConfirmedPair(capture) {
+      let captured = false;
+      const fresh = async round => {
+        if (captured) await new Promise(resolve => setTimeout(resolve, PERIODIC_CONFIRM_DELAY_MS));
+        captured = true;
+        const sample = await capture(round);
+        if (!validPeriodicPrediction(sample?.prediction)) throw new Error('Insufficient dual-angle evidence');
+        return sample;
+      };
+      for (let round = 0; round < VALIDATION_MAX_ROUNDS; round++) {
+        try {
+          const first = await fresh(round);
+          const second = await fresh(round);
+          if (periodicCountsAgree(first.prediction, second.prediction)) return {first, second};
+          console.warn('[Validation Retry]', 'Counts disagree; taking fresh images');
+        } catch (error) {
+          console.warn('[Validation Retry]', error.message);
+        }
+      }
+      return null;
+    }
+    function showUnresolvedValidation(shelfId) {
+      showToast(`${shelfId}: Unresolved - will recheck automatically. Check camera visibility and lighting.`, 'warning');
+    }
+    // Metadata-only queue. One bridge lease covers every shelf and dashboard window.
+    class ValidationQueue {
+      constructor(options) {
+        Object.assign(this, options);
+        this.items = [];
+        this.active = null;
+        this.running = false;
+        this.waiting = null;
+        this.sequence = 0;
+      }
+      submit(job) {
+        const existing = this.active?.shelfId === job.shelfId ? this.active
+          : this.items.find(item => item.shelfId === job.shelfId);
+        if (existing) {
+          // Upgrade waiting backup work when a live/manual event arrives.
+          if (existing !== this.active && existing.source === 'PERIODIC_RECHECK' && job.source !== 'PERIODIC_RECHECK') {
+            Object.assign(existing, {trigger:undefined, kind:undefined, action:undefined}, job, {createdAt: job.createdAt || Date.now()});
+            existing.ready = this.register ? this.register(existing).catch(this.onError) : Promise.resolve();
+          }
+          return existing.promise;
+        }
+        if (this.items.length >= 20) return Promise.resolve(null);
+        const item = {...job, createdAt: job.createdAt || Date.now(), sequence: ++this.sequence,
+          requestId: `validation-${Date.now()}-${Math.random().toString(36).slice(2)}`};
+        item.promise = new Promise(resolve => { item.resolve = resolve; });
+        this.items.push(item);
+        item.ready = this.register ? this.register(item).catch(this.onError) : Promise.resolve();
+        this.reserved.add(item.shelfId);
+        if (!this.running) {
+          this.running = true;
+          Promise.resolve().then(() => this.drain());
+        }
+        return item.promise;
+      }
+      async drain() {
+        try {
+          while (this.items.length) {
+            this.items.sort((a,b) => Number(a.source === 'PERIODIC_RECHECK') - Number(b.source === 'PERIODIC_RECHECK')
+              || a.createdAt-b.createdAt || a.sequence-b.sequence);
+            const item = this.items[0];
+            if (this.waiting && (this.waiting !== item || this.waitingSource !== item.source)) {
+              await this.cancel(this.waiting).catch(this.onError);
+              this.waiting = null;
+            }
+            let token;
+            let result = null;
+            let failed = false;
+            try {
+              if (item.trigger && Date.now()-item.createdAt >= 60000) {
+                await this.cancel(item);
+                this.processed(item.trigger.trigger_id);
+              } else {
+                this.waiting = item;
+                this.waitingSource = item.source;
+                await item.ready;
+                token = await this.acquire(item);
+                if (!token) { await this.pause(); continue; }
+                this.waiting = null;
+                this.active = item;
+                this.items.shift();
+                if (!item.trigger || await this.claim(item)) {
+                  item.claimed = !!item.trigger;
+                  if (item.trigger) this.processed(item.trigger.trigger_id);
+                  result = await this.execute(item, token);
+                } else this.processed(item.trigger.trigger_id);
+              }
+            } catch (error) {
+              failed = true;
+              await this.cancel(item).catch(this.onError);
+              this.onError(error);
+            } finally {
+              if (token) await this.release(item, token).catch(this.onError);
+              // A null lease is a wait, not completion. Keep its queue entry/reservation.
+              if (failed || token || this.items[0] !== item || (item.trigger && Date.now()-item.createdAt >= 60000)) {
+                this.items = this.items.filter(queued => queued !== item);
+                this.reserved.delete(item.shelfId);
+                this.active = null;
+                item.resolve(result);
+              }
+            }
+          }
+        } finally {
+          if (this.waiting) await this.cancel(this.waiting).catch(this.onError);
+          this.waiting = null;
+          this.running = false;
+          if (this.items.length) {
+            this.running = true;
+            Promise.resolve().then(() => this.drain());
+          }
+        }
+      }
+    }
+    const MAX_PROCESSED_TRIGGER_IDS = 200;
+    function rememberProcessedTrigger(id) {
+      processedTriggerIds.delete(id);
+      processedTriggerIds.add(id);
+      while (processedTriggerIds.size > MAX_PROCESSED_TRIGGER_IDS) {
+        processedTriggerIds.delete(processedTriggerIds.values().next().value);
+      }
+    }
+    let nextValidationQueueErrorAt = 0;
+    function showValidationQueueError(error) {
+      const message = error.message || String(error);
+      console.warn('[Validation Queue]', message);
+      if (Date.now() < nextValidationQueueErrorAt) return;
+      nextValidationQueueErrorAt = Date.now() + 5000;
+      showToast(message.includes('HTTP 404')
+        ? 'Bridge queue endpoint missing. Restart the updated camera_service.py and reload all dashboard windows.'
+        : `Validation queue failed: ${message}`, 'error');
+    }
+    const validationWorker = new ValidationQueue({
+      reserved: validatingShelves,
+      register: item => bridgePost('/validation_enqueue', {
+        shelf_id:item.shelfId, source:item.source, request_id:item.requestId, created_at:item.createdAt/1000
+      }),
+      acquire: async item => (await bridgePost('/validation_begin', {
+        shelf_id:item.shelfId, source:item.source, request_id:item.requestId, created_at:item.createdAt/1000
+      })).token,
+      cancel: item => bridgePost('/validation_cancel', {request_id:item.requestId}),
+      claim: async item => (await bridgePost('/cctv_trigger_claim', {trigger_id:item.trigger.trigger_id})).claimed,
+      execute: (item, token) => item.kind === 'PREVIEW' ? fetchLiveAnglePreviewLocked(item.shelfId, item.ip1, item.ip2)
+        : item.kind === 'PHOTO' ? runOfflinePhotoTestLocked(item.shelfId, token)
+        : item.source === 'PERIODIC_RECHECK' ? executePeriodicRecheckValidation(item.shelfId, item.trigger, token)
+        : executeFullDualCamValidation(item.shelfId, item.action || 'BORROW', item.source === 'CCTV', token),
+      release: (item, token) => bridgePost('/validation_end', {
+        shelf_id:item.shelfId, token, trigger_id:item.claimed ? item.trigger?.trigger_id : undefined
+      }),
+      processed: rememberProcessedTrigger,
+      pause: () => new Promise(resolve => setTimeout(resolve, 1000)),
+      onError: showValidationQueueError
+    });
+    function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
+      return validationWorker.submit({shelfId, action, source:isCctvTrigger ? 'CCTV' : 'MANUAL'});
+    }
+    function runPeriodicRecheckValidation(shelfId, trigger) {
+      return validationWorker.submit({shelfId, trigger, source:'PERIODIC_RECHECK',
+        createdAt: trigger.timestamp ? trigger.timestamp*1000 : Date.parse(trigger.created_at) || Date.now()});
+    }
+
+    async function executePeriodicRecheckValidation(shelfId, trigger, token) {
       try {
-        ({token} = await bridgePost('/validation_begin', {shelf_id: shelfId}));
-        if (!token) throw new Error('Shelf busy; periodic recheck deferred');
         const comp = compartmentsData.find(c => c.shelf_id === shelfId);
         if (!comp?.ip_address || !comp?.secondary_ip_address) throw new Error('Both assigned cameras are required');
         const capture = async () => {
+          if (!(await bridgePost('/validation_renew', {shelf_id:shelfId, token})).renewed) throw new Error('Validation lease expired');
           // Fixed lighting/processing for both confirmation samples.
           const response = await fetch(`${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(comp.ip_address)}&ip2=${encodeURIComponent(comp.secondary_ip_address)}&shelf_id=${encodeURIComponent(shelfId)}&boost=off&duty=90&_t=${Date.now()}`, {cache:'no-store'});
           if (!response.ok) throw new Error('Periodic dual-camera capture failed');
@@ -2579,11 +2753,9 @@
           if (!validPeriodicPrediction(prediction)) throw new Error('Periodic confidence insufficient');
           return {preview, prediction};
         };
-        const first = await capture();
-        // Always confirm, even when local quantity matches: browser inventory may be stale.
-        await new Promise(resolve => setTimeout(resolve, PERIODIC_CONFIRM_DELAY_MS));
-        const second = await capture();
-        if (!periodicCountsAgree(first.prediction, second.prediction)) throw new Error('Periodic counts disagree; inventory unchanged');
+        const confirmed = await captureConfirmedPair(capture);
+        if (!confirmed) { showUnresolvedValidation(shelfId); return null; }
+        const {first, second} = confirmed;
         const result = await bridgePost('/esp32_validate', {
           shelf_id: shelfId, source: 'PERIODIC_RECHECK', expected_action: 'RECHECK',
           validation_token: token, ip: comp.ip_address, ip2: comp.secondary_ip_address,
@@ -2595,21 +2767,16 @@
         });
         if (result.comparison?.delta) {
           const delta = result.comparison.delta;
-          showToast(`${shelfId}: ${result.comparison.state_delta} (${delta > 0 ? '+' : ''}${delta}) ? periodic recheck`, 'info');
+          showToast(`${shelfId}: ${result.comparison.state_delta} (${delta > 0 ? '+' : ''}${delta}) \u2014 periodic recheck`, 'info');
           if (result.log) prependLatestAction(result.log);
         }
         await refreshAllData();
       } catch (error) {
         console.warn('[Periodic Recheck]', error.message);
-      } finally {
-        if (token) await bridgePost('/validation_end', {shelf_id:shelfId, token, trigger_id:trigger.trigger_id}).catch(console.warn);
-        validatingShelves.delete(shelfId);
       }
     }
 
-    async function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
-      if (validatingShelves.has(shelfId)) return null;
-      validatingShelves.add(shelfId);
+    async function executeFullDualCamValidation(shelfId, action, isCctvTrigger, validationToken) {
       const comp = compartmentsData.find(c => c.shelf_id === shelfId);
       const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201');
       const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202');
@@ -2617,10 +2784,7 @@
       const prefix = isCctvTrigger ? 'CCTV Trigger' : 'Dual-Camera Validation';
       showToast(`${prefix}: Running validation for ${shelfId} (${action})...`, 'info');
 
-      let validationToken;
       try {
-        ({token: validationToken} = await bridgePost('/validation_begin', {shelf_id: shelfId}));
-        if (!validationToken) throw new Error('Another dashboard is validating this shelf; try again shortly');
         const loadImgPromise = (img, src) => new Promise(resolve => {
           img.onload = () => resolve(true);
           img.onerror = () => resolve(false);
@@ -2628,6 +2792,7 @@
         });
 
         const fetchSnapshots = async (stage) => {
+          if (!(await bridgePost('/validation_renew', {shelf_id:shelfId, token:validationToken})).renewed) throw new Error('Validation lease expired');
           const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(stage.boost)}&duty=${stage.duty}&_t=${Date.now()}`;
           const prevResp = await fetch(previewUrl, { cache: 'no-store' });
           if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
@@ -2704,30 +2869,42 @@
         const uiBoost = document.getElementById('visionBoostSelect')?.value || 'auto';
         const attempts = [
           { delay: 0, boost: uiBoost, duty: 90 },
-          { delay: 650, boost: 'auto', duty: 135 },
-          { delay: 900, boost: 'high', duty: 185 }
+          { delay: 2000, boost: 'auto', duty: 135 },
+          { delay: 2000, boost: 'high', duty: 185 }
         ];
         let bestValidAttempt = null;
-        for (const stage of attempts) {
-          if (stage.delay) await new Promise(resolve => setTimeout(resolve, stage.delay));
-          try {
+        if (isCctvTrigger) {
+          // Even a first NO_CHANGE count gets a delayed fresh confirmation before committing.
+          const confirmed = await captureConfirmedPair(async round => {
+            const stage = attempts[round];
             const preview = await fetchSnapshots(stage);
-            const bSrc = preview.image_back || null;
-            const fSrc = preview.image_front || null;
-            updatePreviewUI(preview, bSrc, fSrc);
-            const prediction = await executePrediction(bSrc, fSrc, stage.boost);
-            if (prediction && !prediction.degraded && prediction.totalBoxes !== null && Number.isFinite(prediction.confidence) && prediction.confidence >= 65.0) {
-              if (!bestValidAttempt || prediction.confidence > bestValidAttempt.prediction.confidence) {
-                bestValidAttempt = { prediction, preview, settings: stage };
+            updatePreviewUI(preview, preview.image_back, preview.image_front);
+            const prediction = await executePrediction(preview.image_back, preview.image_front, stage.boost);
+            return {prediction, preview, settings:stage};
+          });
+          bestValidAttempt = confirmed?.second || null;
+        } else {
+          for (const stage of attempts) {
+            if (stage.delay) await new Promise(resolve => setTimeout(resolve, stage.delay));
+            try {
+              const preview = await fetchSnapshots(stage);
+              const bSrc = preview.image_back || null;
+              const fSrc = preview.image_front || null;
+              updatePreviewUI(preview, bSrc, fSrc);
+              const prediction = await executePrediction(bSrc, fSrc, stage.boost);
+              if (prediction && !prediction.degraded && prediction.totalBoxes !== null && Number.isFinite(prediction.confidence) && prediction.confidence >= 65.0) {
+                if (!bestValidAttempt || prediction.confidence > bestValidAttempt.prediction.confidence) {
+                  bestValidAttempt = { prediction, preview, settings: stage };
+                }
+                if (prediction.confidence >= 75.0) break;
               }
-              if (prediction.confidence >= 75.0) break;
+            } catch (error) {
+              console.warn('[DualCam] Capture attempt failed:', error.message);
             }
-          } catch (error) {
-            console.warn('[DualCam] Capture attempt failed:', error.message);
           }
         }
         if (!bestValidAttempt) {
-          const abortMsg = 'Validation aborted after 3 attempts: dual-angle evidence or confidence is insufficient.';
+          const abortMsg = `${shelfId}: Unresolved - will recheck automatically. Dual-angle evidence or stable counts are insufficient.`;
           if (tmLivePredictionBanner) {
             tmLivePredictionBanner.style.display = 'block';
             tmLivePredictionBanner.textContent = abortMsg;
@@ -2799,9 +2976,6 @@
         console.error('[runFullDualCamValidation] Error:', err);
         showToast(`Dual-camera validation failed: ${err.message}`, 'error');
         return null;
-      } finally {
-        if (validationToken) await bridgePost('/validation_end', {shelf_id:shelfId, token:validationToken}).catch(console.warn);
-        validatingShelves.delete(shelfId);
       }
     }
 
@@ -2819,7 +2993,7 @@
       mqtt_client_id: `ESP32_R1_C${i + 1}`, secondary_mqtt_client_id: `ESP32_R1_C${i + 1}_CAM2`,
       camera_name: `ESP32 Dual Node R1-C${i + 1}`,
       ip_address: `192.168.0.${201 + i * 2}`, secondary_ip_address: `192.168.0.${202 + i * 2}`,
-      current_quantity: 4, max_capacity: 4, status: 'OFFLINE'
+      current_quantity: 6, max_capacity: 6, status: 'OFFLINE'
     }));
 
     let lastCloudCompartmentsFetchMs = 0;
@@ -2859,26 +3033,13 @@
     }
 
     // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
-    async function consumeCctvTrigger(trigger) {
-      if (!trigger.trigger_id || processedTriggerIds.has(trigger.trigger_id) || validatingShelves.has(trigger.shelf_id)) return;
-      if (trigger.source === 'CCTV' && trigger.consensus_met !== true) return;
-      if (!ALL_SHELF_IDS.includes(trigger.shelf_id)) return;
-      processedTriggerIds.add(trigger.trigger_id);
-      try {
-        const response = await fetch(`${getBridgeUrl()}/cctv_trigger_claim`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ trigger_id: trigger.trigger_id })
-        });
-        if (!response.ok) throw new Error(`Trigger claim failed: HTTP ${response.status}`);
-        const result = await response.json();
-        if (result.claimed) {
-          if (trigger.source === 'PERIODIC_RECHECK') await runPeriodicRecheckValidation(trigger.shelf_id, trigger);
-          else await runFullDualCamValidation(trigger.shelf_id, trigger.expected_action || 'BORROW', true);
-        }
-      } catch (error) {
-        processedTriggerIds.delete(trigger.trigger_id);
-        console.warn('[CCTV Integration]', error.message);
-      }
+    function consumeCctvTrigger(trigger) {
+      if (!trigger.trigger_id || processedTriggerIds.has(trigger.trigger_id)) return Promise.resolve(null);
+      if (trigger.source === 'CCTV' && trigger.consensus_met !== true) return Promise.resolve(null);
+      if (!ALL_SHELF_IDS.includes(trigger.shelf_id)) return Promise.resolve(null);
+      return validationWorker.submit({shelfId:trigger.shelf_id, trigger, source:trigger.source || 'CCTV',
+        action:trigger.expected_action || 'BORROW',
+        createdAt:trigger.timestamp ? trigger.timestamp*1000 : Date.parse(trigger.created_at) || Date.now()});
     }
 
     function mergeBridgeTelemetry(bridgeJson) {
@@ -3001,7 +3162,12 @@
     let lastLogsSig = '';
 
     function normalizeLatestAction(entry) {
-      const log = entry && typeof entry === 'object' ? entry : {};
+      const log = { ...(entry && typeof entry === 'object' ? entry : {}) };
+      for (const key of ['quantity_before', 'quantity_after', 'matched_box_count']) {
+        if (log[key] != null && Number.isFinite(Number(log[key]))) {
+          log[key] = Math.max(0, Math.min(6, Math.trunc(Number(log[key]))));
+        }
+      }
       const delta = Number(log.quantity_after) - Number(log.quantity_before);
       const state = ['ITEM_REMOVED', 'ITEM_RETURNED', 'NO_CHANGE'].includes(log.state_delta)
         ? log.state_delta : (delta < 0 ? 'ITEM_REMOVED' : delta > 0 ? 'ITEM_RETURNED' : 'NO_CHANGE');
@@ -3090,8 +3256,8 @@
 
       compartmentsGrid.innerHTML = items.map((comp) => {
         const isOnline = (comp.status || '').toUpperCase() === 'ONLINE';
-        const qty = comp.current_quantity ?? 4;
-        const maxQty = comp.max_capacity ?? 4;
+        const qty = comp.current_quantity ?? 6;
+        const maxQty = 6;
         const rssi = comp.rssi_dbm != null ? `${comp.rssi_dbm} dBm` : 'N/A';
 
         let slotPillsHtml = '';
@@ -3178,7 +3344,7 @@
         const timeStr = log.created_at ? new Date(log.created_at).toLocaleString() : 'Just now';
         const diffText = log.diff_score != null ? `${log.diff_score}%` : 'N/A';
         const tmConfText = log.similarity_score != null ? `${log.similarity_score}%` : 'N/A';
-        const scenarioText = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/4 Boxes` : 'N/A');
+        const scenarioText = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/6 Boxes` : 'N/A');
 
         const beforeImg = log.before_image_url
           ? `<img src="${log.before_image_url}" alt="Baseline Before [CAM1 | CAM2]" />`
@@ -3261,7 +3427,7 @@
 
       comparisonLogsData.forEach(log => {
         const deltaNum = (log.quantity_after ?? 0) - (log.quantity_before ?? 0);
-        const scenarioVal = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/4 Boxes` : "");
+        const scenarioVal = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/6 Boxes` : "");
         const row = [
           log.log_id || "",
           `"${log.created_at || ""}"`,

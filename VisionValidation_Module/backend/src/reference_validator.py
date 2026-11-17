@@ -55,11 +55,13 @@ except ImportError:
 # =============================================================================
 
 SCENARIO_MAP: Dict[int, str] = {
-    4: "Scenario 1: 4/4 Boxes Present",
-    3: "Scenario 2: 3/4 Boxes Present",
-    2: "Scenario 3: 2/4 Boxes Present",
-    1: "Scenario 4: 1/4 Box Present",
-    0: "Scenario 5: 0/4 No Box Present",
+    6: "Scenario 1: 6/6 Boxes Present",
+    5: "Scenario 2: 5/6 Boxes Present",
+    4: "Scenario 3: 4/6 Boxes Present",
+    3: "Scenario 4: 3/6 Boxes Present",
+    2: "Scenario 5: 2/6 Boxes Present",
+    1: "Scenario 6: 1/6 Box Present",
+    0: "Scenario 7: 0/6 No Box Present",
 }
 
 
@@ -141,20 +143,16 @@ def enhance_low_light_frame(frame_bgr: Any, boost_mode: str = "auto") -> Any:
         return frame_bgr
 
 
-def synthesize_compartment_frame(label: str = "ESP32-CAM", box_count: int = 4) -> Any:
+def synthesize_compartment_frame(label: str = "ESP32-CAM", box_count: int = 6) -> Any:
     """Synthesizes an offline placeholder frame for testing when hardware is disconnected."""
     if not _OPENCV_AVAILABLE:
         return None
     synth = np.full((480, 640, 3), (30, 32, 38), dtype=np.uint8)
-    # Draw 2x2 grid divider
-    cv2.line(synth, (320, 40), (320, 440), (70, 75, 85), 2)
-    cv2.line(synth, (40, 240), (600, 240), (70, 75, 85), 2)
-
+    box_count = max(0, min(6, int(box_count)))
     quads = [
-        ("Slot 1 (TL)", (60, 80, 280, 220), (0, 180, 255)),
-        ("Slot 2 (TR)", (360, 80, 580, 220), (0, 220, 100)),
-        ("Slot 3 (BL)", (60, 260, 280, 400), (255, 160, 0)),
-        ("Slot 4 (BR)", (360, 260, 580, 400), (220, 80, 255)),
+        (f"Slot {row * 3 + col + 1}", (40 + col * 200, 80 + row * 180,
+         220 + col * 200, 220 + row * 180), (0, 180, 255))
+        for row in range(2) for col in range(3)
     ]
 
     for idx, (qname, bbox, qcolor) in enumerate(quads):
@@ -167,7 +165,7 @@ def synthesize_compartment_frame(label: str = "ESP32-CAM", box_count: int = 4) -
             cv2.rectangle(synth, (x1, y1), (x2, y2), (90, 95, 105), 1)
             cv2.putText(synth, f"{qname} [EMPTY]", (x1 + 15, y1 + 75), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
 
-    cv2.putText(synth, f"{label} | Boxes: {box_count}/4", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (240, 240, 240), 2)
+    cv2.putText(synth, f"{label} | Boxes: {box_count}/6", (30, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (240, 240, 240), 2)
     return synth
 
 
@@ -325,7 +323,7 @@ class ESP32ReferenceManager:
         esp32_ip: Optional[str] = None,
         mode: str = "live",
         timeout: float = 3.0,
-        box_count_fallback: int = 4,
+        box_count_fallback: int = 6,
         flash: Optional[int] = None,
         duty: Optional[int] = None,
         boost_mode: Optional[str] = None,
@@ -424,7 +422,7 @@ class ESP32ReferenceManager:
             frame2, url2 = _fetch_single_with_retry(esp32_ip2)
 
         if frame1 is None and frame2 is None:
-            synth = synthesize_compartment_frame(f"DUAL-CAM ({mode.upper()})", box_count=4)
+            synth = synthesize_compartment_frame(f"DUAL-CAM ({mode.upper()})", box_count=6)
             combined_url = encode_bgr_to_data_url(synth)
             return synth, combined_url, None, None
 
@@ -492,7 +490,7 @@ class ESP32ReferenceManager:
             url_back = data_url
 
         if frame_bgr is None:
-            synth = synthesize_compartment_frame(f"{shelf_id} (BASELINE)", box_count=4)
+            synth = synthesize_compartment_frame(f"{shelf_id} (BASELINE)", box_count=6)
             frame_bgr = synth
             data_url = encode_bgr_to_data_url(synth)
 
@@ -549,7 +547,7 @@ class ESP32ReferenceManager:
         mqtt_client_id: str,
         shelf_id: str,
         expected_action: str = "BORROW",
-        current_quantity: int = 4,
+        current_quantity: int = 6,
         esp32_ip: Optional[str] = None,
         esp32_ip2: Optional[str] = None,
         after_data_url: Optional[str] = None,
@@ -564,7 +562,7 @@ class ESP32ReferenceManager:
         Step A: Fetch post-trigger Dual-Cam frame (CAM 1 Back + CAM 2 Front stitched).
         Step B: Retrieve latest 30-second baseline frame from self.baseline_cache[shelf_id].
         Step C: Compute diff_score = self._compute_absdiff_score(before_bgr, after_bgr).
-        Step D: Evaluate Teachable Machine Dual-Cam classification result (0..4 boxes):
+        Step D: Evaluate Teachable Machine Dual-Cam classification result (0..6 boxes):
                - matched_box_count = int(predicted_box_count)
                - matched_scenario_label = SCENARIO_MAP[matched_box_count]
                - matched_box_count < ref_quantity -> ITEM_REMOVED (delta = matched - ref)
@@ -594,7 +592,7 @@ class ESP32ReferenceManager:
                     mode="live",
                 )
             else:
-                target_boxes = max(0, min(4, current_quantity - 1 if exp_action == "BORROW" else current_quantity + 1))
+                target_boxes = max(0, min(6, current_quantity - 1 if exp_action == "BORROW" else current_quantity + 1))
                 after_bgr, after_url = self.fetch_esp32_frame(
                     esp32_ip=esp32_ip,
                     mode="live",
@@ -629,9 +627,9 @@ class ESP32ReferenceManager:
         delta = 0
 
         if target_tm_count is not None:
-            matched_box_count = max(0, min(4, int(target_tm_count)))
+            matched_box_count = max(0, min(6, int(target_tm_count)))
             if not matched_scenario_label:
-                matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {5 - matched_box_count}: {matched_box_count}/4 Boxes")
+                matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {7 - matched_box_count}: {matched_box_count}/6 Boxes")
 
             if matched_box_count < current_quantity:
                 state_delta = "ITEM_REMOVED"

@@ -14,7 +14,7 @@ Runs a lightweight HTTP server on port 8008 providing:
    - GET    /esp32_preview           : Live test preview from http://<esp32_ip>/capture
    - POST   /esp32_trigger           : Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
    - GET    /esp32_reference_samples : List stored ESP32-CAM reference samples
-   - POST   /esp32_reference_samples : Capture & store an ESP32-CAM scenario reference (4, 3, 2, 1, 0 boxes)
+   - POST   /esp32_reference_samples : Capture & store an ESP32-CAM scenario reference (6, 5, 4, 3, 2, 1, 0 boxes)
    - DELETE /esp32_reference_samples : Delete an ESP32-CAM reference sample
    - POST   /esp32_validate          : Run hybrid 30s baseline + reference validation and apply Supabase delta
 """
@@ -371,8 +371,8 @@ def get_merged_compartments_and_nodes():
             "y_max": comp["y_max"],
             "dwell_threshold_seconds": comp.get("dwell_threshold_seconds", 1.2),
             "status": status,
-            "current_quantity": db_row.get("current_quantity", 4),
-            "max_capacity": db_row.get("max_capacity", 4),
+            "current_quantity": db_row.get("current_quantity", 6),
+            "max_capacity": 6,
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
@@ -427,8 +427,8 @@ def get_merged_compartments_and_nodes():
             "y_max": db_row.get("roi_y_max", 350),
             "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
             "status": status,
-            "current_quantity": db_row.get("current_quantity", 4),
-            "max_capacity": db_row.get("max_capacity", 4),
+            "current_quantity": db_row.get("current_quantity", 6),
+            "max_capacity": 6,
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
@@ -466,8 +466,8 @@ def get_merged_compartments_and_nodes():
                 "y_max": db_row.get("roi_y_max", 350),
                 "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
                 "status": "ONLINE",
-                "current_quantity": db_row.get("current_quantity", 4),
-                "max_capacity": db_row.get("max_capacity", 4),
+                "current_quantity": db_row.get("current_quantity", 6),
+                "max_capacity": 6,
                 "baseline_image_url": baseline_url,
                 "baseline_image_2_url": baseline_2_url,
                 "baseline_updated_at": baseline_updated,
@@ -1682,7 +1682,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
 
             if command == "CAPTURE_REFERENCE":
-                box_count = int(body.get("box_count", 4))
+                box_count = int(body.get("box_count", 6))
                 sample_label = body.get("sample_label")
                 dispatched = mqtt_bridge.publish_reference_capture(
                     shelf_id=shelf_id,
@@ -1764,7 +1764,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     decoded = decode_data_url_to_bgr(after_image)
                     first = evidence.get("first_count")
                     count = predicted_box_count
-                    valid_count = lambda value: isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 4
+                    valid_count = lambda value: isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 6
                     confidences = [evidence.get("first_confidence"), tm_confidence]
                     if (decoded is None or not valid_count(count) or not valid_count(first) or first != count
                         or not all(isinstance(c, (int, float)) and math.isfinite(c) and c >= 65 for c in confidences)
@@ -1838,6 +1838,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     log_entry["trigger_source"] = source
                     if periodic:
                         log_entry["scenario_label"] = "Periodic Recheck (Backup) | " + str(log_entry.get("scenario_label") or "")
+                    for quantity_key in ("quantity_before", "quantity_after", "matched_box_count"):
+                        if log_entry.get(quantity_key) is not None:
+                            log_entry[quantity_key] = max(0, min(6, int(log_entry[quantity_key])))
                     if not periodic or delta_val != 0:
                         LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
                     else:

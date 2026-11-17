@@ -158,7 +158,7 @@ class VisionValidationEngine:
                             if curr_log_id != prev_log_id and latest_log.get("shelf_id") == shelf_id:
                                 state_delta = latest_log.get("state_delta", "NO_CHANGE")
                                 qty_before = latest_log.get("quantity_before", 4)
-                                qty_after = latest_log.get("quantity_after", 4)
+                                qty_after = latest_log.get("quantity_after", 6)
                                 delta_int = qty_after - qty_before
                                 scenario = latest_log.get("scenario_label") or f"Boxes: {qty_after}/4"
 

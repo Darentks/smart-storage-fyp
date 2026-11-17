@@ -15,8 +15,8 @@ DROP FUNCTION IF EXISTS public.set_updated_at() CASCADE;
 CREATE TABLE public.compartments (
     shelf_id         VARCHAR(50) PRIMARY KEY,
     rack_id          VARCHAR(50) NOT NULL DEFAULT 'RACK_01',
-    current_quantity INTEGER NOT NULL DEFAULT 4,
-    max_capacity     INTEGER NOT NULL DEFAULT 4,
+    current_quantity INTEGER NOT NULL DEFAULT 6,
+    max_capacity     INTEGER NOT NULL DEFAULT 6,
     tm_model_url     TEXT DEFAULT 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/',
     CONSTRAINT chk_compartment_quantity_nonnegative CHECK (current_quantity >= 0),
     CONSTRAINT chk_compartment_capacity_positive CHECK (max_capacity > 0),
@@ -70,12 +70,12 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.compartments, public.esp32_
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
 
 INSERT INTO public.compartments (shelf_id, rack_id, current_quantity, max_capacity, tm_model_url) VALUES
-    ('SHELF_R1_C1', 'RACK_01', 4, 4, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C2', 'RACK_01', 4, 4, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C3', 'RACK_01', 4, 4, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C4', 'RACK_01', 4, 4, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C5', 'RACK_01', 4, 4, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
-    ('SHELF_R1_C6', 'RACK_01', 4, 4, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/')
+    ('SHELF_R1_C1', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C2', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C3', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C4', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C5', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
+    ('SHELF_R1_C6', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/')
 ON CONFLICT (shelf_id) DO NOTHING;
 
 INSERT INTO public.esp32_cameras (device_id, camera_name, rack_id, shelf_id, angle_index, ip_address) VALUES
