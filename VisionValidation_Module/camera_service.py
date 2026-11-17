@@ -1761,7 +1761,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     return
                 if periodic:
                     evidence = body.get("periodic_evidence") or {}
-                    decoded = decode_data_url_to_bgr(after_image)
+                    decoded = decode_data_url_to_bgr(after_image) if isinstance(after_image, str) and after_image else None
                     first = evidence.get("first_count")
                     count = predicted_box_count
                     valid_count = lambda value: isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 6
@@ -1848,8 +1848,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     with CCTV_CONSENSUS_LOCK:
                         PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
 
-                if body.get("image_back") and body.get("image_front"):
-                    decoded = decode_data_url_to_bgr(after_image)
+                if isinstance(after_image, str) and after_image and body.get("image_back") and body.get("image_front"):
+                    decoded = decode_data_url_to_bgr(after_image) if isinstance(after_image, str) and after_image else None
                     if decoded is not None:
                         esp32_ref_manager.baseline_cache[shelf_id] = dict(
                             frame_bgr=decoded, data_url=after_image, data_url_2=body["image_front"],
