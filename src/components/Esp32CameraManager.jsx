@@ -20,136 +20,90 @@ const SHELF_OPTIONS = [
   'SHELF_R1_C6',
 ];
 
-const SCENARIO_LABELS = {
-  6: 'Scenario 1: 6/6 Boxes Present',
-  5: 'Scenario 2: 5/6 Boxes Present',
-  4: 'Scenario 3: 4/6 Boxes Present',
-  3: 'Scenario 4: 3/6 Boxes Present',
-  2: 'Scenario 5: 2/6 Boxes Present',
-  1: 'Scenario 6: 1/6 Box Present',
-  0: 'Scenario 7: 0/6 No Box Present',
+const SCENARIO_LABELS = Object.fromEntries(Array.from({ length: 6 }, (_, n) => [n, `${n}/5 Boxes Present`]));
+
+const DUAL_CAM_LABELS = {
+  Front: ['000', '010', '011', '100', '110', '111'].map((bits) => `Front_${bits}`),
+  Back: ['000', '001', '100', '101', '110', '111'].map((bits) => `Back_${bits}`),
 };
+const MIN_CONFIDENCE = 0.85;
+
+function pending(reason, extra = {}) {
+  return {
+    totalBoxes: null, backCount: null, frontCount: null,
+    backClass: 'Back_Unmatched', frontClass: 'Front_Unmatched',
+    backConfidence: 0, frontConfidence: 0, confidence: 0,
+    degraded: true, status: 'VALIDATION_PENDING', scenarioLabel: reason, ...extra,
+  };
+}
+
+function modelHasRoleLabels(model, role) {
+  const labels = model.getClassLabels();
+  const expected = labels.length === 12 ? [...DUAL_CAM_LABELS.Front, ...DUAL_CAM_LABELS.Back] : DUAL_CAM_LABELS[role];
+  return labels.length === expected.length && new Set(labels).size === expected.length && expected.every((label) => labels.includes(label));
+}
 
 /**
- * Strict 8-Class Dual-ESP32 Teachable Machine classifier with Degraded Camera Guardrail.
- * Requires BOTH image_back (CAM1) and image_front (CAM2) to load (backOk && frontOk).
- * Filters backPreds strictly with /^Back_([0-4])_Box(?:es)?$/i and frontPreds with /^Front_([0-2])_Box(?:es)?$/i.
+ * Five-slot stacked occupancy classifier (F1, M1, M2, B1, B2) with shared middle position M2.
+ * Front classes are Front_<F1><M1><M2>; back classes are Back_<B1><B2><M2>. M2 must agree.
+ * Accepts { front, back } models (as window.tmModel) or window.tmFrontModel / window.tmBackModel.
  */
 export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = typeof window !== 'undefined' ? window.tmModel : null) {
-  if (!tmModel) return null;
-
-  if (typeof tmModel.getClassLabels === 'function') {
-    const labels = tmModel.getClassLabels().map((label) => String(label).trim());
-    const hasBack = [0, 1, 2, 3, 4].every((n) => labels.some((l) => new RegExp(`^Back_${n}_Box(?:es)?$`, 'i').test(l)));
-    const hasFront = [0, 1, 2].every((n) => labels.some((l) => new RegExp(`^Front_${n}_Box(?:es)?$`, 'i').test(l)));
-    if (labels.length !== 8 || !hasBack || !hasFront) {
-      return {
-        backClass: 'Back_Unmatched',
-        backCount: 0,
-        backConfidence: 0,
-        frontClass: 'Front_Unmatched',
-        frontCount: 0,
-        frontConfidence: 0,
-        totalBoxes: null,
-        scenarioLabel: 'Validation aborted: Load an 8-class model (Back 0-4, Front 0-2)',
-        confidence: 0,
-        degraded: true,
-      };
-    }
+  const frontModel = tmModel?.front || (typeof window !== 'undefined' ? window.tmFrontModel : null);
+  const backModel = tmModel?.back || (typeof window !== 'undefined' ? window.tmBackModel : null);
+  if (!frontModel || !backModel) return pending('Load the combined 12-class model or both six-class models');
+  if (!modelHasRoleLabels(frontModel, 'Front') || !modelHasRoleLabels(backModel, 'Back')) {
+    return pending('Model labels do not match the occupancy classes');
   }
 
   const isUsable = (img) => {
     if (!img) return false;
     if (typeof HTMLImageElement !== 'undefined' && img instanceof HTMLImageElement) {
-      return img.complete && img.naturalWidth > 0 && Boolean(img.src) && !img.src.endsWith('/null') && !img.src.endsWith('/undefined');
+      return img.complete && img.naturalWidth > 0 && Boolean(img.src);
     }
     return Boolean(img);
   };
+  if (!isUsable(backImgEl) || !isUsable(frontImgEl)) return pending('Both camera images are required');
 
-  const backOk = isUsable(backImgEl);
-  const frontOk = isUsable(frontImgEl);
-
-  if (!backOk || !frontOk) {
-    return {
-      backClass: backOk ? 'Back_Loaded' : 'Back_Offline',
-      backCount: 0,
-      backConfidence: 0,
-      frontClass: frontOk ? 'Front_Loaded' : 'Front_Offline',
-      frontCount: 0,
-      frontConfidence: 0,
-      totalBoxes: null,
-      scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
-      confidence: 0,
-      degraded: true,
-    };
-  }
-
-  let bestBack = null;
-  let backSum = 0;
-  let backNormProb = 0;
-  let backCount = 0;
-  try {
-    const backPreds = await tmModel.predict(backImgEl);
-    const backOnly = backPreds.filter((p) => /^Back_([0-4])_Box(?:es)?$/i.test(String(p.className || '').trim()));
-    backSum = backOnly.reduce((sum, prediction) => sum + prediction.probability, 0);
-    if (backOnly.length > 0) {
-      bestBack = backOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
-      backNormProb = backSum > 0 ? bestBack.probability / backSum : 0;
-      const m = String(bestBack.className).trim().match(/^Back_([0-4])_Box(?:es)?$/i);
-      backCount = m ? Math.min(4, Math.max(0, parseInt(m[1], 10))) : 0;
+  const best = async (model, image, role) => {
+    const expected = model.getClassLabels();
+    const predictions = await model.predict(image);
+    if (!Array.isArray(predictions) || predictions.length !== expected.length
+      || new Set(predictions.map((p) => p.className)).size !== expected.length
+      || predictions.some((p) => !expected.includes(p.className) || !Number.isFinite(p.probability) || p.probability < 0 || p.probability > 1)) {
+      throw new Error('Invalid model output');
     }
-  } catch (e) {
-    console.warn('[TM] Back camera predict failed:', e);
-  }
-
-  let bestFront = null;
-  let frontSum = 0;
-  let frontNormProb = 0;
-  let frontCount = 0;
-  try {
-    const frontPreds = await tmModel.predict(frontImgEl);
-    const frontOnly = frontPreds.filter((p) => /^Front_([0-2])_Box(?:es)?$/i.test(String(p.className || '').trim()));
-    frontSum = frontOnly.reduce((sum, prediction) => sum + prediction.probability, 0);
-    if (frontOnly.length > 0) {
-      bestFront = frontOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
-      frontNormProb = frontSum > 0 ? bestFront.probability / frontSum : 0;
-      const m = String(bestFront.className).trim().match(/^Front_([0-2])_Box(?:es)?$/i);
-      frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
-    }
-  } catch (e) {
-    console.warn('[TM] Front camera predict failed:', e);
-  }
-
-  if (!bestBack || !bestFront || backSum < 0.25 || frontSum < 0.25 || bestBack.probability < 0.20 || bestFront.probability < 0.20) {
-    return {
-      backClass: bestBack ? bestBack.className : 'Back_Unmatched',
-      backCount: 0,
-      backConfidence: 0,
-      frontClass: bestFront ? bestFront.className : 'Front_Unmatched',
-      frontCount: 0,
-      frontConfidence: 0,
-      totalBoxes: null,
-      scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
-      confidence: 0,
-      degraded: true,
-    };
-  }
-
-  const totalBoxes = Math.min(6, Math.max(0, backCount + frontCount));
-  const avgConfidence = Number((((backNormProb + frontNormProb) / 2) * 100).toFixed(1));
-
-  return {
-    backClass: bestBack.className,
-    backCount,
-    backConfidence: Number((backNormProb * 100).toFixed(1)),
-    frontClass: bestFront.className,
-    frontCount,
-    frontConfidence: Number((frontNormProb * 100).toFixed(1)),
-    totalBoxes,
-    scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/6 Boxes`,
-    confidence: avgConfidence,
-    degraded: false,
+    const top = predictions.reduce((a, b) => (a.probability > b.probability ? a : b));
+    if (!DUAL_CAM_LABELS[role].includes(top.className)) throw new Error(`${role} image classified as the wrong camera role`);
+    return top;
   };
+
+  try {
+    const back = await best(backModel, backImgEl, 'Back');
+    const front = await best(frontModel, frontImgEl, 'Front');
+    const details = {
+      backClass: back.className, frontClass: front.className,
+      backConfidence: Number((back.probability * 100).toFixed(1)),
+      frontConfidence: Number((front.probability * 100).toFixed(1)),
+      confidence: Number((Math.min(back.probability, front.probability) * 100).toFixed(1)),
+    };
+    if (back.probability < MIN_CONFIDENCE || front.probability < MIN_CONFIDENCE) {
+      return pending('Low confidence; quantity retained', details);
+    }
+    const [F1, M1, M2] = front.className.slice(6).split('').map(Number);
+    const [B1, B2, backM2] = back.className.slice(5).split('').map(Number);
+    if (M2 !== backM2) return pending('MIDDLE_CONFLICT: cameras disagree on M2', { ...details, status: 'MIDDLE_CONFLICT' });
+    if (M2 > M1 || B2 > B1) return pending('Unsupported upper box; retry capture', details);
+    const totalBoxes = F1 + M1 + M2 + B1 + B2;
+    return {
+      ...details, totalBoxes, frontCount: F1 + M1 + M2, backCount: B1 + B2,
+      slots: { F1, M1, M2, B1, B2 }, sharedM2: M2, occupancyKey: `${F1}${M1}${M2}${B1}${B2}`,
+      status: 'VERIFIED_PAIR', degraded: false,
+      scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/5 Boxes`,
+    };
+  } catch (error) {
+    return pending(error.message);
+  }
 }
 
 export default function Esp32CameraManager({ bridgeUrl, onNotify }) {

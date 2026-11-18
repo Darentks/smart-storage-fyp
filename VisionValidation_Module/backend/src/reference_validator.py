@@ -17,6 +17,7 @@ Features:
 """
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
@@ -55,13 +56,12 @@ except ImportError:
 # =============================================================================
 
 SCENARIO_MAP: Dict[int, str] = {
-    6: "Scenario 1: 6/6 Boxes Present",
-    5: "Scenario 2: 5/6 Boxes Present",
-    4: "Scenario 3: 4/6 Boxes Present",
-    3: "Scenario 4: 3/6 Boxes Present",
-    2: "Scenario 5: 2/6 Boxes Present",
-    1: "Scenario 6: 1/6 Box Present",
-    0: "Scenario 7: 0/6 No Box Present",
+    5: "Scenario 1: 5/5 Boxes Present",
+    4: "Scenario 2: 4/5 Boxes Present",
+    3: "Scenario 3: 3/5 Boxes Present",
+    2: "Scenario 4: 2/5 Boxes Present",
+    1: "Scenario 5: 1/5 Box Present",
+    0: "Scenario 6: 0/5 No Box Present",
 }
 
 
@@ -415,11 +415,14 @@ class ESP32ReferenceManager:
         frame2 = None
         url2 = None
 
-        if esp32_ip1:
-            frame1, url1 = _fetch_single_with_retry(esp32_ip1)
-
-        if esp32_ip2:
-            frame2, url2 = _fetch_single_with_retry(esp32_ip2)
+        # Start both HTTP captures together to minimize camera time skew.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            back = pool.submit(_fetch_single_with_retry, esp32_ip1) if esp32_ip1 else None
+            front = pool.submit(_fetch_single_with_retry, esp32_ip2) if esp32_ip2 else None
+            if back:
+                frame1, url1 = back.result()
+            if front:
+                frame2, url2 = front.result()
 
         if frame1 is None and frame2 is None:
             synth = synthesize_compartment_frame(f"DUAL-CAM ({mode.upper()})", box_count=6)
@@ -629,7 +632,7 @@ class ESP32ReferenceManager:
         if target_tm_count is not None:
             matched_box_count = max(0, min(6, int(target_tm_count)))
             if not matched_scenario_label:
-                matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {7 - matched_box_count}: {matched_box_count}/6 Boxes")
+                matched_scenario_label = SCENARIO_MAP.get(matched_box_count, f"Scenario {6 - matched_box_count}: {matched_box_count}/5 Boxes")
 
             if matched_box_count < current_quantity:
                 state_delta = "ITEM_REMOVED"

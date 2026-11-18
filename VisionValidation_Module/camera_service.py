@@ -14,7 +14,7 @@ Runs a lightweight HTTP server on port 8008 providing:
    - GET    /esp32_preview           : Live test preview from http://<esp32_ip>/capture
    - POST   /esp32_trigger           : Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
    - GET    /esp32_reference_samples : List stored ESP32-CAM reference samples
-   - POST   /esp32_reference_samples : Capture & store an ESP32-CAM scenario reference (6, 5, 4, 3, 2, 1, 0 boxes)
+   - POST   /esp32_reference_samples : Capture & store an ESP32-CAM scenario reference (5, 4, 3, 2, 1, 0 boxes)
    - DELETE /esp32_reference_samples : Delete an ESP32-CAM reference sample
    - POST   /esp32_validate          : Run hybrid 30s baseline + reference validation and apply Supabase delta
 """
@@ -23,6 +23,7 @@ import base64
 from collections import deque
 import concurrent.futures
 import glob
+import hashlib
 import json
 import math
 import os
@@ -74,6 +75,12 @@ from src.config_loader import (  # type: ignore
 )
 from src.periodic_recheck import (RecheckCoordinator, StaggeredPollSchedule, inspect_candidate,
                                   has_pending_shelf, queue_periodic_trigger)
+from src.dual_cam_inventory import validate_evidence
+
+# Short-lived local capture receipts, never sent to Supabase.
+DUAL_CAM_CAPTURES = {}
+DUAL_CAM_CAPTURE_LOCK = threading.Lock()
+
 from src.replay_manager import CctvReplayManager
 from src.spatial_mapper import SpatialMapper  # type: ignore
 from src.mqtt_client import MQTTClientNode  # type: ignore
@@ -371,8 +378,8 @@ def get_merged_compartments_and_nodes():
             "y_max": comp["y_max"],
             "dwell_threshold_seconds": comp.get("dwell_threshold_seconds", 1.2),
             "status": status,
-            "current_quantity": db_row.get("current_quantity", 6),
-            "max_capacity": int(db_row.get("max_capacity") or 6),
+            "current_quantity": db_row.get("current_quantity", 5),
+            "max_capacity": int(db_row.get("max_capacity") or 5),
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
@@ -427,8 +434,8 @@ def get_merged_compartments_and_nodes():
             "y_max": db_row.get("roi_y_max", 350),
             "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
             "status": status,
-            "current_quantity": db_row.get("current_quantity", 6),
-            "max_capacity": int(db_row.get("max_capacity") or 6),
+            "current_quantity": db_row.get("current_quantity", 5),
+            "max_capacity": int(db_row.get("max_capacity") or 5),
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
@@ -466,8 +473,8 @@ def get_merged_compartments_and_nodes():
                 "y_max": db_row.get("roi_y_max", 350),
                 "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
                 "status": "ONLINE",
-                "current_quantity": db_row.get("current_quantity", 6),
-                "max_capacity": int(db_row.get("max_capacity") or 6),
+                "current_quantity": db_row.get("current_quantity", 5),
+                "max_capacity": int(db_row.get("max_capacity") or 5),
                 "baseline_image_url": baseline_url,
                 "baseline_image_2_url": baseline_2_url,
                 "baseline_updated_at": baseline_updated,
@@ -1173,7 +1180,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         if path.startswith("/tm_proxy/"):
             filename = path.split("/")[-1]
             global LAST_TM_BASE_URL
-            base_url = query.get("base", [LAST_TM_BASE_URL])[0]
+            # Source travels in the directory, so TF.js relative weight requests keep
+            # the same model binding without depending on a global or query string.
+            source_parts = path.split("/")
+            base_url = (urllib.parse.unquote(source_parts[3]) if path.startswith("/tm_proxy/source/")
+                        and len(source_parts) == 6 else query.get("base", [LAST_TM_BASE_URL])[0])
             if not base_url.endswith("/"):
                 base_url += "/"
             if "base" in query:
@@ -1197,10 +1208,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             except Exception as net_err:
                 print(f"[TM Proxy] Remote fetch failed for {target_url}: {net_err}")
 
-            target_dirs = [
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", "tm_0cQO4TjOm")),
-                os.path.abspath(os.path.join(os.path.dirname(__file__), "models", "tm_0cQO4TjOm")),
-            ]
+            # Isolate cache by source URL, including model weights. Preserve legacy endpoint shape.
+            cache_key = hashlib.sha256(base_url.encode("utf-8")).hexdigest()
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", clean_filename) or clean_filename in (".", ".."):
+                self._send_json(400, {"error": "Invalid model asset"})
+                return
+            target_dirs = [os.path.join(os.path.dirname(__file__), "models", "tm_cache", cache_key)]
             if data_bytes:
                 for d in target_dirs:
                     try:
@@ -1389,8 +1402,17 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     boost_mode=boost,
                 )
                 latency_ms = int((time.time() - t0) * 1000)
+                capture = {"id": str(uuid.uuid4()), "completed_at": time.time(), "duration_ms": latency_ms}
+                with DUAL_CAM_CAPTURE_LOCK:
+                    for key in list(DUAL_CAM_CAPTURES):
+                        if time.time() - DUAL_CAM_CAPTURES[key]["completed_at"] > 60:
+                            del DUAL_CAM_CAPTURES[key]
+                    if len(DUAL_CAM_CAPTURES) >= 200:
+                        DUAL_CAM_CAPTURES.pop(next(iter(DUAL_CAM_CAPTURES)))
+                    DUAL_CAM_CAPTURES[capture["id"]] = {**capture, "shelf_id": shelf_id, "complete": bool(url1 and url2)}
 
                 self._send_json(200, {
+                    "capture": capture,
                     "status": "success",
                     "shelf_id": shelf_id,
                     "ip": esp32_ip,
@@ -1682,7 +1704,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
 
             if command == "CAPTURE_REFERENCE":
-                box_count = int(body.get("box_count", 6))
+                box_count = int(body.get("box_count", 5))
                 sample_label = body.get("sample_label")
                 dispatched = mqtt_bridge.publish_reference_capture(
                     shelf_id=shelf_id,
@@ -1759,18 +1781,26 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 except Exception:
                     self._send_json(503, {"error": "Fresh inventory unavailable; no update applied"})
                     return
-                if periodic:
-                    evidence = body.get("periodic_evidence") or {}
-                    decoded = decode_data_url_to_bgr(after_image) if isinstance(after_image, str) and after_image else None
-                    first = evidence.get("first_count")
-                    count = predicted_box_count
-                    valid_count = lambda value: isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 6
-                    confidences = [evidence.get("first_confidence"), tm_confidence]
-                    if (decoded is None or not valid_count(count) or not valid_count(first) or first != count
-                        or not all(isinstance(c, (int, float)) and math.isfinite(c) and c >= 65 for c in confidences)
-                        or evidence.get("delay_ms", 0) < 2000 or not body.get("image_back") or not body.get("image_front")):
-                        self._send_json(400, {"error": "Periodic recheck requires two valid agreeing captures"})
-                        return
+                if curr_qty < 0 or curr_qty > 5:
+                    self._send_json(409, {"error": "Five-slot layout requires an explicit physical recount and quantity migration; existing quantity was retained"})
+                    return
+                try:
+                    with DUAL_CAM_CAPTURE_LOCK:
+                        slots, capture_ids = validate_evidence(body.get("dual_cam_evidence"), predicted_box_count,
+                            time.time(), DUAL_CAM_CAPTURES, shelf_id)
+                    if not after_image or not body.get("image_back") or not body.get("image_front"):
+                        raise ValueError("Both camera images are required")
+                except (ValueError, TypeError, KeyError) as exc:
+                    self._send_json(400, {"status": "VALIDATION_PENDING", "error": str(exc)})
+                    return
+                # Derive accepted count/confidence from the validated contract, never a legacy heuristic.
+                predicted_box_count = sum(slots)
+                tm_confidence = min(min(sample["front_confidence"], sample["back_confidence"])
+                                    for sample in body["dual_cam_evidence"]["samples"])
+                scenario_label = f"{predicted_box_count}/5 Boxes Present (shared M2 verified)"
+                with DUAL_CAM_CAPTURE_LOCK:
+                    for capture_id in capture_ids:
+                        DUAL_CAM_CAPTURES.pop(capture_id, None)
 
                 previous_baseline = esp32_ref_manager.baseline_cache.get(shelf_id)
                 comp_res = esp32_ref_manager.compare_with_30s_baseline_and_references(
@@ -1840,7 +1870,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         log_entry["scenario_label"] = "Periodic Recheck (Backup) | " + str(log_entry.get("scenario_label") or "")
                     for quantity_key in ("quantity_before", "quantity_after", "matched_box_count"):
                         if log_entry.get(quantity_key) is not None:
-                            log_entry[quantity_key] = max(0, min(6, int(log_entry[quantity_key])))
+                            log_entry[quantity_key] = max(0, min(5, int(log_entry[quantity_key])))
                     if not periodic or delta_val != 0:
                         LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
                     else:
@@ -2104,15 +2134,25 @@ def esp32_http_baseline_poller():
         time.sleep(0.5)
 
 
-def _has_valid_8class_metadata(dir_path: str) -> bool:
+_FRONT_OCCUPANCY_LABELS = {f"Front_{s}" for s in ("000", "010", "011", "100", "110", "111")}
+_BACK_OCCUPANCY_LABELS = {f"Back_{s}" for s in ("000", "001", "100", "101", "110", "111")}
+
+
+def _has_valid_occupancy_metadata(dir_path: str) -> bool:
+    """True for the combined 12-class model or a single role-specific 6-class model."""
     meta_path = os.path.join(dir_path, "metadata.json")
     try:
         with open(meta_path, "r", encoding="utf-8") as mf:
             meta = json.load(mf)
         labels = [str(l).strip() for l in (meta.get("labels") or [])]
-        has_back = all(any(re.fullmatch(rf"Back_{n}_Box(?:es)?", l, re.I) for l in labels) for n in range(5))
-        has_front = all(any(re.fullmatch(rf"Front_{n}_Box(?:es)?", l, re.I) for l in labels) for n in range(3))
-        return len(labels) == 8 and has_back and has_front
+        if len(set(labels)) != len(labels):
+            return False
+        label_set = set(labels)
+        return label_set in (
+            _FRONT_OCCUPANCY_LABELS | _BACK_OCCUPANCY_LABELS,
+            _FRONT_OCCUPANCY_LABELS,
+            _BACK_OCCUPANCY_LABELS,
+        )
     except Exception:
         return False
 
@@ -2130,7 +2170,7 @@ def ensure_local_tm_model_cached(model_id: str = "0cQO4TjOm") -> None:
     for d in target_dirs:
         os.makedirs(d, exist_ok=True)
 
-    metadata_valid = all(_has_valid_8class_metadata(d) for d in target_dirs)
+    metadata_valid = all(_has_valid_occupancy_metadata(d) for d in target_dirs)
 
     for fname in ("model.json", "metadata.json", "weights.bin"):
         if metadata_valid and all(os.path.isfile(os.path.join(d, fname)) and os.path.getsize(os.path.join(d, fname)) > 0 for d in target_dirs):
