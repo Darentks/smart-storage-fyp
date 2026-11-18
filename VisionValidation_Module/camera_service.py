@@ -372,7 +372,7 @@ def get_merged_compartments_and_nodes():
             "dwell_threshold_seconds": comp.get("dwell_threshold_seconds", 1.2),
             "status": status,
             "current_quantity": db_row.get("current_quantity", 6),
-            "max_capacity": 6,
+            "max_capacity": int(db_row.get("max_capacity") or 6),
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
@@ -428,7 +428,7 @@ def get_merged_compartments_and_nodes():
             "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
             "status": status,
             "current_quantity": db_row.get("current_quantity", 6),
-            "max_capacity": 6,
+            "max_capacity": int(db_row.get("max_capacity") or 6),
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
             "baseline_updated_at": baseline_updated,
@@ -467,7 +467,7 @@ def get_merged_compartments_and_nodes():
                 "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
                 "status": "ONLINE",
                 "current_quantity": db_row.get("current_quantity", 6),
-                "max_capacity": 6,
+                "max_capacity": int(db_row.get("max_capacity") or 6),
                 "baseline_image_url": baseline_url,
                 "baseline_image_2_url": baseline_2_url,
                 "baseline_updated_at": baseline_updated,
@@ -2104,6 +2104,19 @@ def esp32_http_baseline_poller():
         time.sleep(0.5)
 
 
+def _has_valid_8class_metadata(dir_path: str) -> bool:
+    meta_path = os.path.join(dir_path, "metadata.json")
+    try:
+        with open(meta_path, "r", encoding="utf-8") as mf:
+            meta = json.load(mf)
+        labels = [str(l).strip() for l in (meta.get("labels") or [])]
+        has_back = all(any(re.fullmatch(rf"Back_{n}_Box(?:es)?", l, re.I) for l in labels) for n in range(5))
+        has_front = all(any(re.fullmatch(rf"Front_{n}_Box(?:es)?", l, re.I) for l in labels) for n in range(3))
+        return len(labels) == 8 and has_back and has_front
+    except Exception:
+        return False
+
+
 def ensure_local_tm_model_cached(model_id: str = "0cQO4TjOm") -> None:
     """
     Downloads and caches Teachable Machine model files (model.json, metadata.json, weights.bin)
@@ -2117,8 +2130,10 @@ def ensure_local_tm_model_cached(model_id: str = "0cQO4TjOm") -> None:
     for d in target_dirs:
         os.makedirs(d, exist_ok=True)
 
+    metadata_valid = all(_has_valid_8class_metadata(d) for d in target_dirs)
+
     for fname in ("model.json", "metadata.json", "weights.bin"):
-        if all(os.path.isfile(os.path.join(d, fname)) and os.path.getsize(os.path.join(d, fname)) > 0 for d in target_dirs):
+        if metadata_valid and all(os.path.isfile(os.path.join(d, fname)) and os.path.getsize(os.path.join(d, fname)) > 0 for d in target_dirs):
             continue
         try:
             req = urllib.request.Request(

@@ -21,20 +21,42 @@ const SHELF_OPTIONS = [
 ];
 
 const SCENARIO_LABELS = {
-  4: 'Scenario 1: 4/4 Boxes Present',
-  3: 'Scenario 2: 3/4 Boxes Present',
-  2: 'Scenario 3: 2/4 Boxes Present',
-  1: 'Scenario 4: 1/4 Box Present',
-  0: 'Scenario 5: 0/4 No Box Present',
+  6: 'Scenario 1: 6/6 Boxes Present',
+  5: 'Scenario 2: 5/6 Boxes Present',
+  4: 'Scenario 3: 4/6 Boxes Present',
+  3: 'Scenario 4: 3/6 Boxes Present',
+  2: 'Scenario 5: 2/6 Boxes Present',
+  1: 'Scenario 6: 1/6 Box Present',
+  0: 'Scenario 7: 0/6 No Box Present',
 };
 
 /**
- * Strict 6-Class Dual-ESP32 Teachable Machine classifier with Degraded Camera Guardrail.
+ * Strict 8-Class Dual-ESP32 Teachable Machine classifier with Degraded Camera Guardrail.
  * Requires BOTH image_back (CAM1) and image_front (CAM2) to load (backOk && frontOk).
- * Filters backPreds strictly with /^back_(\d+)/i and frontPreds strictly with /^front_(\d+)/i.
+ * Filters backPreds strictly with /^Back_([0-4])_Box(?:es)?$/i and frontPreds with /^Front_([0-2])_Box(?:es)?$/i.
  */
 export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = typeof window !== 'undefined' ? window.tmModel : null) {
   if (!tmModel) return null;
+
+  if (typeof tmModel.getClassLabels === 'function') {
+    const labels = tmModel.getClassLabels().map((label) => String(label).trim());
+    const hasBack = [0, 1, 2, 3, 4].every((n) => labels.some((l) => new RegExp(`^Back_${n}_Box(?:es)?$`, 'i').test(l)));
+    const hasFront = [0, 1, 2].every((n) => labels.some((l) => new RegExp(`^Front_${n}_Box(?:es)?$`, 'i').test(l)));
+    if (labels.length !== 8 || !hasBack || !hasFront) {
+      return {
+        backClass: 'Back_Unmatched',
+        backCount: 0,
+        backConfidence: 0,
+        frontClass: 'Front_Unmatched',
+        frontCount: 0,
+        frontConfidence: 0,
+        totalBoxes: null,
+        scenarioLabel: 'Validation aborted: Load an 8-class model (Back 0-4, Front 0-2)',
+        confidence: 0,
+        degraded: true,
+      };
+    }
+  }
 
   const isUsable = (img) => {
     if (!img) return false;
@@ -64,15 +86,17 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
 
   let bestBack = null;
   let backSum = 0;
+  let backNormProb = 0;
   let backCount = 0;
   try {
     const backPreds = await tmModel.predict(backImgEl);
-    const backOnly = backPreds.filter((p) => /^back_(\d+)/i.test(String(p.className || '').trim()));
+    const backOnly = backPreds.filter((p) => /^Back_([0-4])_Box(?:es)?$/i.test(String(p.className || '').trim()));
     backSum = backOnly.reduce((sum, prediction) => sum + prediction.probability, 0);
     if (backOnly.length > 0) {
       bestBack = backOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
-      const m = String(bestBack.className).trim().match(/^back_(\d+)/i);
-      backCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
+      backNormProb = backSum > 0 ? bestBack.probability / backSum : 0;
+      const m = String(bestBack.className).trim().match(/^Back_([0-4])_Box(?:es)?$/i);
+      backCount = m ? Math.min(4, Math.max(0, parseInt(m[1], 10))) : 0;
     }
   } catch (e) {
     console.warn('[TM] Back camera predict failed:', e);
@@ -80,14 +104,16 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
 
   let bestFront = null;
   let frontSum = 0;
+  let frontNormProb = 0;
   let frontCount = 0;
   try {
     const frontPreds = await tmModel.predict(frontImgEl);
-    const frontOnly = frontPreds.filter((p) => /^front_(\d+)/i.test(String(p.className || '').trim()));
+    const frontOnly = frontPreds.filter((p) => /^Front_([0-2])_Box(?:es)?$/i.test(String(p.className || '').trim()));
     frontSum = frontOnly.reduce((sum, prediction) => sum + prediction.probability, 0);
     if (frontOnly.length > 0) {
       bestFront = frontOnly.reduce((a, b) => (a.probability > b.probability ? a : b));
-      const m = String(bestFront.className).trim().match(/^front_(\d+)/i);
+      frontNormProb = frontSum > 0 ? bestFront.probability / frontSum : 0;
+      const m = String(bestFront.className).trim().match(/^Front_([0-2])_Box(?:es)?$/i);
       frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
     }
   } catch (e) {
@@ -98,10 +124,10 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
     return {
       backClass: bestBack ? bestBack.className : 'Back_Unmatched',
       backCount: 0,
-      backConfidence: bestBack ? Number((bestBack.probability * 100).toFixed(1)) : 0,
+      backConfidence: 0,
       frontClass: bestFront ? bestFront.className : 'Front_Unmatched',
       frontCount: 0,
-      frontConfidence: bestFront ? Number((bestFront.probability * 100).toFixed(1)) : 0,
+      frontConfidence: 0,
       totalBoxes: null,
       scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
       confidence: 0,
@@ -109,18 +135,18 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
     };
   }
 
-  const totalBoxes = Math.min(4, Math.max(0, backCount + frontCount));
-  const avgConfidence = Number((((bestBack.probability + bestFront.probability) / 2) * 100).toFixed(1));
+  const totalBoxes = Math.min(6, Math.max(0, backCount + frontCount));
+  const avgConfidence = Number((((backNormProb + frontNormProb) / 2) * 100).toFixed(1));
 
   return {
     backClass: bestBack.className,
     backCount,
-    backConfidence: Number((bestBack.probability * 100).toFixed(1)),
+    backConfidence: Number((backNormProb * 100).toFixed(1)),
     frontClass: bestFront.className,
     frontCount,
-    frontConfidence: Number((bestFront.probability * 100).toFixed(1)),
+    frontConfidence: Number((frontNormProb * 100).toFixed(1)),
     totalBoxes,
-    scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/4 Boxes`,
+    scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/6 Boxes`,
     confidence: avgConfidence,
     degraded: false,
   };

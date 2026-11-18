@@ -292,7 +292,7 @@ class MQTTClientNode:
     def publish_reference_capture(
         self,
         shelf_id: str,
-        box_count: int = 4,
+        box_count: int = 6,
         sample_label: Optional[str] = None,
         rack_id: Optional[str] = None,
     ) -> Dict[str, Any]:

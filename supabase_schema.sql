@@ -76,7 +76,10 @@ INSERT INTO public.compartments (shelf_id, rack_id, current_quantity, max_capaci
     ('SHELF_R1_C4', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
     ('SHELF_R1_C5', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/'),
     ('SHELF_R1_C6', 'RACK_01', 6, 6, 'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/')
-ON CONFLICT (shelf_id) DO NOTHING;
+ON CONFLICT (shelf_id) DO UPDATE SET
+    max_capacity = EXCLUDED.max_capacity,
+    current_quantity = EXCLUDED.current_quantity,
+    tm_model_url = EXCLUDED.tm_model_url;
 
 INSERT INTO public.esp32_cameras (device_id, camera_name, rack_id, shelf_id, angle_index, ip_address) VALUES
     ('ESP32_R1_C1_CAM1', 'R1-C1 Back Angle (CAM 1)',  'RACK_01', 'SHELF_R1_C1', 1, '192.168.0.201'),
@@ -94,9 +97,11 @@ INSERT INTO public.esp32_cameras (device_id, camera_name, rack_id, shelf_id, ang
 ON CONFLICT (device_id) DO NOTHING;
 
 INSERT INTO public.cctv_cameras (cctv_id, camera_name, rack_id, ip_address, rtsp_url, camera_role, is_active) VALUES
-    ('CCTV_01', 'Hikvision CCTV 1 (Side Presence Angle)', 'RACK_01', '192.168.0.101', 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102', 'SIDE_PRESENCE', TRUE),
+    ('CCTV_01', 'Hikvision CCTV 1 (Left-Oblique 6-ROI Angle)', 'RACK_01', '192.168.0.101', 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102', 'GRID_6_ROI', TRUE),
     ('CCTV_02', 'Hikvision CCTV 2 (Center-Top 6-ROI Angle)', 'RACK_01', '192.168.0.102', 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102', 'GRID_6_ROI', TRUE),
-    ('CCTV_03', 'Hikvision CCTV 3 (Right-Oblique 6-ROI Angle)', 'RACK_01', '192.168.0.103', 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102', 'GRID_6_ROI', TRUE)
-ON CONFLICT (cctv_id) DO NOTHING;
+    ('CCTV_03', 'Hikvision CCTV 3 (Side Presence Angle)', 'RACK_01', '192.168.0.103', 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102', 'SIDE_PRESENCE', TRUE)
+ON CONFLICT (cctv_id) DO UPDATE SET
+    camera_name = EXCLUDED.camera_name,
+    camera_role = EXCLUDED.camera_role;
 
 COMMIT;

@@ -1563,10 +1563,10 @@
     window.tmModel = null;
 
     function requireSixBoxModel(model) {
-      const required = [0, 1, 2, 3, 4].map(n => `Back_${n}_Boxes`)
-        .concat([0, 1, 2].map(n => `Front_${n}_Boxes`));
       const labels = model.getClassLabels().map(label => String(label).trim());
-      if (labels.length !== 8 || !required.every(label => labels.includes(label))) {
+      const hasBack = [0, 1, 2, 3, 4].every(n => labels.some(l => new RegExp(`^Back_${n}_Box(?:es)?$`, 'i').test(l)));
+      const hasFront = [0, 1, 2].every(n => labels.some(l => new RegExp(`^Front_${n}_Box(?:es)?$`, 'i').test(l)));
+      if (labels.length !== 8 || !hasBack || !hasFront) {
         window.tmModel = null;
         throw new Error('Six-box counting requires 8 classes: Back_0..4_Boxes and Front_0..2_Boxes. Retrain and load the new model.');
       }
@@ -1727,13 +1727,13 @@
 
     async function predictDualCamerasWithTM(backImgEl, frontImgEl, overrideBoost) {
       if (!window.tmModel) return null;
-      const requiredLabels = [0, 1, 2, 3, 4].map(n => `Back_${n}_Boxes`)
-        .concat([0, 1, 2].map(n => `Front_${n}_Boxes`));
       const labels = window.tmModel.getClassLabels().map(label => String(label).trim());
-      if (labels.length !== requiredLabels.length || !requiredLabels.every(label => labels.includes(label))) {
+      const hasBack = [0, 1, 2, 3, 4].every(n => labels.some(l => new RegExp(`^Back_${n}_Box(?:es)?$`, 'i').test(l)));
+      const hasFront = [0, 1, 2].every(n => labels.some(l => new RegExp(`^Front_${n}_Box(?:es)?$`, 'i').test(l)));
+      if (labels.length !== 8 || !hasBack || !hasFront) {
         return { totalBoxes: null, backCount: 0, frontCount: 0, confidence: 0,
           backConfidence: 0, frontConfidence: 0, backClass: 'Back_Unmatched', frontClass: 'Front_Unmatched',
-          degraded: true, scenarioLabel: 'Validation aborted: Load an 8-class model (Back 0?4, Front 0?2)' };
+          degraded: true, scenarioLabel: 'Validation aborted: Load an 8-class model (Back 0-4, Front 0-2)' };
       }
 
 
@@ -1786,38 +1786,38 @@
         };
       }
 
-      // 1. Predict Back Camera (strictly filter with /^Back_([0-4])_Boxes$/i)
+      // 1. Predict Back Camera (strictly filter with /^Back_([0-4])_Box(?:es)?$/i)
       let bestBack = null;
       let backCount = 0;
       let backNormProb = 0;
       let backSum = 0;
       try {
         const backPreds = await window.tmModel.predict(backTarget);
-        const backOnly = backPreds.filter(p => /^Back_([0-4])_Boxes$/i.test(String(p.className || '').trim()));
+        const backOnly = backPreds.filter(p => /^Back_([0-4])_Box(?:es)?$/i.test(String(p.className || '').trim()));
         if (backOnly.length > 0) {
           bestBack = backOnly.reduce((a, b) => a.probability > b.probability ? a : b);
           backSum = backOnly.reduce((s, p) => s + p.probability, 0);
           backNormProb = backSum > 0 ? bestBack.probability / backSum : 0;
-          const m = String(bestBack.className).trim().match(/^Back_([0-4])_Boxes$/i);
+          const m = String(bestBack.className).trim().match(/^Back_([0-4])_Box(?:es)?$/i);
           backCount = m ? Math.min(4, Math.max(0, parseInt(m[1], 10))) : 0;
         }
       } catch (e) {
         console.warn('[TM] Back camera predict failed:', e);
       }
 
-      // 2. Predict Front Camera (strictly filter with /^Front_([0-2])_Boxes$/i)
+      // 2. Predict Front Camera (strictly filter with /^Front_([0-2])_Box(?:es)?$/i)
       let bestFront = null;
       let frontCount = 0;
       let frontNormProb = 0;
       let frontSum = 0;
       try {
         const frontPreds = await window.tmModel.predict(frontTarget);
-        const frontOnly = frontPreds.filter(p => /^Front_([0-2])_Boxes$/i.test(String(p.className || '').trim()));
+        const frontOnly = frontPreds.filter(p => /^Front_([0-2])_Box(?:es)?$/i.test(String(p.className || '').trim()));
         if (frontOnly.length > 0) {
           bestFront = frontOnly.reduce((a, b) => a.probability > b.probability ? a : b);
           frontSum = frontOnly.reduce((s, p) => s + p.probability, 0);
           frontNormProb = frontSum > 0 ? bestFront.probability / frontSum : 0;
-          const m = String(bestFront.className).trim().match(/^Front_([0-2])_Boxes$/i);
+          const m = String(bestFront.className).trim().match(/^Front_([0-2])_Box(?:es)?$/i);
           frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
         }
       } catch (e) {
@@ -3257,7 +3257,7 @@
       compartmentsGrid.innerHTML = items.map((comp) => {
         const isOnline = (comp.status || '').toUpperCase() === 'ONLINE';
         const qty = comp.current_quantity ?? 6;
-        const maxQty = 6;
+        const maxQty = comp.max_capacity ?? 6;
         const rssi = comp.rssi_dbm != null ? `${comp.rssi_dbm} dBm` : 'N/A';
 
         let slotPillsHtml = '';
