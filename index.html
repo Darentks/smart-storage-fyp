@@ -759,6 +759,145 @@
       }
     }
   </style>
+  <script>
+/* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
+class ThreeCameraDashboard {
+  constructor(options) { Object.assign(this, options); this.contexts = new Map(); this.generation = 0; this.cursor = 0; this.running = false; this.startupGeneration = 0; this.validations = new Set(); this.votes = Promise.resolve(); }
+  valid(c, epoch) { return this.running && c.epoch === epoch && c.generation === this.generation; }
+  reset(c) { c.epoch++; c.frame = null; c.results = null; c.processed = 0; c.detectionStatus = 'Idle'; c.detectionAt = null; c.trackers = Object.fromEntries(Object.keys(c.rois).map(id => [id, this.resetTracker()])); }
+  healthy(c, now = performance.now()) { return c.received > 0 && now - c.received < 1500 && c.processed > 0 && now - c.processed < 1500; }
+  async post(path, body, signal) {
+    const response = await fetch(this.bridge() + path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal});
+    const data = await response.json(); if (!response.ok) throw Error(data.error || response.status); return data;
+  }
+  stop() {
+    this.running = false; this.generation++; this.startupGeneration++; clearTimeout(this.timer); clearTimeout(this.telemetryTimer);
+    this.controller?.abort(); for (const c of this.contexts.values()) { clearTimeout(c.timer); this.reset(c); }
+    this.status('Stopped');
+  }
+  async start(cameras, defaults) {
+    this.stop(); const generation = this.generation; this.controller = new AbortController();
+    await this.post('/cctv_invalidate_votes', {}, this.controller.signal);
+    if (generation !== this.generation) return;
+    const host = document.getElementById('threeCameraCards'); host.replaceChildren(); this.contexts.clear();
+    for (const [index,id] of ['CCTV_01','CCTV_02','CCTV_03'].entries()) {
+      const config = cameras.find(c => c.cctv_id === id);
+      if (!config || config.is_active === false || !config.rtsp_url) throw Error(`Configure and enable ${id} first`);
+      const role = index === 2 ? 'SIDE_PRESENCE' : 'GRID_6_ROI';
+      if (config.camera_role !== role) throw Error(`Set ${id} role to ${role}`);
+      let rois = structuredClone(defaults);
+      const key = `smart_storage_cctv_rois_${id}`;
+      const binding = JSON.parse(localStorage.getItem(key+'_binding') || 'null');
+      // Use only calibration bound to this source and role.
+      const sourceBinding = this.sourceBinding(config.rtsp_url);
+      if (binding && binding.camera_role === role && binding.source === sourceBinding) Object.assign(rois, JSON.parse(localStorage.getItem(key) || '{}'));
+      const card = document.createElement('article'), label = document.createElement('div'), canvas = document.createElement('canvas');
+      canvas.width=640; canvas.height=480; canvas.style.width='100%';
+      canvas.onclick=()=>{canvas.style.maxHeight=canvas.style.maxHeight ? '' : '75vh'; card.style.gridColumn=card.style.gridColumn ? '' : '1 / -1';};
+      card.append(label,canvas);host.append(card);
+      const c={id,config,source:config.rtsp_url,role,rois,canvas,label,generation,epoch:0,seq:null,received:0,processed:0,fps:0,detectionStatus:'Idle',lastVote:'none'};
+      this.reset(c); this.contexts.set(id,c);
+    }
+    this.running=true;this.cursor=0;
+    for (const c of this.contexts.values()) this.poll(c);
+    this.schedule(); this.telemetry();
+  }
+  async invalidate(c) {
+    if (!this.running || (!c.received && !c.processed && !c.frame)) return;
+    c.received=0; this.reset(c);
+    // Clear all local dwell evidence as well as bridge votes after a feed gap.
+    for (const other of this.contexts.values()) if(other!==c) this.reset(other);
+    try { await this.post('/cctv_invalidate_votes',{},this.controller.signal); } catch (_) {}
+  }
+  async poll(c) {
+    const epoch=c.epoch, generation=this.generation;
+    try {
+      const response=await fetch(`${this.bridge()}/test_feed?source=${encodeURIComponent(c.source)}&cctv_id=${c.id}`,{cache:'no-store',signal:AbortSignal.any([this.controller.signal,AbortSignal.timeout(3000)])});
+      const data=await response.json();
+      if(!this.valid(c,epoch)) return;
+      if(!response.ok || !data.image || data.seq===undefined) throw Error('No fresh frame sequence');
+      if(data.seq!==c.seq) {
+        const image=new Image(); image.src=data.image; await image.decode();
+        if(!this.valid(c,epoch)) return;
+        c.seq=data.seq; c.frame=image; c.received=performance.now();
+      } else if(performance.now()-c.received>1500) await this.invalidate(c);
+    } catch(error) { if(this.valid(c,epoch)) await this.invalidate(c); }
+    finally { if(this.running && generation===this.generation) c.timer=setTimeout(()=>this.poll(c),100); }
+  }
+  async schedule() {
+    const generation=this.generation;
+    if(!this.running)return;
+    const cameras=[...this.contexts.values()];
+    const c=cameras[this.cursor++ % cameras.length];
+    let ran=false;
+    try {
+      if(c.frame && performance.now()-c.received<1500) {
+        ran=true;
+        const image=c.frame, timestamp=c.received, epoch=c.epoch;c.frame=null;
+        if(c.canvas.width!==image.naturalWidth)c.canvas.width=image.naturalWidth;
+        if(c.canvas.height!==image.naturalHeight)c.canvas.height=image.naturalHeight;
+        const accepted = await this.infer(image,c,timestamp);
+        if(accepted === true && this.valid(c,epoch) && performance.now()-timestamp<1500) {
+          const now=performance.now();c.fps=c.processed ? 1000/(now-c.processed) : 0;c.processed=now;
+        }
+      }
+      const missing=cameras.filter(c=>!this.healthy(c));
+      this.status(missing.length ? 'Waiting for '+missing.map(c=>c.id.replace('_',' ')).join(', ') : 'All cameras detecting');
+      for(const c of cameras)c.label.textContent=`${c.id} (${c.role}) | ${this.healthy(c)?'Connected':'Waiting'} | ${c.detectionStatus||'Idle'} | ${c.fps.toFixed(1)} FPS | processed ${c.processed?Math.round((performance.now()-c.processed))+'ms ago':'never'} | vote ${c.lastVote}`;
+    } catch(error) {this.event(`${c.id}: ${error.message}`);await this.invalidate(c);}
+    finally {if(this.running && generation===this.generation)this.timer=setTimeout(()=>this.schedule(),ran?0:25);}
+  }
+  vote(c,shelf,action,dwell,confidence) {
+    const epoch=c.epoch;
+    const detectedAt = c.detectionAt ?? Date.now()/1000;
+    const queuedAt = performance.now();
+    const body={camera_id:c.id,camera_role:c.role,trigger_id:crypto.randomUUID(),source:'CCTV_BROWSER_DWELL',detected_at:detectedAt,shelf_id:c.role==='SIDE_PRESENCE'?'ANY_SHELF':shelf,oks_confidence:confidence,dwell_duration_seconds:dwell};
+    if(c.role!=='SIDE_PRESENCE')body.expected_action=action;
+    this.votes=this.votes.catch(()=>{}).then(async()=>{
+      if(!Number.isFinite(detectedAt) || Date.now()/1000-detectedAt > 4 || detectedAt-Date.now()/1000 > 1 || performance.now()-queuedAt > 4000)return;
+      if(!this.valid(c,epoch) || ![...this.contexts.values()].every(c=>this.healthy(c)))return;
+      const result=await this.post('/esp32_trigger',body,this.controller.signal);
+      if(!this.valid(c,epoch))return;
+      c.lastVote=`${body.shelf_id} ${body.expected_action || 'presence'}`;this.event(`${c.id} vote: ${c.lastVote}`);
+      if(result.consensus_met) {
+        this.event(`Consensus confirmed: ${result.shelf_id} (${result.expected_action || 'BORROW'})`);
+        this.event(`MQTT status: ${result.mqtt_connected?'connected':'disconnected'}`);
+        this.event(`ESP32 capture request: ${result.mqtt_connected?'dispatched':'not delivered'} for ${result.shelf_id}`);
+        // ValidationQueue retains ownership, ordering and deduplication; it must not block votes.
+        const task = this.validate(result, c, epoch);
+        this.validations.add(task);
+        task.finally(() => this.validations.delete(task));
+      }
+    }).catch(error=>this.event('Vote: '+error.message));
+  }
+  async validate(result, c, epoch) {
+    try {
+      const validation = await this.consume(result);
+      if (!this.valid(c,epoch)) return;
+      if (validation == null) this.event(`Inventory validation skipped for ${result.shelf_id}`);
+      else if (validation.status === 'success' && validation.comparison) this.event(`Inventory validation completed for ${result.shelf_id}`);
+      else this.event(`Inventory validation failed for ${result.shelf_id}`);
+      return validation;
+    } catch(error) {
+      if(this.valid(c,epoch))this.event(`Inventory validation failed for ${result.shelf_id}: ${error.message}`);
+    }
+  }
+  async telemetry() {
+    const generation=this.generation;
+    try {
+      const r=await fetch(this.bridge()+'/esp32_nodes',{signal:this.controller.signal});const data=await r.json();
+      if(!this.running || generation!==this.generation)return;
+      const readySig=JSON.stringify(data.recent_responses||[]);
+      if(readySig!==this.lastReadyTelemetry){this.lastReadyTelemetry=readySig;this.event(`ESP32 readiness: ${readySig}`);}
+      const logSig=JSON.stringify(data.comparison_logs||[]);
+      if(logSig!==this.lastLogTelemetry){this.lastLogTelemetry=logSig;this.event(`Inventory validation results: ${logSig}`);}
+    }catch(_){}
+    finally {if(this.running && generation===this.generation)this.telemetryTimer=setTimeout(()=>this.telemetry(),2000);}
+  }
+}
+if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
+
+</script>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js"></script>
 </head>
 
@@ -1288,6 +1427,11 @@
             </div>
           </div>
 
+          <section><button class="btn-action" onclick="startThreeCameras()">Start All Cameras</button>
+          <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
+          <div id="threeCameraStatus" role="status">Stopped</div>
+          <div id="threeCameraCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px"></div>
+          <pre id="threeCameraEvents" aria-live="polite" style="max-height:220px;overflow:auto;white-space:pre-wrap"></pre></section>
           <!-- Canvas & Video Viewport (Single Full-Box Canvas — No Split Screen) -->
           <div class="preview-canvas-box" id="cctvTestContainer"
             style="position: relative; width: 100%; aspect-ratio: 4 / 3; display: block; background: #070b14; border-radius: 8px; overflow: hidden;">
@@ -4126,7 +4270,8 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.102',
         rtsp_url: 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102',
-        is_active: false
+        is_active: true,
+        status: 'ONLINE'
       },
       {
         cctv_id: 'CCTV_03',
@@ -4135,7 +4280,8 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.103',
         rtsp_url: 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102',
-        is_active: false
+        is_active: true,
+        status: 'ONLINE'
       }
     ];
 
@@ -4275,8 +4421,10 @@
       finally { yoloSessionPromise = null; }
     }
 
-    async function runYoloPoseOnSource(sourceEl) {
-      if (isYoloInferencing || !isPoseRunning) return;
+    async function runYoloPoseOnSource(sourceEl, cameraContext = null, sourceTimestamp = cameraContext?.received) {
+      if (isYoloInferencing || (!cameraContext && !isPoseRunning)) return false;
+      const contextEpoch = cameraContext?.epoch;
+      const frameTime = sourceTimestamp;
       const generation = trackingGeneration;
       const evidenceGeneration = poseEvidenceGeneration;
       let tensor;
@@ -4285,7 +4433,7 @@
         // Acquire before awaiting session initialization so overlapping frames also skip it.
         isYoloInferencing = true;
         const session = await getYoloPoseSession();
-        if (!isPoseRunning || generation !== trackingGeneration) return;
+        if (cameraContext ? !threeCameraDashboard.valid(cameraContext, contextEpoch) : (!isPoseRunning || generation !== trackingGeneration)) return false;
         const srcW = sourceEl.videoWidth || sourceEl.naturalWidth || sourceEl.width || 640;
         const srcH = sourceEl.videoHeight || sourceEl.naturalHeight || sourceEl.height || 480;
         const scale = Math.min(YOLO_INPUT_SIZE / srcW, YOLO_INPUT_SIZE / srcH);
@@ -4305,8 +4453,9 @@
         tensor = new ort.Tensor('float32', input, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
         const feeds = { [session.inputNames[0]]: tensor };
         outputs = await session.run(feeds);
-        if (!isPoseRunning || generation !== trackingGeneration || evidenceGeneration !== poseEvidenceGeneration) return;
-        if (isRecordedCctvTest() && (cctvReplaySnapshot?.status !== 'playing' || sourceEl.paused || sourceEl.seeking)) return;
+        if (cameraContext ? !threeCameraDashboard.valid(cameraContext, contextEpoch) : (!isPoseRunning || generation !== trackingGeneration || evidenceGeneration !== poseEvidenceGeneration)) return false;
+        if (!cameraContext && isRecordedCctvTest() && (cctvReplaySnapshot?.status !== 'playing' || sourceEl.paused || sourceEl.seeking)) return false;
+        if (cameraContext && performance.now() - frameTime > 1500) return false;
         const output = outputs[session.outputNames[0]];
         if (output.dims.length !== 3 || output.dims[1] !== 56) throw new Error('Expected YOLO pose output [1,56,anchors]. Export without NMS.');
         const anchors = output.dims[2], data = output.data;
@@ -4353,12 +4502,42 @@
           };
           return mappedLandmarks;
         });
-        onPoseResults({ image: sourceEl, poseLandmarks: allPersonsLandmarks[0] || null, multiPoseLandmarks: allPersonsLandmarks });
+        if (cameraContext) cameraContext.detectionAt = (Date.now() - (performance.now() - frameTime))/1000;
+        onPoseResults({ image: sourceEl, poseLandmarks: allPersonsLandmarks[0] || null, multiPoseLandmarks: allPersonsLandmarks }, cameraContext);
+        return true;
       } finally {
         isYoloInferencing = false;
         if (tensor) tensor.dispose();
         if (outputs) Object.values(outputs).forEach(output => output.dispose());
       }
+    }
+
+    const threeCameraDashboard = new ThreeCameraDashboard({
+      infer: (image, context, timestamp) => runYoloPoseOnSource(image, context, timestamp),
+      bridge: () => getBridgeUrl(),
+      sourceBinding: source => cctvSourceBinding(source),
+      resetTracker: () => ({state:'IDLE', dwellStartTime:null,lastSeenTime:null,currentDwellDuration:0,
+        dwellThreshold:1.2,dropGracePeriod:.3,trajectoryHistory:[],triggerFired:false,
+        lastConfirmedAction:'BORROW',lastConfirmedConf:0,cooldownUntil:0}),
+      consume: result => consumeCctvTrigger({...result,source:'CCTV'}),
+      event: message => { const el=document.getElementById('threeCameraEvents'); el.textContent=(message+'\n'+el.textContent).slice(0,12000); },
+      status: message => { document.getElementById('threeCameraStatus').textContent=message; }
+    });
+    async function startThreeCameras() {
+      stopMediaPipeTracker();
+      threeCameraDashboard.stop();
+      let startup = threeCameraDashboard.startupGeneration;
+      const cancelled = () => startup !== threeCameraDashboard.startupGeneration;
+      try {
+        if (!cctvConfigLoaded) { await loadCctvCameras(); if (cancelled()) return; }
+        await syncCctvAlignmentConfig(); if (cancelled()) return;
+        await getYoloPoseSession(); if (cancelled()) return;
+        // start() owns cancellation once its synchronous stop creates a new generation.
+        const starting = threeCameraDashboard.start(cctvCamerasList, DEFAULT_COMPARTMENT_ROIS);
+        const ownedStartup = threeCameraDashboard.startupGeneration; startup = ownedStartup;
+        await starting;
+        if (ownedStartup !== threeCameraDashboard.startupGeneration) return;
+      } catch(error) { if (!cancelled()) { threeCameraDashboard.stop(); showToast(error.message,'error'); } }
     }
 
     let roiDraft = [];
@@ -4461,21 +4640,34 @@
       Object.assign(tracker,{state:'IDLE',dwellStartTime:null,lastSeenTime:0,currentDwellDuration:0,triggerFired:false,trajectoryHistory:[]});
     }
 
-    function onPoseResults(results) {
-      const canvas = document.getElementById('cctvPoseCanvas');
+    const windowUnusedRole = () => activeCameraRole;
+    const windowUnusedRois = () => activeCctvRois;
+    const windowUnusedTrackers = () => compartmentTrackers;
+    const windowUnusedCalibration = () => isCalibratingRoi;
+    const windowDispatchDwell = (...args) => dispatchDwellTrigger(...args);
+    function onPoseResults(results, cameraContext = null) {
+      const activeCameraRole = cameraContext?.role ?? windowUnusedRole();
+      const activeCctvRois = cameraContext?.rois ?? windowUnusedRois();
+      const compartmentTrackers = cameraContext?.trackers ?? windowUnusedTrackers();
+      const isCalibratingRoi = cameraContext ? false : windowUnusedCalibration();
+      const dispatchDwellTrigger = cameraContext ? (...args) => threeCameraDashboard.vote(cameraContext, ...args) : windowDispatchDwell;
+      const canvas = cameraContext?.canvas ?? document.getElementById('cctvPoseCanvas');
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      if (cameraContext) cameraContext.results = results;
       const now = performance.now();
-      const dt = now - lastPoseFrameTime;
-      lastPoseFrameTime = now;
-      if (dt > 0) {
-        const instantFps = 1000 / dt;
-        poseFps = Math.round(poseFps * 0.8 + instantFps * 0.2);
+      if (!cameraContext) {
+        const dt = now - lastPoseFrameTime;
+        lastPoseFrameTime = now;
+        if (dt > 0) {
+          const instantFps = 1000 / dt;
+          poseFps = Math.round(poseFps * 0.8 + instantFps * 0.2);
+        }
+        const fpsEl = document.getElementById('cctvFpsText');
+        if (fpsEl) fpsEl.textContent = `${poseFps} FPS`;
       }
-      const fpsEl = document.getElementById('cctvFpsText');
-      if (fpsEl) fpsEl.textContent = `${poseFps} FPS`;
 
       // Clear & Draw video frame or background
       ctx.save();
@@ -4543,7 +4735,7 @@
       }
 
       // Update Wrist / Side-Presence UI telemetry for all detected persons.
-      const wristsEl = document.getElementById('cctvWristsText');
+      const wristsEl = cameraContext ? null : document.getElementById('cctvWristsText');
       if (wristsEl) {
         if (detectedWrists.length) {
           wristsEl.textContent = detectedWrists.map(w => `${w.name} (${w.x.toFixed(2)}, ${w.y.toFixed(2)})`).join(' | ');
@@ -4586,7 +4778,7 @@
         const insideWrist = memberships.get(shelfId)[0] || null;
         if (tracker.ambiguous || isCalibratingRoi) {
           cancelAmbiguousDwell(tracker);
-          drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height);
+          drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height, activeCctvRois, isCalibratingRoi);
           continue;
         }
 
@@ -4655,7 +4847,7 @@
         }
 
         // Draw Compartment ROI Box on Canvas
-        drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height);
+        drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height, activeCctvRois, isCalibratingRoi);
       }
 
       // Draw Wrist Highlight Markers (or Side-Presence Body Markers when wrists are occluded)
@@ -4680,34 +4872,40 @@
         ctx.fillText(w.label, px + 12, py + 4);
       }
 
-      // Update Dwell Status badge and meter
-      const dwellStatusEl = document.getElementById('cctvDwellStatusText');
-      const dwellMeterEl = document.getElementById('cctvPoseDwellMeter');
-      if (dwellStatusEl) {
-        if (maxDwellShelf && activeDwellState !== 'IDLE') {
-          dwellStatusEl.textContent = `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`;
-          dwellStatusEl.style.color = activeDwellState === 'INTENT_CONFIRMED' ? 'var(--success)' : 'var(--warning)';
-        } else {
-          dwellStatusEl.textContent = activeCameraRole === 'SIDE_PRESENCE' ? 'Idle (No Presence in Entry Zone)' : 'Idle (No Wrist in ROI)';
-          dwellStatusEl.style.color = 'var(--text-muted)';
+      // Update Dwell Status badge and meter (only mutate global HUD when running single-camera tracker)
+      if (cameraContext) {
+        cameraContext.detectionStatus = (maxDwellShelf && activeDwellState !== 'IDLE')
+          ? `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`
+          : (activeCameraRole === 'SIDE_PRESENCE' ? 'Idle (No Presence in Entry Zone)' : 'Idle (No Wrist in ROI)');
+      } else {
+        const dwellStatusEl = document.getElementById('cctvDwellStatusText');
+        const dwellMeterEl = document.getElementById('cctvPoseDwellMeter');
+        if (dwellStatusEl) {
+          if (maxDwellShelf && activeDwellState !== 'IDLE') {
+            dwellStatusEl.textContent = `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`;
+            dwellStatusEl.style.color = activeDwellState === 'INTENT_CONFIRMED' ? 'var(--success)' : 'var(--warning)';
+          } else {
+            dwellStatusEl.textContent = activeCameraRole === 'SIDE_PRESENCE' ? 'Idle (No Presence in Entry Zone)' : 'Idle (No Wrist in ROI)';
+            dwellStatusEl.style.color = 'var(--text-muted)';
+          }
         }
-      }
 
-      if (dwellMeterEl) {
-        if (maxDwellShelf && activeDwellState === 'DWELLING') {
-          dwellMeterEl.style.display = 'inline-block';
-          dwellMeterEl.style.background = 'rgba(245, 158, 11, 0.2)';
-          dwellMeterEl.style.borderColor = '#f59e0b';
-          dwellMeterEl.style.color = '#fbbf24';
-          dwellMeterEl.textContent = `⏳ DWELLING: ${maxDwellTime.toFixed(1)}s / 1.2s`;
-        } else if (maxDwellShelf && activeDwellState === 'INTENT_CONFIRMED') {
-          dwellMeterEl.style.display = 'inline-block';
-          dwellMeterEl.style.background = 'rgba(16, 185, 129, 0.2)';
-          dwellMeterEl.style.borderColor = '#10b981';
-          dwellMeterEl.style.color = '#34d399';
-          dwellMeterEl.textContent = `✓ INTENT CONFIRMED (${compartmentTrackers[maxDwellShelf].lastConfirmedAction})`;
-        } else {
-          dwellMeterEl.style.display = 'none';
+        if (dwellMeterEl) {
+          if (maxDwellShelf && activeDwellState === 'DWELLING') {
+            dwellMeterEl.style.display = 'inline-block';
+            dwellMeterEl.style.background = 'rgba(245, 158, 11, 0.2)';
+            dwellMeterEl.style.borderColor = '#f59e0b';
+            dwellMeterEl.style.color = '#fbbf24';
+            dwellMeterEl.textContent = `⏳ DWELLING: ${maxDwellTime.toFixed(1)}s / 1.2s`;
+          } else if (maxDwellShelf && activeDwellState === 'INTENT_CONFIRMED') {
+            dwellMeterEl.style.display = 'inline-block';
+            dwellMeterEl.style.background = 'rgba(16, 185, 129, 0.2)';
+            dwellMeterEl.style.borderColor = '#10b981';
+            dwellMeterEl.style.color = '#34d399';
+            dwellMeterEl.textContent = `✓ INTENT CONFIRMED (${compartmentTrackers[maxDwellShelf].lastConfirmedAction})`;
+          } else {
+            dwellMeterEl.style.display = 'none';
+          }
         }
       }
 
@@ -4719,13 +4917,13 @@
       ctx.restore();
     }
 
-    function drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, width, height) {
+    function drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, width, height, rois = activeCctvRois, calibrating = isCalibratingRoi) {
       const rx = xMin * width;
       const ry = yMin * height;
       const rw = (xMax - xMin) * width;
       const rh = (yMax - yMin) * height;
 
-      const isTargetCalib = isCalibratingRoi && document.getElementById('cctvCalibShelfSelect')?.value === shelfId;
+      const isTargetCalib = calibrating && document.getElementById('cctvCalibShelfSelect')?.value === shelfId;
 
       let strokeColor = 'rgba(56, 189, 248, 0.7)'; // Default cyan
       let fillColor = 'rgba(56, 189, 248, 0.08)';
@@ -4748,7 +4946,7 @@
       }
 
       ctx.fillStyle = fillColor;
-      const points = roiVertices(activeCctvRois[shelfId] || DEFAULT_COMPARTMENT_ROIS[shelfId],width,height);
+      const points = roiVertices((rois && rois[shelfId]) || DEFAULT_COMPARTMENT_ROIS[shelfId], width, height);
       if (!points.length) return;
       if (tracker.ambiguous) { strokeColor = '#f97316'; labelText = `${shelfId} AMBIGUOUS`; }
       ctx.beginPath();
@@ -5195,6 +5393,7 @@
     }
 
     async function startMediaPipeTracker() {
+      if (typeof threeCameraDashboard !== 'undefined') threeCameraDashboard.stop();
       const generation = ++trackingGeneration;
       const toggleBtn = document.getElementById('cctvPoseToggleBtn');
       const badge = document.getElementById('cctvPoseStatusBadge');

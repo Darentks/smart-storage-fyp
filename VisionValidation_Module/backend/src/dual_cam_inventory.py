@@ -25,7 +25,7 @@ def validate_evidence(evidence, count, now, captures, shelf_id) -> tuple[tuple[i
     samples = evidence.get("samples")
     if not isinstance(samples, list) or not 3 <= len(samples) <= 5:
         raise ValueError("Three consistent live captures are required")
-    if type(count) is not int or not 0 <= count <= 5:
+    if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= 5:
         raise ValueError("Inventory count must be an integer from 0 to 5")
     previous = None
     seen: set[str] = set()
@@ -39,7 +39,7 @@ def validate_evidence(evidence, count, now, captures, shelf_id) -> tuple[tuple[i
         slots = current
         for key in ("front_confidence", "back_confidence"):
             confidence = sample.get(key)
-            if type(confidence) not in (int, float) or not math.isfinite(confidence) or not 85 <= confidence <= 100:
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 85 <= confidence <= 100:
                 raise ValueError("Both cameras require at least 85% confidence")
         capture = sample.get("capture")
         if not isinstance(capture, dict):

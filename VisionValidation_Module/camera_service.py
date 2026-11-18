@@ -166,7 +166,7 @@ def configure_cctv_alignment(cameras):
 
 
 def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=None,
-                          trigger_id=None, dwell_duration_seconds=1.2, consensus_context=None):
+                          trigger_id=None, dwell_duration_seconds=1.2, consensus_context=None, detected_at=None):
     """Atomically align distinct enabled cameras and queue one claimable validation."""
     # Replays use isolated buffers/configuration and never enter the live trigger queue.
     camera_config = CCTV_CAMERA_CONFIG if consensus_context is None else consensus_context["cameras"]
@@ -175,7 +175,7 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
     last_triggers = LAST_SHELF_TRIGGER_TS if consensus_context is None else consensus_context["last_triggers"]
     pending = PENDING_CCTV_TRIGGERS if consensus_context is None else consensus_context["events"]
     shelves = {f"SHELF_R1_C{i}" for i in range(1, 7)}
-    if action not in {"BORROW", "RETURN"}:
+    if action not in {"BORROW", "RETURN"} and camera_config.get(camera_id, {}).get("camera_role") != "SIDE_PRESENCE":
         raise ValueError("expected_action must be BORROW or RETURN")
     if not math.isfinite(confidence) or not 0 <= confidence <= 1:
         raise ValueError("oks_confidence must be finite and between 0 and 1")
@@ -192,6 +192,10 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
                 role == "GRID_6_ROI" and shelf_id not in shelves):
             raise ValueError("Grid cameras require an exact shelf; side cameras require ANY_SHELF")
         now = time.time()
+        evidence_ts = now if detected_at is None else float(detected_at)
+        if not math.isfinite(evidence_ts) or now - evidence_ts > CONSENSUS_WINDOW_SEC or evidence_ts - now > 1.0:
+            raise ValueError("CCTV detection timestamp is stale or invalid")
+        evidence_ts = min(now, evidence_ts)
         active = {cid: cam for cid, cam in camera_config.items() if cam["is_active"]}
         for cid, vote in list(align_state.items()):
             if now - vote["ts"] > CONSENSUS_WINDOW_SEC:
@@ -205,7 +209,7 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
         if trigger_id:
             seen_ids[trigger_id] = now
         align_state[camera_id] = {
-            "ts": now, "action": action, "conf": confidence, "shelf_id": shelf_id, "camera_role": role,
+            "ts": evidence_ts, "action": action, "conf": confidence, "shelf_id": shelf_id, "camera_role": role,
         }
         # Exact shelf and action must agree across all enabled grid views; side presence validates entry-zone presence.
         grid_votes = [align_state[cid] for cid, cam in active.items()
@@ -1671,14 +1675,22 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        if path == "/cctv_invalidate_votes":
+            with CCTV_CONSENSUS_LOCK:
+                CCTV_ALIGN_STATE.clear()
+            self._send_json(200, {"status": "success"})
+            return
+
         # MANUAL TRIGGER: Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
         if path == "/esp32_trigger":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
             command = str(body.get("command", "CAPTURE_STATE")).upper()
-            expected_action = str(body.get("expected_action", "BORROW")).upper()
+            expected_action = str(body.get("expected_action", "")).upper()
             rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
             source = str(body.get("source", "MANUAL")).upper()
 
+            if source not in {"CCTV", "CCTV_BROWSER_DWELL"} and not expected_action:
+                expected_action = "BORROW"
             consensus = None
             if source in {"CCTV", "CCTV_BROWSER_DWELL"}:
                 try:
@@ -1690,6 +1702,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         camera_role=body.get("camera_role"),
                         trigger_id=body.get("trigger_id"),
                         dwell_duration_seconds=float(body.get("dwell_duration_seconds", 1.2)),
+                        detected_at=body.get("detected_at"),
                     )
                 except (ValueError, TypeError) as exc:
                     self._send_json(400, {"status": "error", "error": str(exc)})
@@ -1697,7 +1710,15 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 if not consensus["consensus_met"]:
                     self._send_json(200, consensus)
                     return
+                if (consensus.get("shelf_id") not in {f"SHELF_R1_C{i}" for i in range(1, 7)}
+                        or consensus.get("expected_action") not in {"BORROW", "RETURN"}
+                        or not isinstance(consensus.get("confidence"), (int, float))
+                        or not math.isfinite(consensus["confidence"]) or not 0 <= consensus["confidence"] <= 1
+                        or not isinstance(consensus.get("trigger_id"), str) or not consensus["trigger_id"]):
+                    self._send_json(500, {"status": "error", "error": "Invalid consensus; no capture dispatched"})
+                    return
                 shelf_id = consensus["shelf_id"]
+                expected_action = consensus["expected_action"]
                 command = "CAPTURE_STATE"
 
             # Guardrail 1: Freeze 30s baseline for 10s during interaction

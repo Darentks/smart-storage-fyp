@@ -193,6 +193,8 @@ class MQTTClientNode:
             node_entry = self.edge_nodes.get(device_id, {}) if device_id else {}
             ip_address = payload.get("ip_address") or node_entry.get("ip_address")
             payload["received_at"] = now_iso
+            self.recent_responses.append(dict(payload))
+            del self.recent_responses[:-15]
 
             if device_id:
                 if device_id not in self.edge_nodes:

@@ -759,6 +759,145 @@
       }
     }
   </style>
+  <script>
+/* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
+class ThreeCameraDashboard {
+  constructor(options) { Object.assign(this, options); this.contexts = new Map(); this.generation = 0; this.cursor = 0; this.running = false; this.startupGeneration = 0; this.validations = new Set(); this.votes = Promise.resolve(); }
+  valid(c, epoch) { return this.running && c.epoch === epoch && c.generation === this.generation; }
+  reset(c) { c.epoch++; c.frame = null; c.results = null; c.processed = 0; c.detectionStatus = 'Idle'; c.detectionAt = null; c.trackers = Object.fromEntries(Object.keys(c.rois).map(id => [id, this.resetTracker()])); }
+  healthy(c, now = performance.now()) { return c.received > 0 && now - c.received < 1500 && c.processed > 0 && now - c.processed < 1500; }
+  async post(path, body, signal) {
+    const response = await fetch(this.bridge() + path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal});
+    const data = await response.json(); if (!response.ok) throw Error(data.error || response.status); return data;
+  }
+  stop() {
+    this.running = false; this.generation++; this.startupGeneration++; clearTimeout(this.timer); clearTimeout(this.telemetryTimer);
+    this.controller?.abort(); for (const c of this.contexts.values()) { clearTimeout(c.timer); this.reset(c); }
+    this.status('Stopped');
+  }
+  async start(cameras, defaults) {
+    this.stop(); const generation = this.generation; this.controller = new AbortController();
+    await this.post('/cctv_invalidate_votes', {}, this.controller.signal);
+    if (generation !== this.generation) return;
+    const host = document.getElementById('threeCameraCards'); host.replaceChildren(); this.contexts.clear();
+    for (const [index,id] of ['CCTV_01','CCTV_02','CCTV_03'].entries()) {
+      const config = cameras.find(c => c.cctv_id === id);
+      if (!config || config.is_active === false || !config.rtsp_url) throw Error(`Configure and enable ${id} first`);
+      const role = index === 2 ? 'SIDE_PRESENCE' : 'GRID_6_ROI';
+      if (config.camera_role !== role) throw Error(`Set ${id} role to ${role}`);
+      let rois = structuredClone(defaults);
+      const key = `smart_storage_cctv_rois_${id}`;
+      const binding = JSON.parse(localStorage.getItem(key+'_binding') || 'null');
+      // Use only calibration bound to this source and role.
+      const sourceBinding = this.sourceBinding(config.rtsp_url);
+      if (binding && binding.camera_role === role && binding.source === sourceBinding) Object.assign(rois, JSON.parse(localStorage.getItem(key) || '{}'));
+      const card = document.createElement('article'), label = document.createElement('div'), canvas = document.createElement('canvas');
+      canvas.width=640; canvas.height=480; canvas.style.width='100%';
+      canvas.onclick=()=>{canvas.style.maxHeight=canvas.style.maxHeight ? '' : '75vh'; card.style.gridColumn=card.style.gridColumn ? '' : '1 / -1';};
+      card.append(label,canvas);host.append(card);
+      const c={id,config,source:config.rtsp_url,role,rois,canvas,label,generation,epoch:0,seq:null,received:0,processed:0,fps:0,detectionStatus:'Idle',lastVote:'none'};
+      this.reset(c); this.contexts.set(id,c);
+    }
+    this.running=true;this.cursor=0;
+    for (const c of this.contexts.values()) this.poll(c);
+    this.schedule(); this.telemetry();
+  }
+  async invalidate(c) {
+    if (!this.running || (!c.received && !c.processed && !c.frame)) return;
+    c.received=0; this.reset(c);
+    // Clear all local dwell evidence as well as bridge votes after a feed gap.
+    for (const other of this.contexts.values()) if(other!==c) this.reset(other);
+    try { await this.post('/cctv_invalidate_votes',{},this.controller.signal); } catch (_) {}
+  }
+  async poll(c) {
+    const epoch=c.epoch, generation=this.generation;
+    try {
+      const response=await fetch(`${this.bridge()}/test_feed?source=${encodeURIComponent(c.source)}&cctv_id=${c.id}`,{cache:'no-store',signal:AbortSignal.any([this.controller.signal,AbortSignal.timeout(3000)])});
+      const data=await response.json();
+      if(!this.valid(c,epoch)) return;
+      if(!response.ok || !data.image || data.seq===undefined) throw Error('No fresh frame sequence');
+      if(data.seq!==c.seq) {
+        const image=new Image(); image.src=data.image; await image.decode();
+        if(!this.valid(c,epoch)) return;
+        c.seq=data.seq; c.frame=image; c.received=performance.now();
+      } else if(performance.now()-c.received>1500) await this.invalidate(c);
+    } catch(error) { if(this.valid(c,epoch)) await this.invalidate(c); }
+    finally { if(this.running && generation===this.generation) c.timer=setTimeout(()=>this.poll(c),100); }
+  }
+  async schedule() {
+    const generation=this.generation;
+    if(!this.running)return;
+    const cameras=[...this.contexts.values()];
+    const c=cameras[this.cursor++ % cameras.length];
+    let ran=false;
+    try {
+      if(c.frame && performance.now()-c.received<1500) {
+        ran=true;
+        const image=c.frame, timestamp=c.received, epoch=c.epoch;c.frame=null;
+        if(c.canvas.width!==image.naturalWidth)c.canvas.width=image.naturalWidth;
+        if(c.canvas.height!==image.naturalHeight)c.canvas.height=image.naturalHeight;
+        const accepted = await this.infer(image,c,timestamp);
+        if(accepted === true && this.valid(c,epoch) && performance.now()-timestamp<1500) {
+          const now=performance.now();c.fps=c.processed ? 1000/(now-c.processed) : 0;c.processed=now;
+        }
+      }
+      const missing=cameras.filter(c=>!this.healthy(c));
+      this.status(missing.length ? 'Waiting for '+missing.map(c=>c.id.replace('_',' ')).join(', ') : 'All cameras detecting');
+      for(const c of cameras)c.label.textContent=`${c.id} (${c.role}) | ${this.healthy(c)?'Connected':'Waiting'} | ${c.detectionStatus||'Idle'} | ${c.fps.toFixed(1)} FPS | processed ${c.processed?Math.round((performance.now()-c.processed))+'ms ago':'never'} | vote ${c.lastVote}`;
+    } catch(error) {this.event(`${c.id}: ${error.message}`);await this.invalidate(c);}
+    finally {if(this.running && generation===this.generation)this.timer=setTimeout(()=>this.schedule(),ran?0:25);}
+  }
+  vote(c,shelf,action,dwell,confidence) {
+    const epoch=c.epoch;
+    const detectedAt = c.detectionAt ?? Date.now()/1000;
+    const queuedAt = performance.now();
+    const body={camera_id:c.id,camera_role:c.role,trigger_id:crypto.randomUUID(),source:'CCTV_BROWSER_DWELL',detected_at:detectedAt,shelf_id:c.role==='SIDE_PRESENCE'?'ANY_SHELF':shelf,oks_confidence:confidence,dwell_duration_seconds:dwell};
+    if(c.role!=='SIDE_PRESENCE')body.expected_action=action;
+    this.votes=this.votes.catch(()=>{}).then(async()=>{
+      if(!Number.isFinite(detectedAt) || Date.now()/1000-detectedAt > 4 || detectedAt-Date.now()/1000 > 1 || performance.now()-queuedAt > 4000)return;
+      if(!this.valid(c,epoch) || ![...this.contexts.values()].every(c=>this.healthy(c)))return;
+      const result=await this.post('/esp32_trigger',body,this.controller.signal);
+      if(!this.valid(c,epoch))return;
+      c.lastVote=`${body.shelf_id} ${body.expected_action || 'presence'}`;this.event(`${c.id} vote: ${c.lastVote}`);
+      if(result.consensus_met) {
+        this.event(`Consensus confirmed: ${result.shelf_id} (${result.expected_action || 'BORROW'})`);
+        this.event(`MQTT status: ${result.mqtt_connected?'connected':'disconnected'}`);
+        this.event(`ESP32 capture request: ${result.mqtt_connected?'dispatched':'not delivered'} for ${result.shelf_id}`);
+        // ValidationQueue retains ownership, ordering and deduplication; it must not block votes.
+        const task = this.validate(result, c, epoch);
+        this.validations.add(task);
+        task.finally(() => this.validations.delete(task));
+      }
+    }).catch(error=>this.event('Vote: '+error.message));
+  }
+  async validate(result, c, epoch) {
+    try {
+      const validation = await this.consume(result);
+      if (!this.valid(c,epoch)) return;
+      if (validation == null) this.event(`Inventory validation skipped for ${result.shelf_id}`);
+      else if (validation.status === 'success' && validation.comparison) this.event(`Inventory validation completed for ${result.shelf_id}`);
+      else this.event(`Inventory validation failed for ${result.shelf_id}`);
+      return validation;
+    } catch(error) {
+      if(this.valid(c,epoch))this.event(`Inventory validation failed for ${result.shelf_id}: ${error.message}`);
+    }
+  }
+  async telemetry() {
+    const generation=this.generation;
+    try {
+      const r=await fetch(this.bridge()+'/esp32_nodes',{signal:this.controller.signal});const data=await r.json();
+      if(!this.running || generation!==this.generation)return;
+      const readySig=JSON.stringify(data.recent_responses||[]);
+      if(readySig!==this.lastReadyTelemetry){this.lastReadyTelemetry=readySig;this.event(`ESP32 readiness: ${readySig}`);}
+      const logSig=JSON.stringify(data.comparison_logs||[]);
+      if(logSig!==this.lastLogTelemetry){this.lastLogTelemetry=logSig;this.event(`Inventory validation results: ${logSig}`);}
+    }catch(_){}
+    finally {if(this.running && generation===this.generation)this.telemetryTimer=setTimeout(()=>this.telemetry(),2000);}
+  }
+}
+if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
+
+</script>
   <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.19.0/dist/ort.min.js"></script>
 </head>
 
@@ -789,6 +928,7 @@
       </div>
     </header>
 
+    <p style="padding:0 24px;color:var(--text-muted)">Active vision layout: 5 slots. Bottom: F1, M1, B1. Top: M2, B2. Shared M2 is counted once. Existing database capacities require an explicit layout migration.</p>
     <!-- Bridge Config & Quick Action Bar -->
     <div class="config-bar" style="flex-wrap: wrap; gap: 12px;">
       <div class="config-bar-left" style="flex-wrap: wrap; gap: 8px;">
@@ -797,12 +937,14 @@
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">TM Model
-          URL:</label>
+        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Front / combined TM URL:</label>
         <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
+        <label for="tmBackModelUrlInput">Back TM URL (same link for combined model):</label>
+        <input type="text" id="tmBackModelUrlInput" class="form-control" style="min-width:280px;"
+          placeholder="https://teachablemachine.withgoogle.com/models/.../" />
         <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302;
-          Load TM Model</button>
+          Load Both TM Models</button>
       </div>
       <div style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
         <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);"
@@ -1285,6 +1427,11 @@
             </div>
           </div>
 
+          <section><button class="btn-action" onclick="startThreeCameras()">Start All Cameras</button>
+          <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
+          <div id="threeCameraStatus" role="status">Stopped</div>
+          <div id="threeCameraCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px"></div>
+          <pre id="threeCameraEvents" aria-live="polite" style="max-height:220px;overflow:auto;white-space:pre-wrap"></pre></section>
           <!-- Canvas & Video Viewport (Single Full-Box Canvas — No Split Screen) -->
           <div class="preview-canvas-box" id="cctvTestContainer"
             style="position: relative; width: 100%; aspect-ratio: 4 / 3; display: block; background: #070b14; border-radius: 8px; overflow: hidden;">
@@ -1550,130 +1697,98 @@
     // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 7 CORE SCENARIOS
     // =========================================================================
     const DEFAULT_TM_MODEL_URL = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
-    const SCENARIO_LABELS = {
-      6: "Scenario 1: 6/6 Boxes Present",
-      5: "Scenario 2: 5/6 Boxes Present",
-      4: "Scenario 3: 4/6 Boxes Present",
-      3: "Scenario 4: 3/6 Boxes Present",
-      2: "Scenario 5: 2/6 Boxes Present",
-      1: "Scenario 6: 1/6 Box Present",
-      0: "Scenario 7: 0/6 No Box Present"
+    const SCENARIO_LABELS = Object.fromEntries(Array.from({length: 6}, (_, n) => [n, `${n}/5 Boxes Present`]));
+    const DUAL_CAM_LABELS = {
+      Front: ['000', '010', '011', '100', '110', '111'].map(bits => `Front_${bits}`),
+      Back: ['000', '001', '100', '101', '110', '111'].map(bits => `Back_${bits}`)
     };
+    window.dualCamSettings = {confidence: 0.85, consistentCaptures: 3};
+    window.tmModel = null; // Compatibility readiness flag for existing dashboard workflows.
+    window.tmFrontModel = null;
+    window.tmBackModel = null;
 
-    window.tmModel = null;
-
-    function requireSixBoxModel(model) {
-      const labels = model.getClassLabels().map(label => String(label).trim());
-      const hasBack = [0, 1, 2, 3, 4].every(n => labels.some(l => new RegExp(`^Back_${n}_Box(?:es)?$`, 'i').test(l)));
-      const hasFront = [0, 1, 2].every(n => labels.some(l => new RegExp(`^Front_${n}_Box(?:es)?$`, 'i').test(l)));
-      if (labels.length !== 8 || !hasBack || !hasFront) {
-        window.tmModel = null;
-        throw new Error('Six-box counting requires 8 classes: Back_0..4_Boxes and Front_0..2_Boxes. Retrain and load the new model.');
+    function requireDualCamModel(model, role) {
+      const labels = model.getClassLabels();
+      const expected = labels.length === 12 ? [...DUAL_CAM_LABELS.Front, ...DUAL_CAM_LABELS.Back] : DUAL_CAM_LABELS[role];
+      if (labels.length !== expected.length || new Set(labels).size !== expected.length || !expected.every(label => labels.includes(label))) {
+        throw new Error(`${role}: use the combined 12-class model or a separate six-class model with the exact occupancy labels`);
       }
     }
 
     async function loadTeachableMachineModel() {
-      if (!window.tmImage) {
-        console.warn('Teachable Machine Image library (@teachablemachine/image) not available yet.');
-        return;
-      }
-      let rawUrl = (tmModelUrlInput ? tmModelUrlInput.value : '').trim() || localStorage.getItem('smart_storage_tm_model_url') || DEFAULT_TM_MODEL_URL;
-      if (!rawUrl.endsWith('/')) rawUrl += '/';
-      if (tmModelUrlInput) tmModelUrlInput.value = rawUrl;
-      localStorage.setItem('smart_storage_tm_model_url', rawUrl);
-
-      const ts = Date.now();
-      const proxyBase = `${getBridgeUrl()}/tm_proxy/${ts}/`;
-      const proxyModelURL = `${proxyBase}model.json?base=${encodeURIComponent(rawUrl)}`;
-      const proxyMetadataURL = `${proxyBase}metadata.json?base=${encodeURIComponent(rawUrl)}`;
-
-      if (loadTmModelBtn) {
-        loadTmModelBtn.disabled = true;
-        loadTmModelBtn.textContent = 'Loading TM...';
-      }
-
-      // 1. Try local bridge cache-busting proxy first (bypasses Chrome's weights.bin cache)
+      if (!window.tmImage || loadTmModelBtn?.disabled) return;
+      window.tmModel = window.tmFrontModel = window.tmBackModel = null;
+      loadTmModelBtn.disabled = true;
+      loadTmModelBtn.textContent = 'Loading both models...';
       try {
-        console.log(`[TM Loader] Loading TM model via local bridge proxy: ${proxyModelURL}`);
-        window.tmModel = await tmImage.load(proxyModelURL, proxyMetadataURL);
-        requireSixBoxModel(window.tmModel);
-        console.log('[TM Loader] TM Model loaded successfully via proxy. Classes:', window.tmModel.getClassLabels());
-        showToast('Teachable Machine model loaded fresh via proxy!', 'success');
-        if (loadTmModelBtn) {
-          loadTmModelBtn.disabled = false;
-          loadTmModelBtn.textContent = 'TM Model: Active';
-          loadTmModelBtn.style.borderColor = 'var(--success)';
-          loadTmModelBtn.style.color = 'var(--success)';
-        }
-        return;
-      } catch (proxyErr) {
-        console.warn(`[TM Loader] Proxy load failed: ${proxyErr.message}. Attempting direct remote load...`);
-      }
-
-      // 2. Direct remote load fallback
-      try {
-        const directModelURL = `${rawUrl}model.json?t=${ts}`;
-        const directMetadataURL = `${rawUrl}metadata.json?t=${ts}`;
-        console.log(`[TM Loader] Loading Teachable Machine model directly from: ${directModelURL}`);
-        window.tmModel = await tmImage.load(directModelURL, directMetadataURL);
-        requireSixBoxModel(window.tmModel);
-        console.log('[TM Loader] Teachable Machine Model loaded directly. Classes:', window.tmModel.getClassLabels());
-        showToast('Teachable Machine model loaded directly from cloud!', 'success');
-        if (loadTmModelBtn) {
-          loadTmModelBtn.disabled = false;
-          loadTmModelBtn.textContent = 'TM Model: Active';
-          loadTmModelBtn.style.borderColor = 'var(--success)';
-          loadTmModelBtn.style.color = 'var(--success)';
-        }
-      } catch (err) {
-        console.warn(`[TM Loader] Direct remote load failed: ${err.message}. Attempting offline local fallback...`);
-        try {
-          // Guardrail 3: Offline local fallback when lab internet is disconnected
-          window.tmModel = await tmImage.load(`./models/tm_0cQO4TjOm/model.json?t=${ts}`, `./models/tm_0cQO4TjOm/metadata.json?t=${ts}`);
-        requireSixBoxModel(window.tmModel);
-          console.log('[TM Loader] Offline Local Teachable Machine Model loaded successfully.');
-          showToast('Loaded offline local Teachable Machine model (./models/tm_0cQO4TjOm/)!', 'info');
-          if (loadTmModelBtn) {
-            loadTmModelBtn.disabled = false;
-            loadTmModelBtn.textContent = 'TM Model: Offline';
-            loadTmModelBtn.style.borderColor = 'var(--warning)';
-            loadTmModelBtn.style.color = 'var(--warning)';
-          }
-        } catch (offlineErr) {
-          console.error('[TM Loader] Both remote and local offline TM loads failed:', offlineErr);
-          showToast(`TM Model load failed: ${offlineErr.message}`, 'error');
-          if (loadTmModelBtn) {
-            loadTmModelBtn.disabled = false;
-            loadTmModelBtn.textContent = 'Load TM Model';
-            loadTmModelBtn.style.borderColor = 'var(--danger)';
-            loadTmModelBtn.style.color = 'var(--danger)';
-          }
-        }
-      }
+        const loading = new Map();
+        const load = async (role, input) => {
+          let base = input.value.trim() || tmModelUrlInput.value.trim() || DEFAULT_TM_MODEL_URL;
+          if (!base) throw new Error(`Enter the ${role.toLowerCase()} model URL`);
+          base = base.replace(/(?:model|metadata)\.json(?:\?.*)?$/, '');
+          if (!base.endsWith('/')) base += '/';
+          const url = new URL(base, location.href);
+          if (!['https:', 'http:'].includes(url.protocol)) throw new Error('Use an HTTP(S) model URL');
+          base = url.href;
+          input.value = base;
+          const proxy = `${getBridgeUrl()}/tm_proxy/source/${encodeURIComponent(base)}/${Date.now()}/`;
+          if (!loading.has(base)) loading.set(base, (async () => {
+            try {
+              return await tmImage.load(`${proxy}model.json?base=${encodeURIComponent(base)}`, `${proxy}metadata.json?base=${encodeURIComponent(base)}`);
+            } catch (error) {
+              return await tmImage.load(base + 'model.json', base + 'metadata.json');
+            }
+          })());
+          const model = await loading.get(base);
+          requireDualCamModel(model, role);
+          localStorage.setItem(`smart_storage_tm_${role.toLowerCase()}_model_url`, base);
+          return model;
+        };
+        const [front, back] = await Promise.all([
+          load('Front', tmModelUrlInput), load('Back', document.getElementById('tmBackModelUrlInput'))
+        ]);
+        window.tmFrontModel = front;
+        window.tmBackModel = back;
+        window.tmModel = {front, back};
+        loadTmModelBtn.textContent = 'TM Occupancy: Active';
+        showToast('TM occupancy model loaded. Shared position: M2; capacity: 5.', 'success');
+      } catch (error) {
+        window.tmModel = window.tmFrontModel = window.tmBackModel = null;
+        loadTmModelBtn.textContent = 'Load Both TM Models';
+        showToast(error.message, 'error');
+      } finally { loadTmModelBtn.disabled = false; }
     }
 
     // Low-light canvas enhancement fallback (CLAHE approximation + shadow gamma correction)
-    // Always returns a full 640x480 (naturalWidth x naturalHeight) canvas to prevent 16:9 CSS box cropping
-    function enhanceCanvasLowLight(sourceEl, boostMode = 'off') {
-      if (!sourceEl) return sourceEl;
+    // Full-frame display by default; cropToSquare produces geometrically centered 224x224
+    // inference input for 224-input models (not pixel-identical to library rounding).
+    // Cropping precedes luminance sampling and gamma enhancement.
+    function enhanceCanvasLowLight(sourceEl, boostMode = 'off', cropToSquare = false) {
+      if (!sourceEl) return cropToSquare ? null : sourceEl;
       try {
         const srcW = sourceEl.naturalWidth || sourceEl.videoWidth || sourceEl.width || 640;
         const srcH = sourceEl.naturalHeight || sourceEl.videoHeight || sourceEl.height || 480;
-        if (!srcW || !srcH) return sourceEl;
+        if (!srcW || !srcH) return cropToSquare ? null : sourceEl;
 
         const canvas = document.createElement('canvas');
-        canvas.width = srcW;
-        canvas.height = srcH;
+        canvas.width = cropToSquare ? 224 : srcW;
+        canvas.height = cropToSquare ? 224 : srcH;
         const ctx = canvas.getContext('2d');
 
-        // Draw full 640x480 uncropped frame
-        ctx.drawImage(sourceEl, 0, 0, srcW, srcH);
+        if (cropToSquare) {
+          const side = Math.min(srcW, srcH);
+          const sx = Math.round((srcW - side) / 2);
+          const sy = Math.round((srcH - side) / 2);
+          ctx.drawImage(sourceEl, sx, sy, side, side, 0, 0, 224, 224);
+        } else {
+          ctx.drawImage(sourceEl, 0, 0, srcW, srcH);
+        }
 
         if (boostMode === 'off') {
           return canvas;
         }
 
-        const imgData = ctx.getImageData(0, 0, srcW, srcH);
+        const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         const data = imgData.data;
 
         let totalL = 0;
@@ -1713,125 +1828,64 @@
         return canvas;
       } catch (err) {
         console.warn('[Enhance] Canvas preprocess error:', err);
-        return sourceEl;
+        return cropToSquare ? null : sourceEl;
       }
     }
 
     async function predictDualCamerasWithTM(backImgEl, frontImgEl, overrideBoost) {
-      if (!window.tmModel) return null;
-      const labels = window.tmModel.getClassLabels().map(label => String(label).trim());
-      const hasBack = [0, 1, 2, 3, 4].every(n => labels.some(l => new RegExp(`^Back_${n}_Box(?:es)?$`, 'i').test(l)));
-      const hasFront = [0, 1, 2].every(n => labels.some(l => new RegExp(`^Front_${n}_Box(?:es)?$`, 'i').test(l)));
-      if (labels.length !== 8 || !hasBack || !hasFront) {
-        return { totalBoxes: null, backCount: 0, frontCount: 0, confidence: 0,
-          backConfidence: 0, frontConfidence: 0, backClass: 'Back_Unmatched', frontClass: 'Front_Unmatched',
-          degraded: true, scenarioLabel: 'Validation aborted: Load an 8-class model (Back 0-4, Front 0-2)' };
-      }
-
-
-      const isUsable = (img) => {
-        if (!img) return false;
-        if (img instanceof HTMLImageElement) {
-          return img.complete && img.naturalWidth > 0 && Boolean(img.src) && !img.src.endsWith('/null') && !img.src.endsWith('/undefined');
-        }
-        return Boolean(img);
-      };
-
-      const backOk = isUsable(backImgEl);
-      const frontOk = isUsable(frontImgEl);
-
-      // Require BOTH image_back (CAM1) and image_front (CAM2) to load
-      if (!backOk || !frontOk) {
-        console.warn('[TM] Dual-angle required: one or both camera frames failed to load.', { backOk, frontOk });
-        return {
-          backClass: backOk ? 'Back_Loaded' : 'Back_Offline',
-          backCount: 0,
-          backConfidence: 0,
-          frontClass: frontOk ? 'Front_Loaded' : 'Front_Offline',
-          frontCount: 0,
-          frontConfidence: 0,
-          totalBoxes: null,
-          scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
-          confidence: 0,
-          degraded: true
-        };
-      }
-
-      // Check boost mode and apply canvas brightness/gamma enhancer fallback if enabled
-      const boostSelect = document.getElementById('visionBoostSelect');
-      const boostMode = overrideBoost || (boostSelect ? boostSelect.value : 'auto');
-      const backTarget = enhanceCanvasLowLight(backImgEl, boostMode);
-      const frontTarget = enhanceCanvasLowLight(frontImgEl, boostMode);
-
-      // 1. Predict Back Camera (strictly filter with /^Back_([0-4])_Box(?:es)?$/i)
-      let bestBack = null;
-      let backCount = 0;
-      let backNormProb = 0;
-      let backSum = 0;
+      const pending = (reason, extra = {}) => ({totalBoxes: null, backCount: null, frontCount: null,
+        backClass: 'Back_Unmatched', frontClass: 'Front_Unmatched', backConfidence: 0,
+        frontConfidence: 0, confidence: 0, degraded: true, status: 'VALIDATION_PENDING', scenarioLabel: reason, ...extra});
+      if (!window.tmFrontModel || !window.tmBackModel) return pending('Load the combined 12-class model or both six-class models');
       try {
-        const backPreds = await window.tmModel.predict(backTarget);
-        const backOnly = backPreds.filter(p => /^Back_([0-4])_Box(?:es)?$/i.test(String(p.className || '').trim()));
-        if (backOnly.length > 0) {
-          bestBack = backOnly.reduce((a, b) => a.probability > b.probability ? a : b);
-          backSum = backOnly.reduce((s, p) => s + p.probability, 0);
-          backNormProb = backSum > 0 ? bestBack.probability / backSum : 0;
-          const m = String(bestBack.className).trim().match(/^Back_([0-4])_Box(?:es)?$/i);
-          backCount = m ? Math.min(4, Math.max(0, parseInt(m[1], 10))) : 0;
-        }
-      } catch (e) {
-        console.warn('[TM] Back camera predict failed:', e);
-      }
-
-      // 2. Predict Front Camera (strictly filter with /^Front_([0-2])_Box(?:es)?$/i)
-      let bestFront = null;
-      let frontCount = 0;
-      let frontNormProb = 0;
-      let frontSum = 0;
-      try {
-        const frontPreds = await window.tmModel.predict(frontTarget);
-        const frontOnly = frontPreds.filter(p => /^Front_([0-2])_Box(?:es)?$/i.test(String(p.className || '').trim()));
-        if (frontOnly.length > 0) {
-          bestFront = frontOnly.reduce((a, b) => a.probability > b.probability ? a : b);
-          frontSum = frontOnly.reduce((s, p) => s + p.probability, 0);
-          frontNormProb = frontSum > 0 ? bestFront.probability / frontSum : 0;
-          const m = String(bestFront.className).trim().match(/^Front_([0-2])_Box(?:es)?$/i);
-          frontCount = m ? Math.min(2, Math.max(0, parseInt(m[1], 10))) : 0;
-        }
-      } catch (e) {
-        console.warn('[TM] Front camera predict failed:', e);
-      }
-
-      if (!bestBack || !bestFront || !(bestBack.probability >= 0.20 && backSum >= 0.25 && bestFront.probability >= 0.20 && frontSum >= 0.25)) {
-        return {
-          backClass: bestBack ? bestBack.className : 'Back_Unmatched',
-          backCount: 0,
-          backConfidence: 0,
-          frontClass: bestFront ? bestFront.className : 'Front_Unmatched',
-          frontCount: 0,
-          frontConfidence: 0,
-          totalBoxes: null,
-          scenarioLabel: 'Validation aborted: Dual-angle required (1 camera unreachable)',
-          confidence: 0,
-          degraded: true
+        requireDualCamModel(window.tmFrontModel, 'Front');
+        requireDualCamModel(window.tmBackModel, 'Back');
+        const usable = image => image && (!(image instanceof HTMLImageElement) ||
+          (image.complete && image.naturalWidth > 0 && image.src));
+        if (!usable(backImgEl) || !usable(frontImgEl)) return pending('Both camera images are required');
+        const boostMode = overrideBoost || document.getElementById('visionBoostSelect')?.value || 'off';
+        const backTarget = enhanceCanvasLowLight(backImgEl, boostMode, true);
+        const frontTarget = enhanceCanvasLowLight(frontImgEl, boostMode, true);
+        const valid = image => image instanceof HTMLCanvasElement && image.width === 224 && image.height === 224;
+        if (!valid(backTarget) || !valid(frontTarget)) return pending('224x224 preprocessing failed');
+        const backPreds = await window.tmBackModel.predict(backTarget);
+        const frontPreds = await window.tmFrontModel.predict(frontTarget);
+        const best = (predictions, role) => {
+          const model = role === 'Back' ? window.tmBackModel : window.tmFrontModel;
+          const expected = model.getClassLabels();
+          if (!Array.isArray(predictions) || predictions.length !== expected.length ||
+              new Set(predictions.map(p => p.className)).size !== expected.length ||
+              predictions.some(p => !expected.includes(p.className) ||
+                !Number.isFinite(p.probability) || p.probability < 0 || p.probability > 1)) throw new Error('Invalid model output');
+          // Use raw probability. Never inflate confidence by renormalizing camera-specific classes.
+          const top = predictions.reduce((a, b) => a.probability > b.probability ? a : b);
+          if (!DUAL_CAM_LABELS[role].includes(top.className)) throw new Error(`${role} image classified as the wrong camera role`);
+          return top;
         };
-      }
+        const back = best(backPreds, 'Back'), front = best(frontPreds, 'Front');
+        const details = {backClass: back.className, frontClass: front.className,
+          backConfidence: Number((back.probability * 100).toFixed(1)), frontConfidence: Number((front.probability * 100).toFixed(1)),
+          confidence: Number((Math.min(back.probability, front.probability) * 100).toFixed(1))};
+        const threshold = window.dualCamSettings.confidence;
+        if (!Number.isFinite(threshold) || threshold < 0.85 || threshold > 1 ||
+            back.probability < threshold || front.probability < threshold) return pending('Low confidence; quantity retained', details);
+        const [F1, M1, M2] = front.className.slice(6).split('').map(Number);
+        const [B1, B2, backM2] = back.className.slice(5).split('').map(Number);
+        if (M2 !== backM2) return pending('MIDDLE_CONFLICT: cameras disagree on M2', {...details, status: 'MIDDLE_CONFLICT'});
+        if (M2 > M1 || B2 > B1) return pending('Unsupported upper box; retry capture', details);
+        const totalBoxes = F1 + M1 + M2 + B1 + B2;
+        return {...details, totalBoxes, frontCount: F1 + M1 + M2, backCount: B1 + B2,
+          slots: {F1, M1, M2, B1, B2}, sharedM2: M2, occupancyKey: `${F1}${M1}${M2}${B1}${B2}`,
+          status: 'VERIFIED_PAIR', degraded: false, scenarioLabel: `${totalBoxes}/5 Boxes | M2 agrees | F1=${F1} M1=${M1} M2=${M2} B1=${B1} B2=${B2}`};
+      } catch (error) { return pending(error.message); }
+    }
 
-      // 3. Compute totalBoxes = backCount + frontCount (0..6) and map to the 7 Scenarios (6/6 down to 0/6)
-      const totalBoxes = Math.min(6, Math.max(0, backCount + frontCount));
-      const avgConfidence = Number((((backNormProb + frontNormProb) / 2) * 100).toFixed(1));
-
-      return {
-        backClass: bestBack.className,
-        backCount,
-        backConfidence: Number((backNormProb * 100).toFixed(1)),
-        frontClass: bestFront.className,
-        frontCount,
-        frontConfidence: Number((frontNormProb * 100).toFixed(1)),
-        totalBoxes,
-        scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/6 Boxes`,
-        confidence: avgConfidence,
-        degraded: false
-      };
+    function dualCamEvidence(samples) {
+      return {version: 'stacked-shared-m2-v1', samples: samples.map(sample => ({
+        front_class: sample.prediction.frontClass, back_class: sample.prediction.backClass,
+        front_confidence: sample.prediction.frontConfidence, back_confidence: sample.prediction.backConfidence,
+        capture: sample.preview?.capture
+      }))};
     }
 
     // Toast helper
@@ -2296,8 +2350,8 @@
                 if (tmRes) {
                   if (tmRes.degraded) {
                     tmLivePredictionBanner.style.display = 'block';
-                    tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);">Validation aborted: Dual-angle required (1 camera unreachable)</span>`;
-                    showToast('Validation aborted: Dual-angle required (1 camera unreachable)', 'error');
+                    tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);">${tmRes.status}: ${tmRes.scenarioLabel}</span>`;
+                    showToast(`${tmRes.status || 'VALIDATION_PENDING'}: ${tmRes.scenarioLabel}`, 'error');
                   } else {
                     // Update badges on individual cameras
                     backPredBadge.style.display = 'block';
@@ -2308,7 +2362,7 @@
 
                     // Update Prominent Status Banner
                     tmLivePredictionBanner.style.display = 'block';
-                    tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
+                    tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
                     showToast(`Live TM Prediction: ${tmRes.scenarioLabel}`, 'success');
                   }
                 }
@@ -2365,38 +2419,67 @@
       homeTestFrontDataUrl = frontSrc;
 
       const loadImgPromise = (img, src) => new Promise(resolve => {
-        img.onload = () => resolve(true);
+        img.onload = () => resolve(img.naturalWidth > 0);
         img.onerror = () => resolve(false);
         img.src = src;
       });
 
-      // 1. Load into preview elements
+      // Capture one mode for display, inference, and the validation payload.
+      const boostSelect = document.getElementById('visionBoostSelect');
+      const boostMode = boostSelect ? boostSelect.value : 'auto';
+      const rawBackImg = new Image();
+      const rawFrontImg = new Image();
+      const rawLoaded = await Promise.all([
+        loadImgPromise(rawBackImg, backSrc),
+        loadImgPromise(rawFrontImg, frontSrc)
+      ]);
+      if (!rawLoaded.every(Boolean) || !rawBackImg.naturalWidth || !rawFrontImg.naturalWidth) {
+        showToast('Offline test aborted: original photo failed to load.', 'error');
+        return;
+      }
+
+      // Display enhancement is independent of the untouched inference sources.
+      let displayBackSrc = backSrc;
+      let displayFrontSrc = frontSrc;
+      if (boostMode !== 'off') {
+        try {
+          const enhBack = enhanceCanvasLowLight(rawBackImg, boostMode, false);
+          const enhFront = enhanceCanvasLowLight(rawFrontImg, boostMode, false);
+          if (!(enhBack instanceof HTMLCanvasElement) || !(enhFront instanceof HTMLCanvasElement)) {
+            throw new Error('Full-frame enhancement failed');
+          }
+          displayBackSrc = enhBack.toDataURL('image/jpeg', 0.9);
+          displayFrontSrc = enhFront.toDataURL('image/jpeg', 0.9);
+        } catch (err) {
+          console.warn('[Offline] Display enhancement/serialization failed:', err);
+          showToast('Offline test aborted: photo enhancement or serialization failed.', 'error');
+          return;
+        }
+      }
+
       backPreviewImg.style.display = 'block';
       backPlaceholder.style.display = 'none';
       frontPreviewImg.style.display = 'block';
       frontPlaceholder.style.display = 'none';
-
-      await Promise.all([
-        loadImgPromise(backPreviewImg, backSrc),
-        loadImgPromise(frontPreviewImg, frontSrc)
+      const previewsLoaded = await Promise.all([
+        loadImgPromise(backPreviewImg, displayBackSrc),
+        loadImgPromise(frontPreviewImg, displayFrontSrc)
       ]);
-
-      // Apply client-side low-light boost to uploaded offline test photos if enabled
-      const boostSelect = document.getElementById('visionBoostSelect');
-      const boostMode = boostSelect ? boostSelect.value : 'auto';
-      if (boostMode !== 'off') {
-        const enhBack = enhanceCanvasLowLight(backPreviewImg, boostMode);
-        const enhFront = enhanceCanvasLowLight(frontPreviewImg, boostMode);
-        if (enhBack instanceof HTMLCanvasElement) {
-          backPreviewImg.src = enhBack.toDataURL('image/jpeg', 0.9);
-        }
-        if (enhFront instanceof HTMLCanvasElement) {
-          frontPreviewImg.src = enhFront.toDataURL('image/jpeg', 0.9);
-        }
+      if (!previewsLoaded.every(Boolean) || !backPreviewImg.naturalWidth || !frontPreviewImg.naturalWidth) {
+        showToast('Offline test aborted: preview photo failed to load.', 'error');
+        return;
       }
 
-      // 2. Draw side-by-side onto canvas for combined view
-      const stitchedDataUrl = stitchTwoImages(backPreviewImg, frontPreviewImg);
+      // Stitch only decoded full-frame previews, preserving each aspect ratio.
+      let stitchedDataUrl;
+      try {
+        stitchedDataUrl = stitchTwoImages(backPreviewImg, frontPreviewImg);
+        if (!stitchedDataUrl) throw new Error('Empty stitched image');
+      } catch (err) {
+        console.warn('[Offline] Photo stitching failed:', err);
+        showToast('Offline test aborted: photo stitching or serialization failed.', 'error');
+        return;
+      }
       livePreviewImg.src = stitchedDataUrl;
       livePreviewImg.style.display = 'block';
       previewPlaceholder.style.display = 'none';
@@ -2413,9 +2496,9 @@
         return;
       }
 
-      const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
-      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null || !Number.isFinite(tmRes.confidence) || tmRes.confidence < 65) {
-        const abortMsg = 'Validation aborted: dual-angle evidence or confidence is insufficient.';
+      const tmRes = await predictDualCamerasWithTM(rawBackImg, rawFrontImg, boostMode);
+      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null || !Number.isFinite(tmRes.confidence) || tmRes.confidence < 85) {
+        const abortMsg = tmRes ? `${tmRes.status}: ${tmRes.scenarioLabel}` : 'Validation pending';
         if (tmLivePredictionBanner) {
           tmLivePredictionBanner.style.display = 'block';
           tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);font-weight:700;">${abortMsg}</span>`;
@@ -2431,69 +2514,9 @@
       frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
 
       tmLivePredictionBanner.style.display = 'block';
-      tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
+      tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
 
-      // 5. Send result to POST /esp32_validate or directly update Supabase
-      const comp = compartmentsData.find(c => c.shelf_id === shelfId) || { shelf_id: shelfId, current_quantity: 6 };
-      const beforeBoxes = comp.current_quantity != null ? comp.current_quantity : 6;
-      const ip1 = refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201';
-      const ip2 = refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202';
-
-      const valPayload = {
-        shelf_id: shelfId,
-        validation_token: validationToken,
-        source: "MANUAL",
-        expected_action: "BORROW",
-        ip: ip1,
-        ip2: ip2,
-        image: stitchedDataUrl,
-        baseline_box_count: beforeBoxes,
-        predicted_box_count: tmRes.totalBoxes,
-        scenario_label: tmRes.scenarioLabel,
-        tm_confidence: tmRes.confidence,
-        boost: boostMode
-      };
-
-      let bridgeSuccess = false;
-      try {
-        const valResp = await fetch(`${getBridgeUrl()}/esp32_validate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(valPayload)
-        });
-        if (valResp.ok) {
-          bridgeSuccess = true;
-          const resultJson = await valResp.json();
-          const compRes = resultJson.comparison || {};
-          const delta = compRes.delta !== undefined ? compRes.delta : 0;
-          const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
-          showToast(`Offline Test Verified: ${compRes.state_delta || 'NO_CHANGE'} (${deltaSign}) | ${tmRes.scenarioLabel}`, 'success');
-          prependLatestAction({
-            log_id: `local-${Date.now()}`,
-            created_at: new Date().toISOString(),
-            shelf_id: shelfId,
-            rack_id: comp.rack_id || 'RACK_01',
-            mqtt_client_id: comp.mqtt_client_id || `ESP32_${shelfId.replace('SHELF_', '')}`,
-            trigger_action: 'BORROW',
-            before_image_url: comp.baseline_image_url || null,
-            after_image_url: stitchedDataUrl,
-            diff_score: compRes.diff_score != null ? compRes.diff_score : null,
-            similarity_score: tmRes.confidence,
-            matched_box_count: tmRes.totalBoxes,
-            scenario_label: tmRes.scenarioLabel,
-            state_delta: compRes.state_delta || 'NO_CHANGE',
-            quantity_before: beforeBoxes,
-            quantity_after: tmRes.totalBoxes
-          });
-        }
-      } catch (bridgeErr) {
-        console.warn('Local bridge offline during offline photo test:', bridgeErr);
-      }
-
-      // Never bypass a rejected/failed bridge write or its cross-browser lease.
-      if (!bridgeSuccess) showToast('Photo test inventory update failed; database unchanged or unconfirmed. Check the bridge.', 'error');
-
-      refreshAllData();
+      showToast(`Photo test only: ${tmRes.scenarioLabel}. Use live validation to update inventory.`, 'info');
     }
 
     // =========================================================================
@@ -2510,32 +2533,35 @@
     }
     function validPeriodicPrediction(result) {
       return !!result && !result.degraded && Number.isInteger(result.totalBoxes)
-        && result.totalBoxes >= 0 && result.totalBoxes <= 6
-        && Number.isFinite(result.confidence) && result.confidence >= 65;
+        && result.totalBoxes >= 0 && result.totalBoxes <= 5 && !!result.occupancyKey
+        && Number.isFinite(result.confidence) && result.confidence >= 85;
     }
     function periodicCountsAgree(first, second) {
       return validPeriodicPrediction(first) && validPeriodicPrediction(second)
-        && first.totalBoxes === second.totalBoxes;
+        && first.occupancyKey === second.occupancyKey;
     }
     const VALIDATION_MAX_ROUNDS = 3;
     async function captureConfirmedPair(capture) {
       let captured = false;
-      const fresh = async round => {
-        if (captured) await new Promise(resolve => setTimeout(resolve, PERIODIC_CONFIRM_DELAY_MS));
-        captured = true;
-        const sample = await capture(round);
-        if (!validPeriodicPrediction(sample?.prediction)) throw new Error('Insufficient dual-angle evidence');
-        return sample;
-      };
+      const required = window.dualCamSettings.consistentCaptures;
+      if (!Number.isInteger(required) || required < 3 || required > 5) return null;
       for (let round = 0; round < VALIDATION_MAX_ROUNDS; round++) {
+        const samples = [];
         try {
-          const first = await fresh(round);
-          const second = await fresh(round);
-          if (periodicCountsAgree(first.prediction, second.prediction)) return {first, second};
-          console.warn('[Validation Retry]', 'Counts disagree; taking fresh images');
-        } catch (error) {
-          console.warn('[Validation Retry]', error.message);
-        }
+          for (let i = 0; i < required; i++) {
+            if (captured) await new Promise(resolve => setTimeout(resolve, PERIODIC_CONFIRM_DELAY_MS));
+            captured = true;
+            const sample = await capture(round);
+            const timing = sample?.preview?.capture;
+            if (!timing || !timing.id || !Number.isFinite(timing.completed_at) ||
+                !Number.isFinite(timing.duration_ms) || timing.duration_ms < 0 || timing.duration_ms > 2000 ||
+                samples.some(s => s.preview.capture.id === timing.id) ||
+                !validPeriodicPrediction(sample?.prediction)) throw new Error('Missing, stale or uncertain dual-angle evidence');
+            if (samples.length && !periodicCountsAgree(samples[0].prediction, sample.prediction)) throw new Error('Occupancy changed; retry');
+            samples.push(sample);
+          }
+          return {first: samples[0], second: samples[samples.length - 1], samples};
+        } catch (error) { console.warn('[Validation Retry]', error.message); }
       }
       return null;
     }
@@ -2708,6 +2734,7 @@
           shelf_id: shelfId, source: 'PERIODIC_RECHECK', expected_action: 'RECHECK',
           validation_token: token, ip: comp.ip_address, ip2: comp.secondary_ip_address,
           image: second.preview.image, image_back: second.preview.image_back, image_front: second.preview.image_front,
+          dual_cam_evidence: dualCamEvidence(confirmed.samples),
           predicted_box_count: second.prediction.totalBoxes, tm_confidence: second.prediction.confidence,
           scenario_label: second.prediction.scenarioLabel, boost: 'off',
           periodic_evidence: {first_count: first.prediction.totalBoxes,
@@ -2821,36 +2848,14 @@
           { delay: 2000, boost: 'high', duty: 185 }
         ];
         let bestValidAttempt = null;
-        if (isCctvTrigger) {
-          // Even a first NO_CHANGE count gets a delayed fresh confirmation before committing.
-          const confirmed = await captureConfirmedPair(async round => {
-            const stage = attempts[round];
-            const preview = await fetchSnapshots(stage);
-            updatePreviewUI(preview, preview.image_back, preview.image_front);
-            const prediction = await executePrediction(preview.image_back, preview.image_front, stage.boost);
-            return {prediction, preview, settings:stage};
-          });
-          bestValidAttempt = confirmed?.second || null;
-        } else {
-          for (const stage of attempts) {
-            if (stage.delay) await new Promise(resolve => setTimeout(resolve, stage.delay));
-            try {
-              const preview = await fetchSnapshots(stage);
-              const bSrc = preview.image_back || null;
-              const fSrc = preview.image_front || null;
-              updatePreviewUI(preview, bSrc, fSrc);
-              const prediction = await executePrediction(bSrc, fSrc, stage.boost);
-              if (prediction && !prediction.degraded && prediction.totalBoxes !== null && Number.isFinite(prediction.confidence) && prediction.confidence >= 65.0) {
-                if (!bestValidAttempt || prediction.confidence > bestValidAttempt.prediction.confidence) {
-                  bestValidAttempt = { prediction, preview, settings: stage };
-                }
-                if (prediction.confidence >= 75.0) break;
-              }
-            } catch (error) {
-              console.warn('[DualCam] Capture attempt failed:', error.message);
-            }
-          }
-        }
+        const confirmed = await captureConfirmedPair(async round => {
+          const stage = attempts[round];
+          const preview = await fetchSnapshots(stage);
+          updatePreviewUI(preview, preview.image_back, preview.image_front);
+          const prediction = await executePrediction(preview.image_back, preview.image_front, stage.boost);
+          return {prediction, preview, settings: stage};
+        });
+        bestValidAttempt = confirmed?.second || null;
         if (!bestValidAttempt) {
           const abortMsg = `${shelfId}: Unresolved - will recheck automatically. Dual-angle evidence or stable counts are insufficient.`;
           if (tmLivePredictionBanner) {
@@ -2861,12 +2866,11 @@
           return null;
         }
         const { prediction: tmRes, preview: previewData, settings: acceptedSettings } = bestValidAttempt;
-        if (tmRes.confidence < 75) showToast(`Accepted best retry (${tmRes.confidence}%)`, 'warning');
         updatePreviewUI(previewData, previewData.image_back, previewData.image_front);
 
         if (tmLivePredictionBanner) {
           tmLivePredictionBanner.style.display = 'block';
-          tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Avg Confidence: ${tmRes.confidence}%)`;
+          tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
         }
 
         // 3. Send POST /esp32_validate to Local Bridge
@@ -2881,6 +2885,7 @@
           image: previewData.image,
           image_back: previewData.image_back, image_front: previewData.image_front,
           predicted_box_count: tmRes.totalBoxes,
+          dual_cam_evidence: dualCamEvidence(confirmed.samples),
           scenario_label: tmRes.scenarioLabel,
           tm_confidence: tmRes.confidence,
           boost: boostVal
@@ -2941,7 +2946,7 @@
       mqtt_client_id: `ESP32_R1_C${i + 1}`, secondary_mqtt_client_id: `ESP32_R1_C${i + 1}_CAM2`,
       camera_name: `ESP32 Dual Node R1-C${i + 1}`,
       ip_address: `192.168.0.${201 + i * 2}`, secondary_ip_address: `192.168.0.${202 + i * 2}`,
-      current_quantity: 6, max_capacity: 6, status: 'OFFLINE'
+      current_quantity: 5, max_capacity: 5, status: 'OFFLINE'
     }));
 
     let lastCloudCompartmentsFetchMs = 0;
@@ -3113,7 +3118,7 @@
       const log = { ...(entry && typeof entry === 'object' ? entry : {}) };
       for (const key of ['quantity_before', 'quantity_after', 'matched_box_count']) {
         if (log[key] != null && Number.isFinite(Number(log[key]))) {
-          log[key] = Math.max(0, Math.min(6, Math.trunc(Number(log[key]))));
+          log[key] = Math.max(0, Math.min(5, Math.trunc(Number(log[key]))));
         }
       }
       const delta = Number(log.quantity_after) - Number(log.quantity_before);
@@ -3204,8 +3209,8 @@
 
       compartmentsGrid.innerHTML = items.map((comp) => {
         const isOnline = (comp.status || '').toUpperCase() === 'ONLINE';
-        const qty = comp.current_quantity ?? 6;
-        const maxQty = comp.max_capacity ?? 6;
+        const qty = comp.current_quantity ?? 5;
+        const maxQty = comp.max_capacity ?? 5;
         const rssi = comp.rssi_dbm != null ? `${comp.rssi_dbm} dBm` : 'N/A';
 
         let slotPillsHtml = '';
@@ -3292,7 +3297,7 @@
         const timeStr = log.created_at ? new Date(log.created_at).toLocaleString() : 'Just now';
         const diffText = log.diff_score != null ? `${log.diff_score}%` : 'N/A';
         const tmConfText = log.similarity_score != null ? `${log.similarity_score}%` : 'N/A';
-        const scenarioText = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/6 Boxes` : 'N/A');
+        const scenarioText = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/5 Boxes` : 'N/A');
 
         const beforeImg = log.before_image_url
           ? `<img src="${log.before_image_url}" alt="Baseline Before [CAM1 | CAM2]" />`
@@ -3375,7 +3380,7 @@
 
       comparisonLogsData.forEach(log => {
         const deltaNum = (log.quantity_after ?? 0) - (log.quantity_before ?? 0);
-        const scenarioVal = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/6 Boxes` : "");
+        const scenarioVal = log.scenario_label || (log.matched_box_count != null ? `${log.matched_box_count}/5 Boxes` : "");
         const row = [
           log.log_id || "",
           `"${log.created_at || ""}"`,
@@ -4265,7 +4270,8 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.102',
         rtsp_url: 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102',
-        is_active: false
+        is_active: true,
+        status: 'ONLINE'
       },
       {
         cctv_id: 'CCTV_03',
@@ -4274,7 +4280,8 @@
         rack_id: 'RACK_01',
         ip_address: '192.168.0.103',
         rtsp_url: 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102',
-        is_active: false
+        is_active: true,
+        status: 'ONLINE'
       }
     ];
 
@@ -4414,8 +4421,10 @@
       finally { yoloSessionPromise = null; }
     }
 
-    async function runYoloPoseOnSource(sourceEl) {
-      if (isYoloInferencing || !isPoseRunning) return;
+    async function runYoloPoseOnSource(sourceEl, cameraContext = null, sourceTimestamp = cameraContext?.received) {
+      if (isYoloInferencing || (!cameraContext && !isPoseRunning)) return false;
+      const contextEpoch = cameraContext?.epoch;
+      const frameTime = sourceTimestamp;
       const generation = trackingGeneration;
       const evidenceGeneration = poseEvidenceGeneration;
       let tensor;
@@ -4424,7 +4433,7 @@
         // Acquire before awaiting session initialization so overlapping frames also skip it.
         isYoloInferencing = true;
         const session = await getYoloPoseSession();
-        if (!isPoseRunning || generation !== trackingGeneration) return;
+        if (cameraContext ? !threeCameraDashboard.valid(cameraContext, contextEpoch) : (!isPoseRunning || generation !== trackingGeneration)) return false;
         const srcW = sourceEl.videoWidth || sourceEl.naturalWidth || sourceEl.width || 640;
         const srcH = sourceEl.videoHeight || sourceEl.naturalHeight || sourceEl.height || 480;
         const scale = Math.min(YOLO_INPUT_SIZE / srcW, YOLO_INPUT_SIZE / srcH);
@@ -4444,8 +4453,9 @@
         tensor = new ort.Tensor('float32', input, [1, 3, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE]);
         const feeds = { [session.inputNames[0]]: tensor };
         outputs = await session.run(feeds);
-        if (!isPoseRunning || generation !== trackingGeneration || evidenceGeneration !== poseEvidenceGeneration) return;
-        if (isRecordedCctvTest() && (cctvReplaySnapshot?.status !== 'playing' || sourceEl.paused || sourceEl.seeking)) return;
+        if (cameraContext ? !threeCameraDashboard.valid(cameraContext, contextEpoch) : (!isPoseRunning || generation !== trackingGeneration || evidenceGeneration !== poseEvidenceGeneration)) return false;
+        if (!cameraContext && isRecordedCctvTest() && (cctvReplaySnapshot?.status !== 'playing' || sourceEl.paused || sourceEl.seeking)) return false;
+        if (cameraContext && performance.now() - frameTime > 1500) return false;
         const output = outputs[session.outputNames[0]];
         if (output.dims.length !== 3 || output.dims[1] !== 56) throw new Error('Expected YOLO pose output [1,56,anchors]. Export without NMS.');
         const anchors = output.dims[2], data = output.data;
@@ -4492,12 +4502,42 @@
           };
           return mappedLandmarks;
         });
-        onPoseResults({ image: sourceEl, poseLandmarks: allPersonsLandmarks[0] || null, multiPoseLandmarks: allPersonsLandmarks });
+        if (cameraContext) cameraContext.detectionAt = (Date.now() - (performance.now() - frameTime))/1000;
+        onPoseResults({ image: sourceEl, poseLandmarks: allPersonsLandmarks[0] || null, multiPoseLandmarks: allPersonsLandmarks }, cameraContext);
+        return true;
       } finally {
         isYoloInferencing = false;
         if (tensor) tensor.dispose();
         if (outputs) Object.values(outputs).forEach(output => output.dispose());
       }
+    }
+
+    const threeCameraDashboard = new ThreeCameraDashboard({
+      infer: (image, context, timestamp) => runYoloPoseOnSource(image, context, timestamp),
+      bridge: () => getBridgeUrl(),
+      sourceBinding: source => cctvSourceBinding(source),
+      resetTracker: () => ({state:'IDLE', dwellStartTime:null,lastSeenTime:null,currentDwellDuration:0,
+        dwellThreshold:1.2,dropGracePeriod:.3,trajectoryHistory:[],triggerFired:false,
+        lastConfirmedAction:'BORROW',lastConfirmedConf:0,cooldownUntil:0}),
+      consume: result => consumeCctvTrigger({...result,source:'CCTV'}),
+      event: message => { const el=document.getElementById('threeCameraEvents'); el.textContent=(message+'\n'+el.textContent).slice(0,12000); },
+      status: message => { document.getElementById('threeCameraStatus').textContent=message; }
+    });
+    async function startThreeCameras() {
+      stopMediaPipeTracker();
+      threeCameraDashboard.stop();
+      let startup = threeCameraDashboard.startupGeneration;
+      const cancelled = () => startup !== threeCameraDashboard.startupGeneration;
+      try {
+        if (!cctvConfigLoaded) { await loadCctvCameras(); if (cancelled()) return; }
+        await syncCctvAlignmentConfig(); if (cancelled()) return;
+        await getYoloPoseSession(); if (cancelled()) return;
+        // start() owns cancellation once its synchronous stop creates a new generation.
+        const starting = threeCameraDashboard.start(cctvCamerasList, DEFAULT_COMPARTMENT_ROIS);
+        const ownedStartup = threeCameraDashboard.startupGeneration; startup = ownedStartup;
+        await starting;
+        if (ownedStartup !== threeCameraDashboard.startupGeneration) return;
+      } catch(error) { if (!cancelled()) { threeCameraDashboard.stop(); showToast(error.message,'error'); } }
     }
 
     let roiDraft = [];
@@ -4600,21 +4640,34 @@
       Object.assign(tracker,{state:'IDLE',dwellStartTime:null,lastSeenTime:0,currentDwellDuration:0,triggerFired:false,trajectoryHistory:[]});
     }
 
-    function onPoseResults(results) {
-      const canvas = document.getElementById('cctvPoseCanvas');
+    const windowUnusedRole = () => activeCameraRole;
+    const windowUnusedRois = () => activeCctvRois;
+    const windowUnusedTrackers = () => compartmentTrackers;
+    const windowUnusedCalibration = () => isCalibratingRoi;
+    const windowDispatchDwell = (...args) => dispatchDwellTrigger(...args);
+    function onPoseResults(results, cameraContext = null) {
+      const activeCameraRole = cameraContext?.role ?? windowUnusedRole();
+      const activeCctvRois = cameraContext?.rois ?? windowUnusedRois();
+      const compartmentTrackers = cameraContext?.trackers ?? windowUnusedTrackers();
+      const isCalibratingRoi = cameraContext ? false : windowUnusedCalibration();
+      const dispatchDwellTrigger = cameraContext ? (...args) => threeCameraDashboard.vote(cameraContext, ...args) : windowDispatchDwell;
+      const canvas = cameraContext?.canvas ?? document.getElementById('cctvPoseCanvas');
       if (!canvas) return;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      if (cameraContext) cameraContext.results = results;
       const now = performance.now();
-      const dt = now - lastPoseFrameTime;
-      lastPoseFrameTime = now;
-      if (dt > 0) {
-        const instantFps = 1000 / dt;
-        poseFps = Math.round(poseFps * 0.8 + instantFps * 0.2);
+      if (!cameraContext) {
+        const dt = now - lastPoseFrameTime;
+        lastPoseFrameTime = now;
+        if (dt > 0) {
+          const instantFps = 1000 / dt;
+          poseFps = Math.round(poseFps * 0.8 + instantFps * 0.2);
+        }
+        const fpsEl = document.getElementById('cctvFpsText');
+        if (fpsEl) fpsEl.textContent = `${poseFps} FPS`;
       }
-      const fpsEl = document.getElementById('cctvFpsText');
-      if (fpsEl) fpsEl.textContent = `${poseFps} FPS`;
 
       // Clear & Draw video frame or background
       ctx.save();
@@ -4682,7 +4735,7 @@
       }
 
       // Update Wrist / Side-Presence UI telemetry for all detected persons.
-      const wristsEl = document.getElementById('cctvWristsText');
+      const wristsEl = cameraContext ? null : document.getElementById('cctvWristsText');
       if (wristsEl) {
         if (detectedWrists.length) {
           wristsEl.textContent = detectedWrists.map(w => `${w.name} (${w.x.toFixed(2)}, ${w.y.toFixed(2)})`).join(' | ');
@@ -4725,7 +4778,7 @@
         const insideWrist = memberships.get(shelfId)[0] || null;
         if (tracker.ambiguous || isCalibratingRoi) {
           cancelAmbiguousDwell(tracker);
-          drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height);
+          drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height, activeCctvRois, isCalibratingRoi);
           continue;
         }
 
@@ -4794,7 +4847,7 @@
         }
 
         // Draw Compartment ROI Box on Canvas
-        drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height);
+        drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, canvas.width, canvas.height, activeCctvRois, isCalibratingRoi);
       }
 
       // Draw Wrist Highlight Markers (or Side-Presence Body Markers when wrists are occluded)
@@ -4819,34 +4872,40 @@
         ctx.fillText(w.label, px + 12, py + 4);
       }
 
-      // Update Dwell Status badge and meter
-      const dwellStatusEl = document.getElementById('cctvDwellStatusText');
-      const dwellMeterEl = document.getElementById('cctvPoseDwellMeter');
-      if (dwellStatusEl) {
-        if (maxDwellShelf && activeDwellState !== 'IDLE') {
-          dwellStatusEl.textContent = `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`;
-          dwellStatusEl.style.color = activeDwellState === 'INTENT_CONFIRMED' ? 'var(--success)' : 'var(--warning)';
-        } else {
-          dwellStatusEl.textContent = activeCameraRole === 'SIDE_PRESENCE' ? 'Idle (No Presence in Entry Zone)' : 'Idle (No Wrist in ROI)';
-          dwellStatusEl.style.color = 'var(--text-muted)';
+      // Update Dwell Status badge and meter (only mutate global HUD when running single-camera tracker)
+      if (cameraContext) {
+        cameraContext.detectionStatus = (maxDwellShelf && activeDwellState !== 'IDLE')
+          ? `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`
+          : (activeCameraRole === 'SIDE_PRESENCE' ? 'Idle (No Presence in Entry Zone)' : 'Idle (No Wrist in ROI)');
+      } else {
+        const dwellStatusEl = document.getElementById('cctvDwellStatusText');
+        const dwellMeterEl = document.getElementById('cctvPoseDwellMeter');
+        if (dwellStatusEl) {
+          if (maxDwellShelf && activeDwellState !== 'IDLE') {
+            dwellStatusEl.textContent = `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`;
+            dwellStatusEl.style.color = activeDwellState === 'INTENT_CONFIRMED' ? 'var(--success)' : 'var(--warning)';
+          } else {
+            dwellStatusEl.textContent = activeCameraRole === 'SIDE_PRESENCE' ? 'Idle (No Presence in Entry Zone)' : 'Idle (No Wrist in ROI)';
+            dwellStatusEl.style.color = 'var(--text-muted)';
+          }
         }
-      }
 
-      if (dwellMeterEl) {
-        if (maxDwellShelf && activeDwellState === 'DWELLING') {
-          dwellMeterEl.style.display = 'inline-block';
-          dwellMeterEl.style.background = 'rgba(245, 158, 11, 0.2)';
-          dwellMeterEl.style.borderColor = '#f59e0b';
-          dwellMeterEl.style.color = '#fbbf24';
-          dwellMeterEl.textContent = `⏳ DWELLING: ${maxDwellTime.toFixed(1)}s / 1.2s`;
-        } else if (maxDwellShelf && activeDwellState === 'INTENT_CONFIRMED') {
-          dwellMeterEl.style.display = 'inline-block';
-          dwellMeterEl.style.background = 'rgba(16, 185, 129, 0.2)';
-          dwellMeterEl.style.borderColor = '#10b981';
-          dwellMeterEl.style.color = '#34d399';
-          dwellMeterEl.textContent = `✓ INTENT CONFIRMED (${compartmentTrackers[maxDwellShelf].lastConfirmedAction})`;
-        } else {
-          dwellMeterEl.style.display = 'none';
+        if (dwellMeterEl) {
+          if (maxDwellShelf && activeDwellState === 'DWELLING') {
+            dwellMeterEl.style.display = 'inline-block';
+            dwellMeterEl.style.background = 'rgba(245, 158, 11, 0.2)';
+            dwellMeterEl.style.borderColor = '#f59e0b';
+            dwellMeterEl.style.color = '#fbbf24';
+            dwellMeterEl.textContent = `⏳ DWELLING: ${maxDwellTime.toFixed(1)}s / 1.2s`;
+          } else if (maxDwellShelf && activeDwellState === 'INTENT_CONFIRMED') {
+            dwellMeterEl.style.display = 'inline-block';
+            dwellMeterEl.style.background = 'rgba(16, 185, 129, 0.2)';
+            dwellMeterEl.style.borderColor = '#10b981';
+            dwellMeterEl.style.color = '#34d399';
+            dwellMeterEl.textContent = `✓ INTENT CONFIRMED (${compartmentTrackers[maxDwellShelf].lastConfirmedAction})`;
+          } else {
+            dwellMeterEl.style.display = 'none';
+          }
         }
       }
 
@@ -4858,13 +4917,13 @@
       ctx.restore();
     }
 
-    function drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, width, height) {
+    function drawCompartmentRoiBox(ctx, shelfId, xMin, yMin, xMax, yMax, tracker, width, height, rois = activeCctvRois, calibrating = isCalibratingRoi) {
       const rx = xMin * width;
       const ry = yMin * height;
       const rw = (xMax - xMin) * width;
       const rh = (yMax - yMin) * height;
 
-      const isTargetCalib = isCalibratingRoi && document.getElementById('cctvCalibShelfSelect')?.value === shelfId;
+      const isTargetCalib = calibrating && document.getElementById('cctvCalibShelfSelect')?.value === shelfId;
 
       let strokeColor = 'rgba(56, 189, 248, 0.7)'; // Default cyan
       let fillColor = 'rgba(56, 189, 248, 0.08)';
@@ -4887,7 +4946,7 @@
       }
 
       ctx.fillStyle = fillColor;
-      const points = roiVertices(activeCctvRois[shelfId] || DEFAULT_COMPARTMENT_ROIS[shelfId],width,height);
+      const points = roiVertices((rois && rois[shelfId]) || DEFAULT_COMPARTMENT_ROIS[shelfId], width, height);
       if (!points.length) return;
       if (tracker.ambiguous) { strokeColor = '#f97316'; labelText = `${shelfId} AMBIGUOUS`; }
       ctx.beginPath();
@@ -5334,6 +5393,7 @@
     }
 
     async function startMediaPipeTracker() {
+      if (typeof threeCameraDashboard !== 'undefined') threeCameraDashboard.stop();
       const generation = ++trackingGeneration;
       const toggleBtn = document.getElementById('cctvPoseToggleBtn');
       const badge = document.getElementById('cctvPoseStatusBadge');
@@ -6164,7 +6224,8 @@
 
     // Initialization
     if (tmModelUrlInput) {
-      const savedTmUrl = localStorage.getItem('smart_storage_tm_model_url') || DEFAULT_TM_MODEL_URL;
+      const savedTmUrl = localStorage.getItem('smart_storage_tm_front_model_url') || DEFAULT_TM_MODEL_URL;
+      document.getElementById('tmBackModelUrlInput').value = localStorage.getItem('smart_storage_tm_back_model_url') || DEFAULT_TM_MODEL_URL;
       tmModelUrlInput.value = savedTmUrl;
     }
     populateAssignedIpDropdowns();
