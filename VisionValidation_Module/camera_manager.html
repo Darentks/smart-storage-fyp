@@ -762,7 +762,13 @@
   <script>
 /* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
 class ThreeCameraDashboard {
-  constructor(options) { Object.assign(this, options); this.contexts = new Map(); this.generation = 0; this.cursor = 0; this.running = false; this.startupGeneration = 0; this.validations = new Set(); this.votes = Promise.resolve(); }
+  constructor(options) { Object.assign(this, options); this.contexts = new Map(); this.generation = 0; this.cursor = 0; this.running = false; this.startupGeneration = 0; this.validations = new Set(); this.votes = Promise.resolve(); this.background = false; }
+  // Background mode keeps detection and voting running but hides the cards and skips all canvas drawing.
+  setBackground(on) {
+    this.background = !!on;
+    const host = typeof document !== 'undefined' ? document.getElementById('threeCameraCards') : null;
+    if (host) host.style.display = this.background ? 'none' : 'grid';
+  }
   valid(c, epoch) { return this.running && c.epoch === epoch && c.generation === this.generation; }
   reset(c) { c.epoch++; c.frame = null; c.results = null; c.processed = 0; c.detectionStatus = 'Idle'; c.detectionAt = null; c.trackers = Object.fromEntries(Object.keys(c.rois).map(id => [id, this.resetTracker()])); }
   healthy(c, now = performance.now()) { return c.received > 0 && now - c.received < 1500 && c.processed > 0 && now - c.processed < 1500; }
@@ -779,7 +785,7 @@ class ThreeCameraDashboard {
     this.stop(); const generation = this.generation; this.controller = new AbortController();
     await this.post('/cctv_invalidate_votes', {}, this.controller.signal);
     if (generation !== this.generation) return;
-    const host = document.getElementById('threeCameraCards'); host.replaceChildren(); this.contexts.clear();
+    const host = document.getElementById('threeCameraCards'); host.replaceChildren(); this.contexts.clear(); host.style.display = this.background ? 'none' : 'grid';
     for (const [index,id] of ['CCTV_01','CCTV_02','CCTV_03'].entries()) {
       const config = cameras.find(c => c.cctv_id === id);
       if (!config || config.is_active === false || !config.rtsp_url) throw Error(`Configure and enable ${id} first`);
@@ -1035,6 +1041,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
           </div>
 
+          <div id="tmDiagnostics" style="display:none; padding:12px; border:1px solid var(--border); border-radius:8px;"></div>
+
           <!-- Prominent status banner -->
           <div id="tmLivePredictionBanner"
             style="display: block; background: #0b1528; border: 1px solid var(--primary); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: var(--font-mono); color: var(--primary); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.1);">
@@ -1104,6 +1112,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 onclick="fetchLiveAnglePreview()">
                 &#128065; Preview Both Angles &amp; Run Teachable Machine
               </button>
+              <button type="button" id="tmExportBtn" class="btn-action" style="justify-content:center;" onclick="downloadTMTrainingSnapshots()">Download TM Training Snapshots</button>
+              <label style="color:var(--text-secondary);"><input type="checkbox" id="tmExportSweep"> Export Retry Sweep (3 lighting settings)</label>
+              <div id="tmExportDownloads" style="font-size:12px;" aria-live="polite"></div>
               <button type="button" class="btn-action"
                 style="height: 40px; justify-content: center; background: rgba(56, 189, 248, 0.1); border-color: var(--primary); color: var(--primary);"
                 onclick="runFullDualCamValidation(refShelfSelect.value, 'BORROW')">
@@ -1428,6 +1439,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
 
           <section><button class="btn-action" onclick="startThreeCameras()">Start All Cameras</button>
+          <button class="btn-action" id="threeCameraBackgroundBtn" onclick="toggleThreeCameraBackground()" title="Keep detection running but hide previews and skip drawing to save CPU/RAM">Hide Previews (Background Mode)</button>
           <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
           <div id="threeCameraStatus" role="status">Stopped</div>
           <div id="threeCameraCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px"></div>
@@ -1832,11 +1844,66 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
+    function tmCropParameters(source) {
+      const width = source.naturalWidth || source.videoWidth || source.width;
+      const height = source.naturalHeight || source.videoHeight || source.height;
+      if (!(width > 0 && height > 0)) throw new Error('Invalid camera dimensions');
+      const side = Math.min(width, height);
+      return {sourceWidth: width, sourceHeight: height, sx: Math.round((width-side)/2),
+        sy: Math.round((height-side)/2), side, outputWidth:224, outputHeight:224};
+    }
+    function preprocessForTM(source, boost = 'off') {
+      tmCropParameters(source);
+      const canvas = enhanceCanvasLowLight(source, boost, true);
+      if (!(canvas instanceof HTMLCanvasElement) || canvas.width !== 224 || canvas.height !== 224)
+        throw new Error('224x224 preprocessing failed');
+      return canvas; // Raw sensor orientation: never mirror.
+    }
+    function renderTMDiagnostics(backCanvas, frontCanvas, backPreds, frontPreds, error = '') {
+      const host = document.getElementById('tmDiagnostics');
+      if (!host || typeof host.replaceChildren !== 'function') return;
+      host.replaceChildren();
+      host.style.display = 'block';
+      const m2Values = [];
+      for (const [role, canvas, predictions] of [['Back',backCanvas,backPreds], ['Front',frontCanvas,frontPreds]]) {
+        const block = document.createElement('div');
+        block.style.cssText = 'display:inline-block;vertical-align:top;margin:8px;max-width:100%;';
+        const title = document.createElement('strong');
+        title.textContent = role === 'Back' ? 'CAM1 (Back)' : 'CAM2 (Front)';
+        block.append(title);
+        if (canvas) {
+          const image = document.createElement('img');
+          image.src = canvas.toDataURL('image/png');
+          image.alt = role + ' actual 224x224 inference input (non-mirrored)';
+          image.width = image.height = 224;
+          image.style.cssText = 'display:block;max-width:100%;height:auto;';
+          block.append(image);
+        }
+        const top = Array.isArray(predictions) ? [...predictions].sort((a,b)=>b.probability-a.probability).slice(0,3) : [];
+        const m2 = top.length && DUAL_CAM_LABELS[role].includes(top[0].className) ? Number(top[0].className.slice(-1)) : null;
+        m2Values.push(m2);
+        const text = document.createElement('pre');
+        text.style.whiteSpace = 'pre-wrap';
+        text.textContent = (top.length ? top.map(p=>`${p.className}: ${(p.probability*100).toFixed(1)}%`).join('\n') : 'Predictions unavailable') +
+          `\nM2: ${m2 === null ? 'unknown' : m2}`;
+        block.append(text);
+        host.append(block);
+      }
+      const summary = document.createElement('div');
+      summary.textContent = error || (m2Values.includes(null) ? 'M2 agreement unavailable' :
+        m2Values[0] === m2Values[1] ? 'M2 agrees' : 'M2 CONFLICT');
+      host.append(summary);
+    }
+
     async function predictDualCamerasWithTM(backImgEl, frontImgEl, overrideBoost) {
       const pending = (reason, extra = {}) => ({totalBoxes: null, backCount: null, frontCount: null,
         backClass: 'Back_Unmatched', frontClass: 'Front_Unmatched', backConfidence: 0,
         frontConfidence: 0, confidence: 0, degraded: true, status: 'VALIDATION_PENDING', scenarioLabel: reason, ...extra});
-      if (!window.tmFrontModel || !window.tmBackModel) return pending('Load the combined 12-class model or both six-class models');
+      let backTarget, frontTarget, backPreds, frontPreds, diagnosticError = '';
+      if (!window.tmFrontModel || !window.tmBackModel) {
+        renderTMDiagnostics(null, null, null, null, 'Load models to see predictions');
+        return pending('Load the combined 12-class model or both six-class models');
+      }
       try {
         requireDualCamModel(window.tmFrontModel, 'Front');
         requireDualCamModel(window.tmBackModel, 'Back');
@@ -1844,12 +1911,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           (image.complete && image.naturalWidth > 0 && image.src));
         if (!usable(backImgEl) || !usable(frontImgEl)) return pending('Both camera images are required');
         const boostMode = overrideBoost || document.getElementById('visionBoostSelect')?.value || 'off';
-        const backTarget = enhanceCanvasLowLight(backImgEl, boostMode, true);
-        const frontTarget = enhanceCanvasLowLight(frontImgEl, boostMode, true);
+        backTarget = preprocessForTM(backImgEl, boostMode);
+        frontTarget = preprocessForTM(frontImgEl, boostMode);
         const valid = image => image instanceof HTMLCanvasElement && image.width === 224 && image.height === 224;
         if (!valid(backTarget) || !valid(frontTarget)) return pending('224x224 preprocessing failed');
-        const backPreds = await window.tmBackModel.predict(backTarget);
-        const frontPreds = await window.tmFrontModel.predict(frontTarget);
+        backPreds = await window.tmBackModel.predict(backTarget);
+        frontPreds = await window.tmFrontModel.predict(frontTarget);
         const best = (predictions, role) => {
           const model = role === 'Back' ? window.tmBackModel : window.tmFrontModel;
           const expected = model.getClassLabels();
@@ -1877,7 +1944,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         return {...details, totalBoxes, frontCount: F1 + M1 + M2, backCount: B1 + B2,
           slots: {F1, M1, M2, B1, B2}, sharedM2: M2, occupancyKey: `${F1}${M1}${M2}${B1}${B2}`,
           status: 'VERIFIED_PAIR', degraded: false, scenarioLabel: `${totalBoxes}/5 Boxes | M2 agrees | F1=${F1} M1=${M1} M2=${M2} B1=${B1} B2=${B2}`};
-      } catch (error) { return pending(error.message); }
+      } catch (error) { diagnosticError = error.message; return pending(error.message); }
+      finally {
+        try { renderTMDiagnostics(backTarget, frontTarget, backPreds, frontPreds, diagnosticError); }
+        catch (error) { console.warn('[TM diagnostics]', error.message); }
+      }
     }
 
     function dualCamEvidence(samples) {
@@ -2283,15 +2354,16 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     function fetchLiveAnglePreview() {
       return validationWorker.submit({shelfId:refShelfSelect.value, source:'MANUAL', kind:'PREVIEW',
-        ip1:refEspIpInput.value.trim(), ip2:refEspIp2Input.value.trim()});
+        ip1:refEspIpInput.value.trim(), ip2:refEspIp2Input.value.trim(),
+        boost:document.getElementById('visionBoostSelect')?.value || 'off'});
     }
-    async function fetchLiveAnglePreviewLocked(shelfId, assignedIp1, assignedIp2) {
+    async function fetchLiveAnglePreviewLocked(shelfId, assignedIp1, assignedIp2, selectedBoost) {
       const ip1 = assignedIp1;
       const ip2 = assignedIp2;
       const boostSelect = document.getElementById('visionBoostSelect');
-      const boostVal = boostSelect ? boostSelect.value : 'auto';
+      const boostVal = selectedBoost || (boostSelect ? boostSelect.value : 'auto');
       const t0 = performance.now();
-      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boostVal)}&_t=${Date.now()}`;
+      const bridgeUrl = `${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boostVal)}&_t=${Date.now()}`;
 
       previewOverlayText.textContent = `Fetching live dual-angle snapshot (${ip1} + ${ip2})...`;
       showToast(`Fetching live dual preview from ${ip1} & ${ip2}...`, 'info');
@@ -2346,7 +2418,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             // 3. Run Teachable Machine Prediction if model loaded
             if (window.tmModel) {
               try {
-                const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg);
+                const tmRes = await predictDualCamerasWithTM(backPreviewImg, frontPreviewImg, boostVal);
                 if (tmRes) {
                   if (tmRes.degraded) {
                     tmLivePredictionBanner.style.display = 'block';
@@ -2579,8 +2651,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         this.sequence = 0;
       }
       submit(job) {
-        const existing = this.active?.shelfId === job.shelfId ? this.active
-          : this.items.find(item => item.shelfId === job.shelfId);
+        const canMerge = item => item?.shelfId === job.shelfId && item.kind !== 'EXPORT' && job.kind !== 'EXPORT';
+        const existing = canMerge(this.active) ? this.active : this.items.find(canMerge);
         if (existing) {
           // Upgrade waiting backup work when a live/manual event arrives.
           if (existing !== this.active && existing.source === 'PERIODIC_RECHECK' && job.source !== 'PERIODIC_RECHECK') {
@@ -2643,7 +2715,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               // A null lease is a wait, not completion. Keep its queue entry/reservation.
               if (failed || token || this.items[0] !== item || (item.trigger && Date.now()-item.createdAt >= 60000)) {
                 this.items = this.items.filter(queued => queued !== item);
-                this.reserved.delete(item.shelfId);
+                if (!this.items.some(queued => queued.shelfId === item.shelfId)) this.reserved.delete(item.shelfId);
                 this.active = null;
                 item.resolve(result);
               }
@@ -2688,7 +2760,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       })).token,
       cancel: item => bridgePost('/validation_cancel', {request_id:item.requestId}),
       claim: async item => (await bridgePost('/cctv_trigger_claim', {trigger_id:item.trigger.trigger_id})).claimed,
-      execute: (item, token) => item.kind === 'PREVIEW' ? fetchLiveAnglePreviewLocked(item.shelfId, item.ip1, item.ip2)
+      execute: (item, token) => item.kind === 'EXPORT' ? exportTMTrainingLocked(item, token)
+        : item.kind === 'PREVIEW' ? fetchLiveAnglePreviewLocked(item.shelfId, item.ip1, item.ip2, item.boost)
         : item.kind === 'PHOTO' ? runOfflinePhotoTestLocked(item.shelfId, token)
         : item.source === 'PERIODIC_RECHECK' ? executePeriodicRecheckValidation(item.shelfId, item.trigger, token)
         : executeFullDualCamValidation(item.shelfId, item.action || 'BORROW', item.source === 'CCTV', token),
@@ -2699,6 +2772,96 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       pause: () => new Promise(resolve => setTimeout(resolve, 1000)),
       onError: showValidationQueueError
     });
+    let tmExportBusy = false;
+    let tmExportObjectUrls = [];
+    async function downloadTMTrainingSnapshots() {
+      if (tmExportBusy) return;
+      const button = document.getElementById('tmExportBtn');
+      const job = {kind:'EXPORT', source:'MANUAL', shelfId:refShelfSelect.value,
+        ip1:refEspIpInput.value.trim(), ip2:refEspIp2Input.value.trim(),
+        boost:document.getElementById('visionBoostSelect')?.value || 'off',
+        sweep:!!document.getElementById('tmExportSweep')?.checked};
+      if (!job.ip1 || !job.ip2) { showToast('Both camera IPs are required for export.', 'error'); return; }
+      tmExportBusy = true;
+      button.disabled = true;
+      try {
+        showToast('Training export queued. Keep the shelf arrangement unchanged during capture.', 'info');
+        const result = await validationWorker.submit(job);
+        if (!result) throw new Error('Training export failed. Check the bridge and both cameras, then retry.');
+        showToast('Training PNGs and manifest ready. Use the download links if automatic downloads are blocked.', 'success');
+      } catch (error) { showToast(error.message, 'error'); }
+      finally { tmExportBusy = false; button.disabled = false; }
+    }
+    function decodeTMImage(src) {
+      return new Promise((resolve, reject) => {
+        if (!src) { reject(new Error('Both captured camera images are required')); return; }
+        const image = new Image();
+        const timer = setTimeout(() => { image.onload = image.onerror = null; reject(new Error('Camera image decode timed out')); }, 15000);
+        image.onload = () => {
+          clearTimeout(timer);
+          if (!image.naturalWidth || !image.naturalHeight) reject(new Error('Empty camera image'));
+          else resolve(image);
+        };
+        image.onerror = () => { clearTimeout(timer); reject(new Error('Camera image decode failed')); };
+        image.src = src;
+      });
+    }
+    function tmCanvasPNG(canvas) {
+      return new Promise((resolve,reject) => {
+        try { canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('PNG serialization failed')), 'image/png'); }
+        catch (error) { reject(new Error('PNG serialization failed: ' + error.message)); }
+      });
+    }
+    async function exportTMTrainingLocked(item, token) {
+      const settings = [{boost:item.boost, duty:90}, {boost:'auto', duty:135}, {boost:'high', duty:185}];
+      const rounds = item.sweep ? settings : settings.slice(0,1);
+      const stamp = new Date().toISOString().replace(/[:.]/g,'-');
+      const safeShelf = item.shelfId.replace(/[^a-zA-Z0-9_-]/g,'_');
+      const files = [];
+      const manifest = {version:'tm-training-v1', shelf:item.shelfId, createdAt:stamp,
+        orientation:'non-mirrored (raw sensor)', preprocessing:'center-crop-224-browser-boost-once', captures:[]};
+      for (let i=0; i<rounds.length; i++) {
+        if (i) await new Promise(resolve=>setTimeout(resolve,2000));
+        if (!(await bridgePost('/validation_renew', {shelf_id:item.shelfId, token})).renewed)
+          throw new Error('Training export lease expired');
+        const stage = rounds[i];
+        const query = new URLSearchParams({tm_raw:'1', ip:item.ip1, ip2:item.ip2, shelf_id:item.shelfId,
+          boost:stage.boost, flash:'1', duty:String(stage.duty), _t:String(Date.now())});
+        const response = await fetch(`${getBridgeUrl()}/esp32_preview?${query}`, {cache:'no-store'});
+        if (!response.ok) throw new Error(`Training capture failed: HTTP ${response.status}`);
+        const data = await response.json();
+        if (data.status !== 'success' || data.tm_raw !== true) throw new Error('Raw TM capture unavailable; restart the updated bridge');
+        const [back,front] = await Promise.all([decodeTMImage(data.image_back),decodeTMImage(data.image_front)]);
+        for (const [role,source,ip,prefix] of [['Back',back,item.ip1,'CAM1_back'], ['Front',front,item.ip2,'CAM2_front']]) {
+          const canvas = preprocessForTM(source,stage.boost);
+          const name = `${prefix}_${safeShelf}_r${i+1}_${stamp}.png`;
+          files.push({name, blob:await tmCanvasPNG(canvas)});
+          manifest.captures.push({file:name, role, ip, round:i+1, boost:stage.boost,
+            flash:data.flash, duty:data.duty, crop:tmCropParameters(source), orientation:'non-mirrored', capture:data.capture});
+        }
+      }
+      files.push({name:`TM_manifest_${safeShelf}_${stamp}.json`, blob:new Blob([JSON.stringify(manifest,null,2)],{type:'application/json'})});
+      // Publish only after the entire capture/decode/serialization operation succeeds.
+      const host = document.getElementById('tmExportDownloads');
+      const links = [];
+      try {
+        for (const file of files) {
+          const url = URL.createObjectURL(file.blob);
+          links.push({url, name:file.name});
+        }
+      } catch (error) { links.forEach(link=>URL.revokeObjectURL(link.url)); throw error; }
+      tmExportObjectUrls.forEach(url=>URL.revokeObjectURL(url));
+      tmExportObjectUrls = links.map(link=>link.url);
+      host.replaceChildren();
+      for (const file of links) {
+        const link = document.createElement('a');
+        link.href = file.url; link.download = file.name; link.textContent = file.name;
+        link.style.cssText = 'display:block;color:var(--primary);overflow-wrap:anywhere;';
+        host.append(link);
+        link.click();
+      }
+      return manifest;
+    }
     function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
       return validationWorker.submit({shelfId, action, source:isCctvTrigger ? 'CCTV' : 'MANUAL'});
     }
@@ -2714,7 +2877,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const capture = async () => {
           if (!(await bridgePost('/validation_renew', {shelf_id:shelfId, token})).renewed) throw new Error('Validation lease expired');
           // Fixed lighting/processing for both confirmation samples.
-          const response = await fetch(`${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(comp.ip_address)}&ip2=${encodeURIComponent(comp.secondary_ip_address)}&shelf_id=${encodeURIComponent(shelfId)}&boost=off&duty=90&_t=${Date.now()}`, {cache:'no-store'});
+          const response = await fetch(`${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(comp.ip_address)}&ip2=${encodeURIComponent(comp.secondary_ip_address)}&shelf_id=${encodeURIComponent(shelfId)}&boost=off&duty=90&_t=${Date.now()}`, {cache:'no-store'});
           if (!response.ok) throw new Error('Periodic dual-camera capture failed');
           const preview = await response.json();
           if (!preview.image_back || !preview.image_front || !preview.image) throw new Error('Missing dual-angle evidence');
@@ -2768,7 +2931,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
         const fetchSnapshots = async (stage) => {
           if (!(await bridgePost('/validation_renew', {shelf_id:shelfId, token:validationToken})).renewed) throw new Error('Validation lease expired');
-          const previewUrl = `${getBridgeUrl()}/esp32_preview?ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(stage.boost)}&duty=${stage.duty}&_t=${Date.now()}`;
+          const previewUrl = `${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(stage.boost)}&duty=${stage.duty}&_t=${Date.now()}`;
           const prevResp = await fetch(previewUrl, { cache: 'no-store' });
           if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
           return await prevResp.json();
@@ -4523,6 +4686,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       event: message => { const el=document.getElementById('threeCameraEvents'); el.textContent=(message+'\n'+el.textContent).slice(0,12000); },
       status: message => { document.getElementById('threeCameraStatus').textContent=message; }
     });
+    function toggleThreeCameraBackground(forceValue) {
+      const on = typeof forceValue === 'boolean' ? forceValue : !threeCameraDashboard.background;
+      threeCameraDashboard.setBackground(on);
+      try { localStorage.setItem('smart_storage_three_camera_background', on ? '1' : '0'); } catch (_) {}
+      const btn = document.getElementById('threeCameraBackgroundBtn');
+      if (btn) btn.textContent = on ? 'Show Previews' : 'Hide Previews (Background Mode)';
+    }
+    try { if (localStorage.getItem('smart_storage_three_camera_background') === '1') toggleThreeCameraBackground(true); } catch (_) {}
     async function startThreeCameras() {
       stopMediaPipeTracker();
       threeCameraDashboard.stop();
@@ -4645,6 +4816,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     const windowUnusedTrackers = () => compartmentTrackers;
     const windowUnusedCalibration = () => isCalibratingRoi;
     const windowDispatchDwell = (...args) => dispatchDwellTrigger(...args);
+    // Background mode: every drawing call becomes a no-op so hidden cameras cost no canvas work.
+    const NOOP_CANVAS_CONTEXT = new Proxy({}, {
+      get: (_, key) => key === 'createLinearGradient' ? () => ({ addColorStop() {} }) : () => {},
+      set: () => true
+    });
     function onPoseResults(results, cameraContext = null) {
       const activeCameraRole = cameraContext?.role ?? windowUnusedRole();
       const activeCctvRois = cameraContext?.rois ?? windowUnusedRois();
@@ -4653,7 +4829,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const dispatchDwellTrigger = cameraContext ? (...args) => threeCameraDashboard.vote(cameraContext, ...args) : windowDispatchDwell;
       const canvas = cameraContext?.canvas ?? document.getElementById('cctvPoseCanvas');
       if (!canvas) return;
-      const ctx = canvas.getContext('2d');
+      const ctx = (cameraContext && threeCameraDashboard.background) ? NOOP_CANVAS_CONTEXT : canvas.getContext('2d');
       if (!ctx) return;
 
       if (cameraContext) cameraContext.results = results;

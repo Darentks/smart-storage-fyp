@@ -1369,6 +1369,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             esp32_ip2 = query.get("ip2", [None])[0]
             shelf_id = query.get("shelf_id", ["SHELF_R1_C1"])[0]
             boost = query.get("boost", ["auto"])[0]
+            # TM owns crop and enhancement in the browser, exactly once.
+            tm_raw = query.get("tm_raw", ["0"])[0] == "1"
             try:
                 duty = int(query["duty"][0]) if "duty" in query else None
                 flash = int(query["flash"][0]) if "flash" in query else None
@@ -1403,7 +1405,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     mode="live",
                     flash=flash,
                     duty=duty,
-                    boost_mode=boost,
+                    boost_mode="off" if tm_raw else boost,
                 )
                 latency_ms = int((time.time() - t0) * 1000)
                 capture = {"id": str(uuid.uuid4()), "completed_at": time.time(), "duration_ms": latency_ms}
@@ -1425,10 +1427,13 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     "image_back": url1,
                     "image_front": url2,
                     "latency_ms": latency_ms,
+                    "tm_raw": tm_raw,
+                    "flash": 1 if flash is None else flash,
+                    "duty": duty,
                 })
                 return
 
-            frame_bgr, data_url = esp32_ref_manager.fetch_esp32_frame(esp32_ip=esp32_ip, mode="live", flash=flash, duty=duty, boost_mode=boost)
+            frame_bgr, data_url = esp32_ref_manager.fetch_esp32_frame(esp32_ip=esp32_ip, mode="live", flash=flash, duty=duty, boost_mode="off" if tm_raw else boost)
             latency_ms = int((time.time() - t0) * 1000)
 
             self._send_json(200, {

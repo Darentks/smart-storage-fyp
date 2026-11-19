@@ -1,6 +1,12 @@
 /* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
 class ThreeCameraDashboard {
-  constructor(options) { Object.assign(this, options); this.contexts = new Map(); this.generation = 0; this.cursor = 0; this.running = false; this.startupGeneration = 0; this.validations = new Set(); this.votes = Promise.resolve(); }
+  constructor(options) { Object.assign(this, options); this.contexts = new Map(); this.generation = 0; this.cursor = 0; this.running = false; this.startupGeneration = 0; this.validations = new Set(); this.votes = Promise.resolve(); this.background = false; }
+  // Background mode keeps detection and voting running but hides the cards and skips all canvas drawing.
+  setBackground(on) {
+    this.background = !!on;
+    const host = typeof document !== 'undefined' ? document.getElementById('threeCameraCards') : null;
+    if (host) host.style.display = this.background ? 'none' : 'grid';
+  }
   valid(c, epoch) { return this.running && c.epoch === epoch && c.generation === this.generation; }
   reset(c) { c.epoch++; c.frame = null; c.results = null; c.processed = 0; c.detectionStatus = 'Idle'; c.detectionAt = null; c.trackers = Object.fromEntries(Object.keys(c.rois).map(id => [id, this.resetTracker()])); }
   healthy(c, now = performance.now()) { return c.received > 0 && now - c.received < 1500 && c.processed > 0 && now - c.processed < 1500; }
@@ -17,7 +23,7 @@ class ThreeCameraDashboard {
     this.stop(); const generation = this.generation; this.controller = new AbortController();
     await this.post('/cctv_invalidate_votes', {}, this.controller.signal);
     if (generation !== this.generation) return;
-    const host = document.getElementById('threeCameraCards'); host.replaceChildren(); this.contexts.clear();
+    const host = document.getElementById('threeCameraCards'); host.replaceChildren(); this.contexts.clear(); host.style.display = this.background ? 'none' : 'grid';
     for (const [index,id] of ['CCTV_01','CCTV_02','CCTV_03'].entries()) {
       const config = cameras.find(c => c.cctv_id === id);
       if (!config || config.is_active === false || !config.rtsp_url) throw Error(`Configure and enable ${id} first`);
