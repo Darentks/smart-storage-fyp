@@ -893,9 +893,9 @@ class ThreeCameraDashboard {
     try {
       const r=await fetch(this.bridge()+'/esp32_nodes',{signal:this.controller.signal});const data=await r.json();
       if(!this.running || generation!==this.generation)return;
-      const readySig=JSON.stringify(data.recent_responses||[]);
+      const readySig=JSON.stringify((data.recent_responses||[]).map(({device_id,shelf_id,status,received_at})=>({device_id,shelf_id,status,received_at})));
       if(readySig!==this.lastReadyTelemetry){this.lastReadyTelemetry=readySig;this.event(`ESP32 readiness: ${readySig}`);}
-      const logSig=JSON.stringify(data.comparison_logs||[]);
+      const logSig=JSON.stringify((data.comparison_logs||[]).map(({shelf_id,state_delta,quantity_before,quantity_after,scenario_label,similarity_score})=>({shelf_id,state_delta,quantity_before,quantity_after,scenario_label,similarity_score})));
       if(logSig!==this.lastLogTelemetry){this.lastLogTelemetry=logSig;this.event(`Inventory validation results: ${logSig}`);}
     }catch(_){}
     finally {if(this.running && generation===this.generation)this.telemetryTimer=setTimeout(()=>this.telemetry(),2000);}
@@ -1306,7 +1306,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
         <!-- Right Column: In-Browser YOLO11n-Pose ONNX CCTV Wrist-ROI Dwell Detector -->
         <div id="cctvViewerColumn"
-          style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+          style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow: hidden;">
           <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
             <div style="display: flex; align-items: center; gap: 8px;">
               <span style="font-size: 13px; font-weight: 700; color: var(--text-primary);">&#9889; YOLO11n-Pose ONNX
@@ -1443,7 +1443,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
           <div id="threeCameraStatus" role="status">Stopped</div>
           <div id="threeCameraCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px"></div>
-          <pre id="threeCameraEvents" aria-live="polite" style="max-height:220px;overflow:auto;white-space:pre-wrap"></pre></section>
+          <pre id="threeCameraEvents" aria-live="polite" style="max-height:220px;max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word"></pre></section>
           <!-- Canvas & Video Viewport (Single Full-Box Canvas — No Split Screen) -->
           <div class="preview-canvas-box" id="cctvTestContainer"
             style="position: relative; width: 100%; aspect-ratio: 4 / 3; display: block; background: #070b14; border-radius: 8px; overflow: hidden;">

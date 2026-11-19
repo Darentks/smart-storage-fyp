@@ -131,9 +131,9 @@ class ThreeCameraDashboard {
     try {
       const r=await fetch(this.bridge()+'/esp32_nodes',{signal:this.controller.signal});const data=await r.json();
       if(!this.running || generation!==this.generation)return;
-      const readySig=JSON.stringify(data.recent_responses||[]);
+      const readySig=JSON.stringify((data.recent_responses||[]).map(({device_id,shelf_id,status,received_at})=>({device_id,shelf_id,status,received_at})));
       if(readySig!==this.lastReadyTelemetry){this.lastReadyTelemetry=readySig;this.event(`ESP32 readiness: ${readySig}`);}
-      const logSig=JSON.stringify(data.comparison_logs||[]);
+      const logSig=JSON.stringify((data.comparison_logs||[]).map(({shelf_id,state_delta,quantity_before,quantity_after,scenario_label,similarity_score})=>({shelf_id,state_delta,quantity_before,quantity_after,scenario_label,similarity_score})));
       if(logSig!==this.lastLogTelemetry){this.lastLogTelemetry=logSig;this.event(`Inventory validation results: ${logSig}`);}
     }catch(_){}
     finally {if(this.running && generation===this.generation)this.telemetryTimer=setTimeout(()=>this.telemetry(),2000);}
