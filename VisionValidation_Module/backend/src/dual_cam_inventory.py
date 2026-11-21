@@ -97,7 +97,7 @@ def validate_transition(previous, current, quantity, action):
     """RAM snapshot bootstraps without a write; only monotone authorized actions commit."""
     if previous is None:
         if sum(current) != quantity:
-            raise ValueError("Prior occupancy unavailable: restore/recount shelf to stored quantity before initialization")
+            raise ValueError(f"Prior occupancy unavailable: cameras observed {sum(current)} boxes but stored quantity is {quantity}. First complete live Full Validation with a fully observed shelf matching {quantity}; Preview does not initialize occupancy.")
         return
     if sum(previous) != quantity:
         raise ValueError("Stored quantity changed outside this snapshot; restart and recount before validation")

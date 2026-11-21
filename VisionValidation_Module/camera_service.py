@@ -1850,6 +1850,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         slots, capture_ids = validate_evidence(body.get("dual_cam_evidence"), predicted_box_count,
                             time.time(), DUAL_CAM_CAPTURES, shelf_id, body.get("validation_token"),
                             max(cctv_event["timestamp"], cctv_event["claimed_at"]) if cctv_event is not None else None)
+                    initializing_snapshot = shelf_id not in CONFIRMED_OCCUPANCY
                     validate_transition(CONFIRMED_OCCUPANCY.get(shelf_id), slots, curr_qty, expected_action)
                     if not after_image or not body.get("image_back") or not body.get("image_front"):
                         raise ValueError("Both camera images are required")
@@ -1955,6 +1956,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(200, {
                     "status": "success",
                     "occupancy": list(slots),
+                    "snapshot_initialized": initializing_snapshot,
                     "m2_check": "SKIPPED_OCCLUDED" if slots[4] else "PASS",
                     "comparison": comp_res,
                     "log": log_entry,

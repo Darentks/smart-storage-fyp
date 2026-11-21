@@ -3106,7 +3106,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const deltaSign = delta > 0 ? `+${delta}` : `${delta}`;
 
         const tmScenario = tmRes ? ` | ${tmRes.scenarioLabel} (${tmRes.confidence}%)` : '';
-        showToast(`Verified ${shelfId}: ${stateDelta} (${deltaSign})${tmScenario}`, stateDelta === 'ITEM_REMOVED' ? 'error' : 'success');
+        const confirmation = valResult.snapshot_initialized
+          ? `${shelfId}: Occupancy initialized successfully at ${compRes.quantity_after ?? tmRes.totalBoxes} boxes. Keep the bridge running; CCTV removal/return testing can now begin.`
+          : `Verified ${shelfId}: ${stateDelta} (${deltaSign})${tmScenario}`;
+        if (tmLivePredictionBanner) {
+          tmLivePredictionBanner.style.display = 'block';
+          tmLivePredictionBanner.textContent = confirmation;
+        }
+        showToast(confirmation, 'success');
         prependLatestAction({
           log_id: `local-${Date.now()}`,
           created_at: new Date().toISOString(),
@@ -3128,6 +3135,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         return valResult;
       } catch (err) {
         console.error('[runFullDualCamValidation] Error:', err);
+        if (tmLivePredictionBanner) {
+          tmLivePredictionBanner.style.display = 'block';
+          tmLivePredictionBanner.textContent = `${shelfId}: Full Validation failed ? ${err.message}`;
+        }
         showToast(`Dual-camera validation failed: ${err.message}`, 'error');
         return { status: 'failed', error: err.message };
       }
