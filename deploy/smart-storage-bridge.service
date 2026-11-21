@@ -1,0 +1,23 @@
+﻿[Unit]
+Description=Smart Storage bridge
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=smartstorage
+WorkingDirectory=/opt/smart-storage-fyp
+EnvironmentFile=/etc/smart-storage/bridge.env
+ExecStart=/opt/smart-storage-fyp/venv/bin/python /opt/smart-storage-fyp/VisionValidation_Module/camera_service.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+KillMode=control-group
+UMask=0077
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target

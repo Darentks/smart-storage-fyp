@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "calibration_file": "edge-camera-calibrations.json",
+  "source_environment": {
+    "CCTV_01": "EDGE_CCTV_01_SOURCE",
+    "CCTV_02": "EDGE_CCTV_02_SOURCE",
+    "CCTV_03": "EDGE_CCTV_03_SOURCE"
+  }
+}

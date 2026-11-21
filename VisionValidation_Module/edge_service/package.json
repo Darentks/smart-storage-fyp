@@ -1,0 +1,1 @@
+﻿{"name":"smart-storage-edge-service","version":"1.0.0","private":true,"description":"Local inference worker; no browser or database credentials","dependencies":{"@tensorflow/tfjs":"4.22.0","@napi-rs/canvas":"0.1.80","onnxruntime-node":"1.19.2"}}

@@ -69,17 +69,28 @@ from src.config_loader import (  # type: ignore
     list_esp32_cameras,
     update_esp32_health_in_supabase,
     update_compartment_baseline_in_supabase,
-    apply_inventory_delta_in_supabase,
     list_comparison_logs,
     SupabaseRestFallback,
 )
 from src.periodic_recheck import (RecheckCoordinator, StaggeredPollSchedule, inspect_candidate,
                                   has_pending_shelf, queue_periodic_trigger)
-from src.dual_cam_inventory import validate_evidence, validate_transition
+from src.bridge_runtime import InstanceLock, configure_logs, event
+from src.edge_shadow import EdgeShadow
+EDGE_SHADOW = None
+AUTONOMOUS = None
+PROCESSOR_AUTHORITY = 'browser'
+_PROCESSOR_CAPABILITY = object()
+from src.validation_diagnostics import failure_code
+from src.shelf_readiness import ShelfReadiness
+READINESS = ShelfReadiness()
+
+from src.dual_cam_inventory import validate_evidence, validate_transition, decode_observation
+from src.inventory_persistence import (load_inventory_state, commit_inventory_state,
+                                       restore_inventory_cache, operator_rpc)
 
 # Short-lived local capture receipts, never sent to Supabase.
 DUAL_CAM_CAPTURES = {}
-# Confirmed occupancy is intentionally volatile; startup requires a matching recount.
+# Cache only: every validation reads authoritative confirmed slots/revision from Supabase.
 CONFIRMED_OCCUPANCY = {}
 DUAL_CAM_CAPTURE_LOCK = threading.Lock()
 
@@ -253,7 +264,7 @@ CCTV_REPLAY_MANAGER = CctvReplayManager(record_cctv_consensus, window_seconds=CO
 def claim_cctv_trigger(trigger_id, shelf_id=None, validation_token=None):
     """Bind one queued event to its owning shelf lease before taking evidence."""
     with RECHECKS.global_lock:
-        if not RECHECKS.owns(shelf_id, validation_token):
+        if not RECHECKS.owns(shelf_id, validation_token) or not READINESS.ready(shelf_id):
             return False
         with CCTV_CONSENSUS_LOCK:
             if any(t.get("validation_token") == validation_token for t in PENDING_CCTV_TRIGGERS):
@@ -261,8 +272,10 @@ def claim_cctv_trigger(trigger_id, shelf_id=None, validation_token=None):
             for trigger in PENDING_CCTV_TRIGGERS:
                 if (trigger.get("trigger_id") == trigger_id and trigger.get("shelf_id") == shelf_id
                         and not trigger.get("claimed")
+                        and trigger['timestamp'] >= READINESS.get(shelf_id).get('ready_at',0)
                         and 0 <= time.time() - trigger["timestamp"] < 60.0):
                     trigger.update(claimed=True, validation_token=validation_token, claimed_at=time.time())
+                    READINESS.set(shelf_id,"Validating Action","CCTV consensus received")
                     return True
     return False
 
@@ -1163,6 +1176,38 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if globals().get('PROCESSOR_AUTHORITY') == 'service' and path == '/esp32_preview' and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
+            self._send_json(403,{'error':'Service owns live captures; dashboard is monitoring-only'})
+            return
+        if path == '/edge_status':
+            self._send_json(200, AUTONOMOUS.snapshot() if AUTONOMOUS else EDGE_SHADOW.snapshot() if EDGE_SHADOW else {
+                'mode':'browser','authoritative_processor':'browser','service_cutover_available':False,
+                'state':'Disabled','startup_id':READINESS.run_id,'authorizes_write':False})
+            return
+        if path == "/validation_diagnostics":
+            shelf = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('shelf_id',[None])[0]
+            with READINESS.lock:
+                entries=[r for r in READINESS.diagnostics if shelf is None or r['shelf_id']==shelf]
+            self._send_json(200, {'run_id':READINESS.run_id,'entries':entries})
+            return
+        if path == "/shelf_readiness":
+            shelves = [r['shelf_id'] for r in get_cached_compartments() if r.get('shelf_id')]
+            for shelf in shelves:
+                if not mqtt_bridge.is_connected:
+                    READINESS.set(shelf,'Offline','MQTT unavailable')
+                    continue
+                try:
+                    saved=load_inventory_state(shelf)
+                    old=READINESS.get(shelf)
+                    if old['state'] in {'Checking Shelf','Validating Action'} and not RECHECKS.busy(shelf):
+                        READINESS.set(shelf,'Held','Verification interrupted or lease expired; retry verification')
+                    if old['state']=='Offline' or (old['state']=='Ready' and old['revision']!=saved['revision']):
+                        READINESS.set(shelf,'Starting','Database recovered or revision changed; fresh verification required')
+                except Exception:
+                    READINESS.set(shelf,'Offline','Authoritative database unavailable')
+            self._send_json(200, {"run_id": READINESS.run_id, "processor_mode": PROCESSOR_AUTHORITY, "shelves": {key: READINESS.get(key) for key in shelves}})
+            return
+
         query = urllib.parse.parse_qs(parsed.query)
 
         if path in ["/dashboard", "/ui"]:
@@ -1278,6 +1323,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 "protocol": proto,
                 "bridge_url": BRIDGE_PUBLIC_URL or f"{proto}://localhost:8008",
                 "opencv_available": _OPENCV_AVAILABLE,
+                "startup_id": READINESS.run_id, "heartbeat_at": time.time(),
+                "edge_processor": AUTONOMOUS.snapshot() if AUTONOMOUS else EDGE_SHADOW.snapshot() if EDGE_SHADOW else {'mode':'browser','authoritative_processor':'browser'},
+                "health": "degraded" if not mqtt_bridge.is_connected else "checking" if not READINESS.states else "ready" if all(r["state"]=="Ready" for r in READINESS.states.values()) else "degraded",
                 "mqtt_connected": mqtt_bridge.is_connected,
                 "mqtt_broker": f"{mqtt_bridge.broker_address}:{mqtt_bridge.port}",
                 "active_esp32_nodes": len(mqtt_bridge.edge_nodes),
@@ -1300,6 +1348,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             if camera_id in CCTV_CAMERA_IDS and result.get("status") == "success":
                 with CCTV_CONSENSUS_LOCK:
                     CCTV_LAST_SEEN_TS[camera_id] = time.time()
+                if EDGE_SHADOW:
+                    EDGE_SHADOW.submit('pose', identity=f"{camera_id}:{hashlib.sha256(str(source_param).encode()).hexdigest()}:{result.get('seq')}",
+                        observed_at=time.time(), camera_id=camera_id, image=result.get('image'))
             self._send_json(200 if result.get("status") == "success" else 502, result)
             return
 
@@ -1428,6 +1479,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         DUAL_CAM_CAPTURES.pop(next(iter(DUAL_CAM_CAPTURES)))
                     DUAL_CAM_CAPTURES[capture["id"]] = {**capture, "shelf_id": shelf_id, "validation_token": capture_token, "complete": bool(url1 and url2)}
 
+                if tm_raw and url1 and url2 and EDGE_SHADOW:
+                    EDGE_SHADOW.submit('pair', identity=capture['id'], observed_at=capture['completed_at'],
+                        shelf_id=shelf_id, image_back=url1, image_front=url2, boost=boost)
+
                 self._send_json(200, {
                     "capture": capture,
                     "status": "success",
@@ -1492,6 +1547,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if PROCESSOR_AUTHORITY == 'service' and path not in {'/reconciliation_context','/reconcile_inventory'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
+            self._send_json(403,{'error':'Service owns processing; normal dashboard operations are monitoring-only'})
+            return
         body = self._read_json_body()
 
         if path == "/cctv_replay":
@@ -1520,6 +1578,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(200, {"queued": queued})
                 elif path == "/validation_begin":
                     source = body.get("source") or "MANUAL"
+                    if source in {'CCTV','PERIODIC_RECHECK'} and not READINESS.ready(shelf):
+                        RECHECKS.cancel(body.get('request_id'))
+                        self._send_json(409, {'error':'Shelf not Ready; interaction not validated, retry only after readiness'})
+                        return
                     # An unclaimed live CCTV event in another tab also has priority.
                     with CCTV_CONSENSUS_LOCK:
                         live_waiting = any(t.get("source") == "CCTV" and not t.get("claimed")
@@ -1544,6 +1606,79 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         with CCTV_CONSENSUS_LOCK:
                             PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if not (t.get("trigger_id") == trigger_id and t.get("validation_token") == body.get("token"))]
                     self._send_json(200, {"released": ended})
+            return
+
+        if path == '/readiness_recovery':
+            with RECHECKS.global_lock:
+                if body.get('run_id') != READINESS.run_id:
+                    self._send_json(409,{'error':'Bridge run changed; reload status'})
+                    return
+                RECHECKS.leases.clear();RECHECKS.waiting.clear()
+                with CCTV_CONSENSUS_LOCK:
+                    PENDING_CCTV_TRIGGERS.clear();CCTV_ALIGN_STATE.clear()
+                with DUAL_CAM_CAPTURE_LOCK: DUAL_CAM_CAPTURES.clear()
+                for shelf in list(READINESS.states):
+                    READINESS.set(shelf,'Starting','Connection recovered; fresh verification required')
+                self._send_json(200,{'status':'checking','run_id':READINESS.run_id})
+            return
+
+        if path in {'/reconciliation_context','/reconcile_inventory'}:
+            try:
+                shelf=str(body.get('shelf_id',''))
+                with RECHECKS.global_lock:
+                    if path=='/reconciliation_context':
+                        saved=operator_rpc(self.headers.get('Authorization'),'operator_reconciliation_context',{'p_shelf_id':shelf})
+                        self._send_json(200,{'saved':saved,'operating':READINESS.get(shelf),
+                            'observed':getattr(READINESS,'observations',{}).get(shelf), 'run_id':READINESS.run_id})
+                    else:
+                        if body.get('run_id') != READINESS.run_id or RECHECKS.busy():
+                            raise ValueError('Bridge changed or validation busy; reload recount preview')
+                        if body.get('confirmed') is not True: raise ValueError('Explicit physical recount confirmation required')
+                        result=operator_rpc(self.headers.get('Authorization'),'reconcile_inventory',{
+                            'p_shelf_id':shelf,'p_reconciliation_id':body.get('reconciliation_id'),
+                            'p_expected_revision':body.get('revision'),'p_quantity':body.get('quantity'),
+                            'p_slots':body.get('slots'),'p_reason':body.get('reason'),
+                            'p_context':{'run_id':READINESS.run_id,'observed_slots':getattr(READINESS,'observations',{}).get(shelf,{}).get('slots')}})
+                        state=result.get('state',{})
+                        if result.get('status') not in {'accepted','duplicate'} or state.get('shelf_id')!=shelf:
+                            raise ValueError('Reconciliation not confirmed')
+                        CONFIRMED_OCCUPANCY[shelf]=tuple(state['confirmed_occupancy'])
+                        with CCTV_CONSENSUS_LOCK:
+                            PENDING_CCTV_TRIGGERS[:]=[t for t in PENDING_CCTV_TRIGGERS if t.get('shelf_id')!=shelf]
+                            CCTV_ALIGN_STATE.clear()
+                        with DUAL_CAM_CAPTURE_LOCK:
+                            for key in list(DUAL_CAM_CAPTURES):
+                                if DUAL_CAM_CAPTURES[key].get('shelf_id')==shelf: DUAL_CAM_CAPTURES.pop(key,None)
+                        READINESS.set(shelf,'Starting','Recount saved; fresh camera verification required',state['revision'])
+                        event(READINESS.run_id,'reconciliation',shelf_id=shelf,revision=state['revision'],status=result['status'])
+                        self._send_json(200,result)
+            except PermissionError as exc: self._send_json(403,{'error':str(exc)})
+            except (ValueError,KeyError,TypeError) as exc: self._send_json(409,{'error':str(exc)})
+            return
+
+        if path == "/validation_progress":
+            shelf = str(body.get('shelf_id',''))
+            with RECHECKS.global_lock:
+                if not RECHECKS.owns(shelf,body.get('validation_token')):
+                    self._send_json(409, {'error':'Validation lease expired'})
+                    return
+                if body.get('run_id') and body['run_id'] != READINESS.run_id:
+                    self._send_json(409,{'error':'Bridge run changed; stale progress rejected'})
+                    return
+                old=READINESS.get(shelf)
+                stage=str(body.get('stage',''))[:300]
+                if body.get('failed'):
+                    if old['state'] != 'Needs Reconciliation':
+                        READINESS.set(shelf,'Offline' if any(word in stage.lower() for word in ('camera unavailable','preview failed','connection refused')) else 'Held',stage)
+                elif old['state'] in {'Ready','Validating Action'}:
+                    READINESS.set(shelf,'Validating Action',stage)
+                elif old['state'] != 'Needs Reconciliation':
+                    READINESS.set(shelf,'Checking Shelf',stage)
+                READINESS.record(shelf,body.get('validation_token'),body.get('trigger_id'),
+                    stage=stage,code=None if failure_code(stage)=='VALIDATION_REJECTED' and not body.get('failed') else failure_code(stage),
+                    retryable=not body.get('failed') and failure_code(stage)!='UNKNOWN_B1',
+                    **{k:body[k] for k in ('attempt','capture_number','max_attempts','boost','duty','front_confidence','back_confidence','capture_completed_at') if k in body})
+                self._send_json(200, {'status':'recorded'})
             return
 
         if path == "/cctv_trigger_claim":
@@ -1708,6 +1843,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             if source not in {"CCTV", "CCTV_BROWSER_DWELL"} and not expected_action:
                 expected_action = "BORROW"
             consensus = None
+            if source in {"CCTV", "CCTV_BROWSER_DWELL"} and not READINESS.ready(shelf_id) and shelf_id != 'ANY_SHELF':
+                self._send_json(409, {'error':'Shelf not Ready; interaction not validated and will not be queued'})
+                return
             if source in {"CCTV", "CCTV_BROWSER_DWELL"}:
                 try:
                     consensus = record_cctv_consensus(
@@ -1809,17 +1947,28 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
                 source = body.get("source") or "MANUAL"
                 periodic = source == "PERIODIC_RECHECK"
+                if not mqtt_bridge.is_connected:
+                    READINESS.set(shelf_id,'Offline','MQTT unavailable; fresh verification required on recovery')
+                    self._send_json(503,{'error':'MQTT unavailable; inventory validation held'})
+                    return
                 # Read authoritative quantity; cache refresh may silently return stale rows.
                 try:
-                    rows = SupabaseRestFallback().select("compartments", f"?select=shelf_id,current_quantity&shelf_id=eq.{urllib.parse.quote(shelf_id)}&limit=1")
-                    if not rows or rows[0].get("current_quantity") is None:
-                        raise ValueError("Fresh inventory unavailable")
-                    curr_qty = int(rows[0]["current_quantity"])
+                    authoritative_state = load_inventory_state(shelf_id)
+                    curr_qty = authoritative_state['current_quantity']
+                    CONFIRMED_OCCUPANCY.pop(shelf_id, None)
+                    if authoritative_state['confirmed_occupancy'] is not None:
+                        CONFIRMED_OCCUPANCY[shelf_id] = tuple(authoritative_state['confirmed_occupancy'])
                 except Exception:
-                    self._send_json(503, {"error": "Fresh inventory unavailable; no update applied"})
+                    CONFIRMED_OCCUPANCY.pop(shelf_id, None)
+                    READINESS.set(shelf_id,"Offline","Authoritative database unavailable")
+                    self._send_json(503, {"error": "Fresh persistent inventory unavailable; check Phase 1 migration and database access; no update applied"})
                     return
                 if curr_qty < 0 or curr_qty > 5:
                     self._send_json(409, {"error": "Five-slot layout requires an explicit physical recount and quantity migration; existing quantity was retained"})
+                    return
+                if authoritative_state['confirmed_occupancy'] is None and source != 'STARTUP':
+                    READINESS.set(shelf_id,'Needs Reconciliation','Authorized physical recount required to commission an unverified shelf')
+                    self._send_json(403,{'error':'Authorized physical recount required; a default quantity or anonymous Full Validation cannot commission inventory'})
                     return
                 cctv_event: Optional[Dict[str, Any]] = None
                 try:
@@ -1828,6 +1977,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             events = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") == shelf_id
                                       and t.get("trigger_id") == body.get("trigger_id")
                                       and t.get("validation_token") == body.get("validation_token")
+                                      and t.get("timestamp",0) >= READINESS.get(shelf_id).get("ready_at",0)
                                       and t.get("claimed") and t.get("consensus_met")
                                       and t.get("expected_action") in {"BORROW", "RETURN"}
                                       and 0 <= time.time() - t.get("timestamp", 0) < 60]
@@ -1838,24 +1988,51 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             raise ValueError("Fresh CCTV consensus bound to this trigger and validation lease is required")
                         cctv_event = selected_event
                         expected_action = selected_event["expected_action"]
-                    elif periodic:
+                    elif periodic or source == "STARTUP":
                         expected_action = "RECHECK"
                     elif source != "MANUAL" or expected_action not in {"BORROW", "RETURN"}:
                         raise ValueError("Expected BORROW or RETURN action is required")
                 except ValueError as exc:
-                    self._send_json(409, {"status": "VALIDATION_PENDING", "error": str(exc)})
+                    READINESS.record(shelf_id,body.get('validation_token'),body.get('trigger_id'),stage=str(exc)[:300],code=failure_code(exc),retryable=False)
+                    self._send_json(409, {"status": "VALIDATION_PENDING", "code": failure_code(exc), "error": str(exc)})
                     return
                 try:
+                    try:
+                        sample=body.get('dual_cam_evidence',{}).get('samples',[{}])[-1]
+                        observed=decode_observation(sample.get('front_class'),sample.get('back_class'))
+                        observed.update(front_confidence=sample.get('front_confidence'),back_confidence=sample.get('back_confidence'),unverified=True)
+                        if not hasattr(READINESS,'observations'): READINESS.observations={}
+                        READINESS.observations[shelf_id]=observed
+                    except (ValueError,TypeError,IndexError): pass
                     with DUAL_CAM_CAPTURE_LOCK:
                         slots, capture_ids = validate_evidence(body.get("dual_cam_evidence"), predicted_box_count,
                             time.time(), DUAL_CAM_CAPTURES, shelf_id, body.get("validation_token"),
                             max(cctv_event["timestamp"], cctv_event["claimed_at"]) if cctv_event is not None else None)
+                    if not after_image or not body.get('image_back') or not body.get('image_front'):
+                        raise ValueError('Both camera images are required')
+                    if source in {'CCTV','PERIODIC_RECHECK'} and not READINESS.active(shelf_id):
+                        raise ValueError('Shelf not Ready; interaction not validated')
+                    if source == 'STARTUP' or (not READINESS.active(shelf_id) and authoritative_state['confirmed_occupancy'] is not None):
+                        READINESS.verify(shelf_id,authoritative_state,slots)
+                        with DUAL_CAM_CAPTURE_LOCK:
+                            for capture_id in capture_ids: DUAL_CAM_CAPTURES.pop(capture_id,None)
+                        # Startup verification does not create a BORROW/RETURN or rewrite inventory.
+                        self._send_json(200, {'status':'success','readiness':'Ready','occupancy':list(slots),
+                            'comparison':{'delta':0,'quantity_before':curr_qty,'quantity_after':curr_qty,'state_delta':'NO_CHANGE'}})
+                        return
+                    if source in {'CCTV','PERIODIC_RECHECK'} and not READINESS.active(shelf_id):
+                        raise ValueError('Shelf not Ready; interaction not validated')
                     initializing_snapshot = shelf_id not in CONFIRMED_OCCUPANCY
+                    if READINESS.active(shelf_id):
+                        READINESS.set(shelf_id,"Validating Action","Expected-action check")
                     validate_transition(CONFIRMED_OCCUPANCY.get(shelf_id), slots, curr_qty, expected_action)
                     if not after_image or not body.get("image_back") or not body.get("image_front"):
                         raise ValueError("Both camera images are required")
                 except (ValueError, TypeError, KeyError) as exc:
-                    self._send_json(400, {"status": "VALIDATION_PENDING", "error": str(exc)})
+                    if READINESS.get(shelf_id)['state'] != 'Needs Reconciliation':
+                        READINESS.set(shelf_id,'Needs Reconciliation' if 'Occupancy change conflicts' in str(exc) else 'Held',str(exc))
+                    READINESS.record(shelf_id,body.get('validation_token'),body.get('trigger_id'),stage=str(exc)[:300],code=failure_code(exc),retryable=False)
+                    self._send_json(400, {"status": "VALIDATION_PENDING", "code": failure_code(exc), "error": str(exc)})
                     return
                 # Derive accepted count/confidence from the validated contract, never a legacy heuristic.
                 predicted_box_count = sum(slots)
@@ -1882,31 +2059,36 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 )
 
                 log_entry: Optional[Dict[str, Any]] = None
+                committed_state: Optional[Dict[str, Any]] = None
                 if predicted_box_count is not None:
                     delta_val = int(comp_res.get("delta", 0))
                     derived_action = "BORROW" if delta_val < 0 else ("RETURN" if delta_val > 0 else expected_action)
                     before_img = comp_res.get("before_image") or comp_res.get("before_image_url")
                     after_img = after_image or comp_res.get("after_image") or comp_res.get("after_image_url")
 
-                    # ONLY update current_quantity in Supabase if box count actually changed (delta != 0)
-                    if delta_val != 0:
-                        delta_res = apply_inventory_delta_in_supabase(
-                            shelf_id=shelf_id,
-                            mqtt_client_id=mqtt_client_id,
-                            trigger_action=derived_action,
-                            comparison_result=comp_res,
-                            current_quantity_hint=curr_qty,
-                        )
-                        if delta_res is False:
-                            if previous_baseline is None:
-                                esp32_ref_manager.baseline_cache.pop(shelf_id, None)
-                            else:
-                                esp32_ref_manager.baseline_cache[shelf_id] = previous_baseline
-                            self._send_json(502, {"status": "failed", "error": "Inventory update was not confirmed by the database"})
-                            return
-                        if isinstance(delta_res, dict):
-                            log_entry = delta_res
-                        get_cached_compartments(force_refresh=True)
+                    # Persist even NO_CHANGE commissioning/verification. One database
+                    # transaction owns revision checks, slot/quantity writes and event receipt.
+                    event_id = cctv_event['trigger_id'] if cctv_event is not None else 'capture:' + body['dual_cam_evidence']['samples'][0]['capture']['id']
+                    try:
+                        if READINESS.active(shelf_id): READINESS.set(shelf_id,"Validating Action","Saving inventory")
+                        committed_state = commit_inventory_state(authoritative_state, slots, expected_action, event_id)
+                    except Exception:
+                        if previous_baseline is None:
+                            esp32_ref_manager.baseline_cache.pop(shelf_id, None)
+                        else:
+                            esp32_ref_manager.baseline_cache[shelf_id] = previous_baseline
+                        CONFIRMED_OCCUPANCY.pop(shelf_id, None)
+                        try:
+                            restored = load_inventory_state(shelf_id)
+                            if restored['confirmed_occupancy'] is not None:
+                                CONFIRMED_OCCUPANCY[shelf_id] = tuple(restored['confirmed_occupancy'])
+                        except Exception:
+                            pass
+                        READINESS.set(shelf_id,"Held","Database commit not confirmed; verify again")
+                        READINESS.record(shelf_id,body.get("validation_token"),event_id,stage="Atomic database commit not confirmed",code="DATABASE_FAILURE",retryable=False)
+                        self._send_json(502, {"status": "failed", "code": "DATABASE_FAILURE", "error": "Atomic inventory commit not confirmed; state reloaded where available. Check migration, server credential, revision and database availability."})
+                        return
+                    get_cached_compartments(force_refresh=True)
 
                     if not isinstance(log_entry, dict):
                         log_entry = {
@@ -1953,10 +2135,13 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             url_back=body["image_back"], url_front=body["image_front"],
                             updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
                 CONFIRMED_OCCUPANCY[shelf_id] = slots
+                committed_revision = committed_state["revision"] if committed_state is not None else None
+                READINESS.set(shelf_id,"Ready",f"Inventory updated ({curr_qty} -> {predicted_box_count}) after confirmed commit",committed_revision)
                 self._send_json(200, {
                     "status": "success",
                     "occupancy": list(slots),
                     "snapshot_initialized": initializing_snapshot,
+                    "revision": committed_revision,
                     "m2_check": "SKIPPED_OCCLUDED" if slots[4] else "PASS",
                     "comparison": comp_res,
                     "log": log_entry,
@@ -2286,9 +2471,19 @@ def _resolve_ssl_cert_and_key(ssl_cert: Optional[str] = None, ssl_key: Optional[
     return None, None
 
 
-def run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_key: Optional[str] = None):
+def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_key: Optional[str] = None):
     global BRIDGE_SSL_ENABLED
+    server_address = (host, port)
+    httpd = ThreadingHTTPServer(server_address, CameraServiceRequestHandler)
+    if EDGE_SHADOW:
+        EDGE_SHADOW.start()
     threading.Thread(target=ensure_local_tm_model_cached, daemon=True, name="TMModelCacheWorker").start()
+    try:
+        restored_count = restore_inventory_cache(CONFIRMED_OCCUPANCY)
+        print(f"[Inventory] Restored {restored_count} confirmed shelf snapshots from Supabase.")
+    except Exception:
+        CONFIRMED_OCCUPANCY.clear()
+        print("[Inventory] Persistent state unavailable. Validations fail closed until migration/database access is ready.")
     mqtt_bridge.connect_broker(timeout=1.5)
 
     # Start background 30s HTTP baseline poller daemon thread
@@ -2296,8 +2491,7 @@ def run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_k
     poller_thread.start()
     print("[CameraService] Started background 30s ESP32 HTTP baseline poller daemon.")
 
-    server_address = (host, port)
-    httpd = ThreadingHTTPServer(server_address, CameraServiceRequestHandler)
+
 
     cert_path, key_path = _resolve_ssl_cert_and_key(ssl_cert, ssl_key)
     if cert_path and key_path:
@@ -2330,13 +2524,82 @@ def run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_k
     print("=================================================================")
 
     try:
+        if AUTONOMOUS:
+            AUTONOMOUS.start()
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[CameraService] Shutting down server...")
     finally:
+        if AUTONOMOUS:
+            AUTONOMOUS.close()
+        for item in list(RUNNING_PIPELINES.values()):
+            proc=item.get('proc')
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try: proc.wait(timeout=5)
+                except subprocess.TimeoutExpired: proc.kill()
+        RUNNING_PIPELINES.clear()
         mqtt_bridge.disconnect()
         httpd.server_close()
         print("[CameraService] Server stopped.")
+
+
+def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
+    global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY
+    runtime=os.path.join(os.path.dirname(__file__),'..','.runtime')
+    with InstanceLock(os.path.join(runtime,'bridge.lock')):
+        import signal
+        def stop_signal(*_): raise KeyboardInterrupt()
+        signal.signal(signal.SIGTERM,stop_signal)
+        if hasattr(signal,'SIGBREAK'): signal.signal(signal.SIGBREAK,stop_signal)
+        configure_logs(runtime)
+        event(READINESS.run_id,'startup')
+        try:
+            mode=os.getenv('SMART_STORAGE_PROCESSOR_MODE','browser').strip().lower()
+            if mode=='service':
+                from src.autonomous_edge import load_service_config, NativeClient, AutonomousProcessor, acceptance_code_paths
+                root=Path(__file__).resolve().parent.parent
+                manifest=os.getenv('SMART_STORAGE_EDGE_MANIFEST') or str(root/'.runtime/edge-models/manifest.json')
+                code_paths=acceptance_code_paths(root)
+                cameras,reports=load_service_config(os.environ['SMART_STORAGE_EDGE_CONFIG'],manifest,
+                    os.environ['SMART_STORAGE_EDGE_ACCEPTANCE'],code_paths)
+                def local_request(path,body):
+                    handler=object.__new__(CameraServiceRequestHandler)
+                    handler.path=path;handler.headers={};handler.client_address=('127.0.0.1',0)
+                    handler._processor_capability=_PROCESSOR_CAPABILITY
+                    handler._read_json_body=lambda:body
+                    replies=[];handler._send_json=lambda status,value:replies.append((status,value))
+                    (CameraServiceRequestHandler.do_GET if body is None else CameraServiceRequestHandler.do_POST)(handler)
+                    if len(replies)!=1 or not 200<=replies[0][0]<300:raise ValueError('Guarded bridge request rejected')
+                    return replies[0][1]
+                def pending():
+                    with CCTV_CONSENSUS_LOCK:
+                        return [dict(t) for t in PENDING_CCTV_TRIGGERS if not t.get('claimed') and 0<=time.time()-t.get('timestamp',0)<60][-20:]
+                def invalidate():
+                    with CCTV_CONSENSUS_LOCK:CCTV_ALIGN_STATE.clear()
+                    # A camera outage invalidates current readiness as well as votes.
+                    for sid in list(READINESS.states):
+                        if READINESS.get(sid)['state']!='Needs Reconciliation':READINESS.set(sid,'Offline','CCTV unavailable; fresh verification required')
+                AUTONOMOUS=AutonomousProcessor(READINESS.run_id,
+                    NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),
+                    cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event)
+                configure_cctv_alignment([{'cctv_id':c['id'],'camera_role':c['role'],'is_active':True} for c in cameras])
+                PROCESSOR_AUTHORITY='service'
+            EDGE_SHADOW = EdgeShadow(Path(__file__).resolve().parent.parent, READINESS.run_id,
+                mode='browser' if mode=='service' else mode,
+                manifest=os.getenv('SMART_STORAGE_EDGE_MANIFEST') or None,
+                node=os.getenv('SMART_STORAGE_NODE','node'), log=event)
+            _run_service(host,port,ssl_cert,ssl_key)
+        except BaseException as exc:
+            event(READINESS.run_id,'crash',code='SERVICE_CUTOVER_BLOCKED' if isinstance(exc,RuntimeError)
+                and str(exc).startswith('SERVICE_CUTOVER_BLOCKED') else 'BRIDGE_EXIT')
+            raise
+        finally:
+            if AUTONOMOUS:
+                AUTONOMOUS.close()
+            if EDGE_SHADOW:
+                EDGE_SHADOW.close()
+            event(READINESS.run_id,'shutdown')
 
 
 if __name__ == "__main__":

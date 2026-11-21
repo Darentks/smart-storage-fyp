@@ -55,6 +55,8 @@ def _supabase_rest(
     payload: Optional[Union[Dict[str, Any], List[Dict[str, Any]]]] = None,
     prefer: Optional[str] = "return=representation",
     timeout: float = 8.0,
+    api_key: Optional[str] = None,
+    bearer_token: Optional[str] = None,
 ) -> Any:
     """
     Native Python urllib.request PostgREST helper that calls:
@@ -63,7 +65,7 @@ def _supabase_rest(
     Returns parsed JSON data (or True/False for DELETE, or [] on error).
     """
     base_url = get_resolved_supabase_url()
-    api_key = get_resolved_supabase_key()
+    api_key = api_key or get_resolved_supabase_key()
 
     if query and not query.startswith("?"):
         query = "?" + query
@@ -73,7 +75,7 @@ def _supabase_rest(
 
     headers = {
         "apikey": api_key,
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {bearer_token or api_key}",
         "Content-Type": "application/json",
     }
     if method.upper() == "PATCH":
