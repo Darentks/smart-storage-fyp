@@ -943,10 +943,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Front / combined TM URL:</label>
+        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front model URL (6 classes):</label>
         <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
-        <label for="tmBackModelUrlInput">Back TM URL (same link for combined model):</label>
+        <label for="tmBackModelUrlInput">CAM1 Back model URL (4 classes):</label>
         <input type="text" id="tmBackModelUrlInput" class="form-control" style="min-width:280px;"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
         <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302;
@@ -1709,6 +1709,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 18 STABLE CONFIGURATIONS
     // =========================================================================
     const DEFAULT_TM_MODEL_URL = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
+    const DEFAULT_TM_BACK_MODEL_URL = "https://teachablemachine.withgoogle.com/models/40mk-G4Oq/";
     const SCENARIO_LABELS = Object.fromEntries(Array.from({length: 6}, (_, n) => [n, `${n}/5 Boxes Present`]));
     const DUAL_CAM_LABELS = {
       Front: ['000', '010', '011', '100', '110', '111'].map(bits => `Front_${bits}`),
@@ -1721,9 +1722,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     function requireDualCamModel(model, role) {
       const labels = model.getClassLabels();
-      const expected = labels.length === 10 ? [...DUAL_CAM_LABELS.Front, ...DUAL_CAM_LABELS.Back] : DUAL_CAM_LABELS[role];
+      const expected = DUAL_CAM_LABELS[role];
       if (labels.length !== expected.length || new Set(labels).size !== expected.length || !expected.every(label => labels.includes(label))) {
-        throw new Error(`${role}: use the combined 10-class model or separate 6-class front and 4-class back models with the exact occupancy labels`);
+        throw new Error(`${role}: use an independent model with exactly 6 Front or 4 Back classes for its assigned role; combined models are rejected`);
       }
     }
 
@@ -1735,7 +1736,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       try {
         const loading = new Map();
         const load = async (role, input) => {
-          let base = input.value.trim() || tmModelUrlInput.value.trim() || DEFAULT_TM_MODEL_URL;
+          let base = input.value.trim() || (role === 'Back' ? DEFAULT_TM_BACK_MODEL_URL : DEFAULT_TM_MODEL_URL);
           if (!base) throw new Error(`Enter the ${role.toLowerCase()} model URL`);
           base = base.replace(/(?:model|metadata)\.json(?:\?.*)?$/, '');
           if (!base.endsWith('/')) base += '/';
@@ -1855,7 +1856,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         throw new Error('224x224 preprocessing failed');
       return canvas; // Raw sensor orientation: never mirror.
     }
-    function renderTMDiagnostics(backCanvas, frontCanvas, backPreds, frontPreds, error = '') {
+    function renderTMDiagnostics(backCanvas, frontCanvas, backPreds, frontPreds, error = '', result = null) {
       const host = document.getElementById('tmDiagnostics');
       if (!host || typeof host.replaceChildren !== 'function') return;
       host.replaceChildren();
@@ -1878,30 +1879,42 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const top = Array.isArray(predictions) ? [...predictions].sort((a,b)=>b.probability-a.probability).slice(0,3) : [];
         const counts = {Front_000:0, Front_010:1, Front_011:2, Front_100:1, Front_110:2, Front_111:3,
           Back_000:0, Back_100:1, Back_X01:null, Back_11X:2};
-        const count = top.length && DUAL_CAM_LABELS[role].includes(top[0].className) ? counts[top[0].className] : null;
+        const label = top[0]?.className;
+        const count = top.length && DUAL_CAM_LABELS[role].includes(label) ? counts[label] : null;
+        const slotText = {Front_000:'F1=0 M1=0 M2=0',Front_010:'F1=0 M1=1 M2=0',
+          Front_011:'F1=0 M1=1 M2=1',Front_100:'F1=1 M1=0 M2=0',Front_110:'F1=1 M1=1 M2=0',Front_111:'F1=1 M1=1 M2=1',
+          Back_000:'B1=0 B2=0 observed M2=0',Back_100:'B1=1 B2=0 observed M2=0',
+          Back_X01:'B1=unknown B2=0 observed M2=1',Back_11X:'B1=1 B2=1 observed M2=unknown (occluded)'};
         cameraCounts.push(count);
         const text = document.createElement('pre');
         text.style.whiteSpace = 'pre-wrap';
         text.textContent = (top.length ? top.map(p=>`${p.className}: ${(p.probability*100).toFixed(1)}%`).join('\n') : 'Predictions unavailable') +
-          `\n${role === 'Back' ? 'B1/B2' : 'F1/M1/M2'} count: ${count === null ? (top[0]?.className === 'Back_X01' ? 'unknown (0..1; B1 unknown)' : 'unknown') : count}` +
+          `\nPredicted slots (unverified): ${DUAL_CAM_LABELS[role].includes(label) ? slotText[label] : 'unavailable'}\n${role === 'Back' ? 'B1/B2' : 'F1/M1/M2'} candidate count: ${count === null ? (top[0]?.className === 'Back_X01' ? 'unknown (0..1; B1 unknown)' : 'unknown') : count}` +
           (role === 'Back' && top.length && DUAL_CAM_LABELS.Back.includes(top[0].className) ? `\nBack M2: ${top[0].className === 'Back_11X' ? 'unknown (occluded; check skipped)' : top[0].className.slice(-1)}` : '');
         block.append(text);
         host.append(block);
       }
       const summary = document.createElement('div');
-      summary.textContent = error || (cameraCounts.includes(null) ? 'Camera counts unavailable' :
-        `Combined count: ${cameraCounts[0] + cameraCounts[1]}/5`);
+      const selectedShelf = typeof refShelfSelect !== 'undefined' ? refShelfSelect?.value : null;
+      const confirmed = typeof compartmentsData !== 'undefined' ? compartmentsData.find(c=>c.shelf_id===selectedShelf)?.current_quantity : null;
+      const candidate = result?.countRange ? `${result.countRange.min}..${result.countRange.max}` :
+        cameraCounts.includes(null) ? 'unknown' : cameraCounts[0]+cameraCounts[1];
+      summary.style.whiteSpace = 'pre-wrap';
+      summary.textContent = `Raw prediction confidence is not measured accuracy.\nCandidate total (unverified): ${candidate}/5` +
+        `\nM2 check: ${result?.m2Check || 'not evaluated (model/confidence gate)'}` +
+        `\n${error ? 'HOLD: '+error : 'Candidate only: fresh live confirmation and action checks still required.'}` +
+        `\nConfirmed inventory at prediction: ${confirmed ?? 'unavailable'}\nUpdate authorization: this prediction does not authorize a database write.`;
       host.append(summary);
     }
 
     async function predictDualCamerasWithTM(backImgEl, frontImgEl, overrideBoost) {
-      let backTarget, frontTarget, backPreds, frontPreds, diagnosticError = '';
-      const pending = (reason, extra = {}) => { diagnosticError = reason; return {totalBoxes: null, backCount: null, frontCount: null,
+      let backTarget, frontTarget, backPreds, frontPreds, diagnosticError = '', diagnosticResult = null;
+      const pending = (reason, extra = {}) => { diagnosticError = reason; return diagnosticResult = {totalBoxes: null, backCount: null, frontCount: null,
         backClass: 'Back_Unmatched', frontClass: 'Front_Unmatched', backConfidence: 0,
         frontConfidence: 0, confidence: 0, degraded: true, status: 'VALIDATION_PENDING', scenarioLabel: reason, ...extra}; };
       if (!window.tmFrontModel || !window.tmBackModel) {
         renderTMDiagnostics(null, null, null, null, 'Load models to see predictions');
-        return pending('Load the combined 10-class model or separate 6-class front and 4-class back models');
+        return pending('Load independent 6-class Front and 4-class Back models');
       }
       try {
         requireDualCamModel(window.tmFrontModel, 'Front');
@@ -1950,12 +1963,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           slots:{F1,M1,M2,B1:null,B2}, countRange:{min:F1+M1+M2,max:F1+M1+M2+1}, occupancyKey:null
         });
         const totalBoxes = F1 + M1 + M2 + B1 + B2;
-        return {...details, totalBoxes, frontCount: F1 + M1 + M2, backCount: B1 + B2,
+        return diagnosticResult = {...details, totalBoxes, frontCount: F1 + M1 + M2, backCount: B1 + B2,
           slots: {F1, M1, M2, B1, B2}, occupancyKey: `${F1}${M1}${M2}${B1}${B2}`,
           status: 'VERIFIED_PAIR', degraded: false, scenarioLabel: `${totalBoxes}/5 Boxes | Front + back | F1=${F1} M1=${M1} M2=${M2} B1=${B1} B2=${B2} | M2 ${m2Check}`};
       } catch (error) { diagnosticError = error.message; return pending(error.message); }
       finally {
-        try { renderTMDiagnostics(backTarget, frontTarget, backPreds, frontPreds, diagnosticError); }
+        try { renderTMDiagnostics(backTarget, frontTarget, backPreds, frontPreds, diagnosticError, diagnosticResult); }
         catch (error) { console.warn('[TM diagnostics]', error.message); }
       }
     }
@@ -2473,8 +2486,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const file1 = testBackFileInput && testBackFileInput.files ? testBackFileInput.files[0] : null;
       const file2 = testFrontFileInput && testFrontFileInput.files ? testFrontFileInput.files[0] : null;
 
-      if (!file1 && !file2 && !homeTestBackDataUrl && !homeTestFrontDataUrl) {
-        showToast('Please select at least one photo (CAM 1 Back or CAM 2 Front) to test!', 'warning');
+      if ((!file1 && !homeTestBackDataUrl) || (!file2 && !homeTestFrontDataUrl)) {
+        showToast('Select both a CAM1 Back photo and a CAM2 Front photo; each model requires its own view.', 'warning');
         return;
       }
 
@@ -2493,8 +2506,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         file2 ? readFilePromise(file2) : Promise.resolve(homeTestFrontDataUrl),
       ]);
 
-      const backSrc = dataUrl1 || dataUrl2;
-      const frontSrc = dataUrl2 || dataUrl1;
+      const backSrc = dataUrl1;
+      const frontSrc = dataUrl2;
+      if (!backSrc || !frontSrc) { showToast('Both camera photos must decode successfully.', 'error'); return; }
 
       homeTestBackDataUrl = backSrc;
       homeTestFrontDataUrl = frontSrc;
@@ -6425,7 +6439,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // Initialization
     if (tmModelUrlInput) {
       const savedTmUrl = localStorage.getItem('smart_storage_tm_front_model_url') || DEFAULT_TM_MODEL_URL;
-      document.getElementById('tmBackModelUrlInput').value = localStorage.getItem('smart_storage_tm_back_model_url') || DEFAULT_TM_MODEL_URL;
+      const savedBackUrl = localStorage.getItem('smart_storage_tm_back_model_url');
+      // Migrate the previous auto-filled Front URL; preserve custom role-specific settings.
+      document.getElementById('tmBackModelUrlInput').value = !savedBackUrl || savedBackUrl.replace(/\/$/, '') === DEFAULT_TM_MODEL_URL.replace(/\/$/, '')
+        ? DEFAULT_TM_BACK_MODEL_URL : savedBackUrl;
       tmModelUrlInput.value = savedTmUrl;
     }
     populateAssignedIpDropdowns();

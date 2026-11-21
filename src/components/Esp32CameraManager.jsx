@@ -39,7 +39,7 @@ function pending(reason, extra = {}) {
 
 function modelHasRoleLabels(model, role) {
   const labels = model.getClassLabels();
-  const expected = labels.length === 10 ? [...DUAL_CAM_LABELS.Front, ...DUAL_CAM_LABELS.Back] : DUAL_CAM_LABELS[role];
+  const expected = DUAL_CAM_LABELS[role];
   return labels.length === expected.length && new Set(labels).size === expected.length && expected.every((label) => labels.includes(label));
 }
 
@@ -52,7 +52,7 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
   if (!['off', 'auto', 'high'].includes(boostMode)) return pending('Unsupported boost mode');
   const frontModel = tmModel?.front || (typeof window !== 'undefined' ? window.tmFrontModel : null);
   const backModel = tmModel?.back || (typeof window !== 'undefined' ? window.tmBackModel : null);
-  if (!frontModel || !backModel) return pending('Load the combined 10-class model or separate 6-class front and 4-class back models');
+  if (!frontModel || !backModel) return pending('Load independent 6-class Front and 4-class Back models');
   if (!modelHasRoleLabels(frontModel, 'Front') || !modelHasRoleLabels(backModel, 'Back')) {
     return pending('Model labels do not match the occupancy classes');
   }

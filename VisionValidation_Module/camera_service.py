@@ -2208,7 +2208,7 @@ _BACK_OCCUPANCY_LABELS = {f"Back_{s}" for s in ("000", "100", "X01", "11X")}
 
 
 def _has_valid_occupancy_metadata(dir_path: str) -> bool:
-    """True for the combined 10-class model or a role-specific 6-class front / 4-class back model."""
+    """True for an independent 6-class Front or 4-class Back export."""
     meta_path = os.path.join(dir_path, "metadata.json")
     try:
         with open(meta_path, "r", encoding="utf-8") as mf:
@@ -2218,7 +2218,6 @@ def _has_valid_occupancy_metadata(dir_path: str) -> bool:
             return False
         label_set = set(labels)
         return label_set in (
-            _FRONT_OCCUPANCY_LABELS | _BACK_OCCUPANCY_LABELS,
             _FRONT_OCCUPANCY_LABELS,
             _BACK_OCCUPANCY_LABELS,
         )
