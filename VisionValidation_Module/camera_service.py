@@ -76,6 +76,9 @@ from src.periodic_recheck import (RecheckCoordinator, StaggeredPollSchedule, ins
                                   has_pending_shelf, queue_periodic_trigger)
 from src.bridge_runtime import InstanceLock, configure_logs, event
 from src.edge_shadow import EdgeShadow
+from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
+LOCAL_INTENTS = None
+LOCAL_ROIS = None
 EDGE_SHADOW = None
 AUTONOMOUS = None
 PROCESSOR_AUTHORITY = 'browser'
@@ -144,7 +147,7 @@ CCTV_SEEN_TRIGGER_IDS: Dict[str, float] = {}
 
 # In-memory cache for Supabase compartments and local ring buffer for comparison logs (cap: 5)
 SUPABASE_COMPARTMENTS_CACHE: Dict[str, Any] = {"data": [], "fetched_at": 0.0}
-LATEST_COMPARISONS_DEQUE: deque = deque(maxlen=5)
+LATEST_COMPARISONS_DEQUE: deque = deque(maxlen=0)  # LatestIntents is the only intent-history buffer.
 SUPABASE_CACHE_TTL_SEC: float = 300.0
 HEARTBEAT_TTL = 60.0
 LAST_CLOUD_BASELINE_SYNC_TS: Dict[str, float] = {}
@@ -237,14 +240,22 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
                                 if cam["camera_role"] == "GRID_6_ROI")
         aligned = (target is not None and target in shelves and all_grids_present and len(supporters) == len(active))
         if not aligned or target is None:
+            if consensus_context is None and globals().get('LOCAL_INTENTS'):
+                LOCAL_INTENTS.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=shelf_id,
+                    action=action or None,status='PENDING',reason='MISSING_CCTV_CONSENSUS'))
             return {"status": "pending_consensus", "consensus_met": False, "shelf_id": shelf_id,
                     "confirmed_count": len(supporters), "required_cameras": len(active),
                     "window_seconds": CONSENSUS_WINDOW_SEC}
         last_ts = last_triggers.get(target)
         if last_ts is not None and now - last_ts < CONSENSUS_COOLDOWN_SEC:
+            if consensus_context is None and globals().get('LOCAL_INTENTS'):
+                LOCAL_INTENTS.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=target,
+                    action=target_action,status='HELD',reason='VALIDATION_REJECTED'))
             return {"status": "debounced", "consensus_met": False, "shelf_id": target,
                     "retry_after": CONSENSUS_COOLDOWN_SEC - (now - last_ts)}
         confirmed_id = f"trig_{target}_{uuid.uuid4().hex}"
+        if consensus_context is None and globals().get('LOCAL_INTENTS'):
+            LOCAL_INTENTS.add(dict(id=confirmed_id,timestamp=now,camera_id=camera_id,shelf_id=target,action=target_action,status='CONSENSUS',reason=None))
         result = {"status": "consensus_confirmed", "consensus_met": True,
                   "shelf_id": target, "confirmed_shelf_id": target, "trigger_id": confirmed_id,
                   "expected_action": target_action, "required_cameras": len(active),
@@ -291,6 +302,8 @@ def get_cached_compartments(force_refresh: bool = False) -> list:
                 SUPABASE_COMPARTMENTS_CACHE["fetched_at"] = now
         except Exception as e:
             print(f"[CameraService Cache] Compartments refresh warning: {e}")
+    else:
+        CLOUD_METRICS.hit()
     return SUPABASE_COMPARTMENTS_CACHE["data"]
 
 
@@ -1176,6 +1189,16 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == '/local_operations':
+            self._send_json(200,dict(run_id=READINESS.run_id,intents=LOCAL_INTENTS.snapshot() if LOCAL_INTENTS else [],
+                cloud_metrics=CLOUD_METRICS.snapshot(),metrics_scope='Python PostgREST helper only; SDK/browser calls excluded',
+                unresolved_failures=READINESS.failures.snapshot() if getattr(READINESS,'failures',None) else {},
+                release_blockers=['STRICT_CLOUD_SCHEMA_MIGRATION','REAL_CAMERA_ACCEPTANCE'],strict_cloud_scope=False))
+            return
+        if path == '/local_rois':
+            try:self._send_json(200,LOCAL_ROIS.load())
+            except (OSError,ValueError,TypeError,KeyError):self._send_json(409,{'error':'Missing or invalid local ROI configuration; import using local CLI'})
+            return
         if globals().get('PROCESSOR_AUTHORITY') == 'service' and path == '/esp32_preview' and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns live captures; dashboard is monitoring-only'})
             return
@@ -1187,6 +1210,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         if path == "/validation_diagnostics":
             shelf = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('shelf_id',[None])[0]
             with READINESS.lock:
+                while READINESS.diagnostics and time.time()-READINESS.diagnostics[0]['timestamp']>300:READINESS.diagnostics.popleft()
                 entries=[r for r in READINESS.diagnostics if shelf is None or r['shelf_id']==shelf]
             self._send_json(200, {'run_id':READINESS.run_id,'entries':entries})
             return
@@ -1196,15 +1220,15 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 if not mqtt_bridge.is_connected:
                     READINESS.set(shelf,'Offline','MQTT unavailable')
                     continue
-                try:
-                    saved=load_inventory_state(shelf)
-                    old=READINESS.get(shelf)
-                    if old['state'] in {'Checking Shelf','Validating Action'} and not RECHECKS.busy(shelf):
-                        READINESS.set(shelf,'Held','Verification interrupted or lease expired; retry verification')
-                    if old['state']=='Offline' or (old['state']=='Ready' and old['revision']!=saved['revision']):
-                        READINESS.set(shelf,'Starting','Database recovered or revision changed; fresh verification required')
-                except Exception:
-                    READINESS.set(shelf,'Offline','Authoritative database unavailable')
+                old=READINESS.get(shelf)
+                if old['state']=='Offline':
+                    retries=getattr(READINESS,'recovery_retries',{})
+                    if time.monotonic()>=retries.get(shelf,0):
+                        retries[shelf]=time.monotonic()+30;READINESS.recovery_retries=retries
+                        READINESS.set(shelf,'Starting','Recovery requires fresh validation, not cached inventory')
+                if old['state'] in {'Checking Shelf','Validating Action'} and not RECHECKS.busy(shelf):
+                    READINESS.set(shelf,'Held','Verification interrupted or lease expired; retry verification')
+                # Monitoring is local; validation/recovery always reads fresh state.
             self._send_json(200, {"run_id": READINESS.run_id, "processor_mode": PROCESSOR_AUTHORITY, "shelves": {key: READINESS.get(key) for key in shelves}})
             return
 
@@ -1643,6 +1667,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         if result.get('status') not in {'accepted','duplicate'} or state.get('shelf_id')!=shelf:
                             raise ValueError('Reconciliation not confirmed')
                         CONFIRMED_OCCUPANCY[shelf]=tuple(state['confirmed_occupancy'])
+                        for row in globals().get('SUPABASE_COMPARTMENTS_CACHE',{}).get('data',[]):
+                            if row.get('shelf_id')==shelf:row['current_quantity']=state['current_quantity']
                         with CCTV_CONSENSUS_LOCK:
                             PENDING_CCTV_TRIGGERS[:]=[t for t in PENDING_CCTV_TRIGGERS if t.get('shelf_id')!=shelf]
                             CCTV_ALIGN_STATE.clear()
@@ -1668,6 +1694,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 old=READINESS.get(shelf)
                 stage=str(body.get('stage',''))[:300]
                 if body.get('failed'):
+                    if globals().get('LOCAL_INTENTS') and body.get('trigger_id'):
+                        LOCAL_INTENTS.update(body['trigger_id'],'HELD',failure_code(stage))
                     if old['state'] != 'Needs Reconciliation':
                         READINESS.set(shelf,'Offline' if any(word in stage.lower() for word in ('camera unavailable','preview failed','connection refused')) else 'Held',stage)
                 elif old['state'] in {'Ready','Validating Action'}:
@@ -2135,8 +2163,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             url_back=body["image_back"], url_front=body["image_front"],
                             updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
                 CONFIRMED_OCCUPANCY[shelf_id] = slots
+                for row in globals().get('SUPABASE_COMPARTMENTS_CACHE',{}).get('data',[]):
+                    if row.get('shelf_id')==shelf_id:row['current_quantity']=predicted_box_count
                 committed_revision = committed_state["revision"] if committed_state is not None else None
                 READINESS.set(shelf_id,"Ready",f"Inventory updated ({curr_qty} -> {predicted_box_count}) after confirmed commit",committed_revision)
+                if globals().get('LOCAL_INTENTS') and body.get('trigger_id'):
+                    LOCAL_INTENTS.update(body['trigger_id'],'ACCEPTED')
                 self._send_json(200, {
                     "status": "success",
                     "occupancy": list(slots),
@@ -2545,7 +2577,7 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
 
 
 def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
-    global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY
+    global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY, LOCAL_INTENTS, LOCAL_ROIS
     runtime=os.path.join(os.path.dirname(__file__),'..','.runtime')
     with InstanceLock(os.path.join(runtime,'bridge.lock')):
         import signal
@@ -2554,7 +2586,13 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
         if hasattr(signal,'SIGBREAK'): signal.signal(signal.SIGBREAK,stop_signal)
         configure_logs(runtime)
         event(READINESS.run_id,'startup')
+        storage_lock=None
         try:
+            data_dir=Path(os.getenv('SMART_STORAGE_DATA_DIR') or runtime).resolve()
+            candidate_lock=InstanceLock(data_dir/'operations.lock');candidate_lock.__enter__();storage_lock=candidate_lock
+            LOCAL_INTENTS=LatestIntents(data_dir/'latest-intents.json')
+            LOCAL_ROIS=RoiStore(data_dir/'camera-rois.json')
+            READINESS.failures=LocalFailures(data_dir/'unresolved-failures.json')
             mode=os.getenv('SMART_STORAGE_PROCESSOR_MODE','browser').strip().lower()
             if mode=='service':
                 from src.autonomous_edge import load_service_config, NativeClient, AutonomousProcessor, acceptance_code_paths
@@ -2599,6 +2637,8 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 AUTONOMOUS.close()
             if EDGE_SHADOW:
                 EDGE_SHADOW.close()
+            if storage_lock:
+                storage_lock.__exit__(None,None,None)
             event(READINESS.run_id,'shutdown')
 
 

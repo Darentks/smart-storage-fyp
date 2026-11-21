@@ -1,0 +1,47 @@
+﻿const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+(async()=>{
+ for(const file of ['index.html','VisionValidation_Module/camera_manager.html']){
+  const html=fs.readFileSync(file,'utf8');
+  const ctx={window:{dualCamSettings:{consistentCaptures:3}},Date,console:{warn(){}},clearTimeout,setTimeout:(fn,ms)=>{if(ms===2000){fn();return;}return setTimeout(fn,ms);}};
+  vm.createContext(ctx);
+  const start=html.indexOf('    function validPeriodicPrediction');
+  const end=html.indexOf('    // Metadata-only queue.',start);
+  vm.runInContext('const PERIODIC_CONFIRM_DELAY_MS=2000;'+html.slice(start,end)+'\nglobalThis.confirm=captureConfirmedPair;',ctx);
+  let receipt=0; const sample=count=>({preview:{capture:{id:String(receipt++),completed_at:Date.now()/1000,duration_ms:500}},prediction:{totalBoxes:count,occupancyKey:String(count),confidence:90,degraded:false}});
+  let calls=0;
+  const sequence=[3,2,3,3,3];
+  const recovered=await ctx.confirm(async()=>sample(sequence[calls++]));
+  assert.equal(calls,5);assert.equal(recovered.second.prediction.totalBoxes,3);
+  calls=0;
+  const unchanged=await ctx.confirm(async()=>{calls++;return sample(4);});
+  assert.equal(calls,3);assert.equal(unchanged.second.prediction.totalBoxes,4);
+  calls=0;
+  const mismatch=await ctx.confirm(async()=>sample((calls++%2)?2:3));
+  assert.equal(mismatch,null);assert.equal(calls,6);
+  calls=0;
+  const low=await ctx.confirm(async()=>{calls++;return {...sample(3),prediction:{totalBoxes:3,occupancyKey:'3',confidence:40}};});
+  assert.equal(low,null);assert.equal(calls,3);
+  calls=0;
+  const offline=await ctx.confirm(async()=>{calls++;throw Error('camera unavailable');});
+  assert.equal(offline,null);assert.equal(calls,3);
+  calls=0;
+  const restored=await ctx.confirm(async()=>{if(calls++===0)throw Error('temporary failure');return sample(3);});
+  assert.equal(calls,4);assert.equal(restored.second.prediction.totalBoxes,3);
+  calls=0;
+  const changed=await ctx.confirm(async()=>{const s=sample(3);s.prediction.occupancyKey=String(calls++%2);return s;});
+  assert.equal(changed,null);
+  calls=0;
+  const stale=await ctx.confirm(async()=>{calls++;const s=sample(3);s.preview.capture.completed_at-=61;return s;});
+  assert.equal(stale,null);assert.equal(calls,3);assert.match(ctx.captureConfirmedPair.lastFailure,/STALE_CAPTURE/);
+  calls=0;
+  const reused=await ctx.confirm(async()=>{const s=sample(calls++===0?3:2);s.preview.capture.id='reused-across-rounds';return s;});
+  assert.equal(reused,null);assert.match(ctx.captureConfirmedPair.lastFailure,/STALE_CAPTURE/);
+  ctx.setTimeout=(fn,ms)=>{if(ms===2000)fn();else queueMicrotask(fn);return 1;};ctx.clearTimeout=()=>{};
+  calls=0;
+  const hung=await ctx.confirm(()=>{calls++;return new Promise(()=>{});});
+  assert.equal(hung,null);assert.equal(calls,1);assert.match(ctx.captureConfirmedPair.lastFailure,/VALIDATION_TIMEOUT/);
+  console.log('PASS: '+file+' bounded retakes, mismatch recovery, delayed NO_CHANGE confirmation, low confidence, camera failures');
+ }
+})().catch(error=>{console.error(error);process.exitCode=1;});

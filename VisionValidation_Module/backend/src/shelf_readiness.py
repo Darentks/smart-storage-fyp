@@ -29,6 +29,7 @@ class ShelfReadiness:
                 ready_at=time.time() if state=='Ready' else old.get('ready_at',0),
                 code=failure_code(reason) if state in {'Held','Offline','Needs Reconciliation'} else None,
                 retryable=False)
+            if getattr(self,'failures',None):self.failures.set(shelf,state,self.states[shelf]['code'])
             event(self.run_id,'health_transition',shelf_id=shelf,state=state,code=self.states[shelf]['code'])
 
     def record(self,shelf,token,trigger_id=None,**metadata):
@@ -37,6 +38,7 @@ class ShelfReadiness:
         allowed={'attempt','capture_number','max_attempts','stage','boost','duty',
                  'front_confidence','back_confidence','capture_completed_at','code','retryable'}
         with self.lock:
+            while self.diagnostics and time.time()-self.diagnostics[0]['timestamp']>300:self.diagnostics.popleft()
             self.diagnostics.append(dict(run_id=self.run_id,shelf_id=shelf,lease=token,
                 trigger_id=trigger_id,timestamp=time.time(),**{k:(v[:300] if isinstance(v,str) else v) for k,v in metadata.items() if k in allowed and type(v) in (str,int,float,bool,type(None))}))
 

@@ -1443,6 +1443,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <button class="btn-action" id="threeCameraBackgroundBtn" onclick="toggleThreeCameraBackground()" title="Keep detection running but hide previews and skip drawing to save CPU/RAM">Hide Previews (Background Mode)</button>
           <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
           <button class="btn-action" onclick="exportEdgeCalibrations()">Export Camera Calibrations</button>
+          <button class="btn-action" onclick="importLocalRois()">Load Local Service Calibrations</button>
+          <button class="btn-action" onclick="showLocalOperations()">Latest Five Intents &amp; Diagnostics</button>
+          <pre id="localOperationsStatus" style="max-height:240px;overflow:auto;white-space:pre-wrap"></pre>
           <button class="btn-action" onclick="exportEdgePoseFixture()">Compare Service Pose (Saved Photo)</button>
           <div id="edgeProcessorStatus" role="status">Processor: browser</div>
           <div id="threeCameraStatus" role="status">Stopped</div>
@@ -2056,6 +2059,28 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         edgeDownload('edge-camera-calibrations.json',{version:1,created_at:new Date().toISOString(),cameras});
         showToast('Calibrations exported. Service cutover still requires parity and hardware acceptance.','success');
       }catch(error){showToast(error.message,'error');}
+    }
+    async function importLocalRois() {
+      try {
+        const response=await fetch(`${getBridgeUrl()}/local_rois`,{cache:'no-store'});
+        if(!response.ok)throw Error('Import calibrations on the bridge host using deploy/local_roi.py first');
+        const value=await response.json();if(value.version!==1||value.cameras?.length!==3)throw Error('Invalid local calibration');
+        for(const cam of value.cameras) {
+          const current=cctvCamerasList.find(c=>c.cctv_id===cam.cctv_id);
+          if(!current||cameraRole(current)!==cam.camera_role||cctvSourceBinding(current.rtsp_url)!==cam.binding.source)throw Error(`Source/role mismatch for ${cam.cctv_id}; no calibrations imported`);
+        }
+        for(const cam of value.cameras) {
+          localStorage.setItem(`smart_storage_cctv_rois_${cam.cctv_id}`,JSON.stringify(cam.rois));
+          localStorage.setItem(`smart_storage_cctv_rois_${cam.cctv_id}_binding`,JSON.stringify(cam.binding));
+        }
+        showToast('Local calibrations loaded. Stop/restart camera tracking to use the updated geometry.','success');
+      }catch(error){showToast(error.message,'error');}
+    }
+    async function showLocalOperations() {
+      const host=document.getElementById('localOperationsStatus');
+      try {const response=await fetch(`${getBridgeUrl()}/local_operations`,{cache:'no-store'});
+        if(!response.ok)throw Error('Local diagnostics unavailable');host.textContent=JSON.stringify(await response.json(),null,2);
+      }catch(error){host.textContent=error.message;}
     }
     function exportEdgePoseFixture() {
       const picker=document.createElement('input');picker.type='file';picker.accept='image/jpeg,image/png';
@@ -3524,47 +3549,16 @@ Reason: ${reason}`))return;
     }
 
     async function loadCompartments(forceCloud = false) {
-      const now = Date.now();
-      const shouldQueryCloud = forceCloud || (now - lastCloudCompartmentsFetchMs >= CLOUD_POLL_INTERVAL_MS);
-
-      if (shouldQueryCloud) {
-        lastCloudCompartmentsFetchMs = now;
-        try {
-          let data = null;
-          try {
-            data = await sbRest('compartments', 'GET', `?select=${COMPARTMENT_COLS}&order=shelf_id.asc`);
-          } catch (restErr) {
-            if (supabaseClient) {
-              const res = await supabaseClient
-                .from('compartments')
-                .select(COMPARTMENT_COLS)
-                .order('shelf_id', { ascending: true });
-              if (!res.error && res.data) data = res.data;
-            }
-          }
-
-          if (data && Array.isArray(data) && data.length > 0) {
-            dbStatusDot.className = 'status-dot connected';
-            dbStatusText.textContent = 'Cloud DB: Connected';
-            compartmentsData = mergeCloudCompartments(data, []);
-          }
-        } catch (err) {
-          console.warn('Cloud compartments fetch skipped/failed:', err);
-        }
-      }
-
-      // Merge local bridge data if available
+      // Live inventory comes from the local bridge; no background cloud reads.
       try {
-        const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
-        if (bridgeResp.ok) mergeBridgeTelemetry(await bridgeResp.json());
-      } catch (bridgeErr) {
-        // Local bridge offline
+        const response=await fetch(`${getBridgeUrl()}/esp32_nodes`,{cache:'no-store'});
+        if(!response.ok)throw Error('Local bridge unavailable');
+        mergeBridgeTelemetry(await response.json());
+        dbStatusText.textContent='Inventory: Local Bridge';
+      } catch(error) {
+        dbStatusText.textContent='Local Bridge offline; displayed inventory may be stale';
       }
-
-      if (!compartmentsData || compartmentsData.length === 0) {
-        compartmentsData = [...DEFAULT_6_COMPARTMENTS];
-      }
-      renderCompartments(compartmentsData);
+      renderCompartments(compartmentsData || []);
       syncSelectedShelfTelemetry();
     }
 
@@ -3590,33 +3584,14 @@ Reason: ${reason}`))return;
     }
 
     function saveLatestActions() {
-      comparisonLogsData = (comparisonLogsData || []).slice(0, 5).map(normalizeLatestAction);
-      try {
-        localStorage.setItem(LATEST_ACTIONS_KEY, JSON.stringify(comparisonLogsData));
-      } catch (_) {
-        try {
-          localStorage.setItem(LATEST_ACTIONS_KEY, JSON.stringify(
-            comparisonLogsData.map(l => ({ ...l, before_image_url: null, after_image_url: null }))
-          ));
-        } catch (__) { }
-      }
+      // Phase 6: the bridge's global latest-five store is the sole intent buffer.
+      comparisonLogsData=[];
+      try { localStorage.removeItem(LATEST_ACTIONS_KEY); } catch (_) {}
     }
-
-    function loadLatestActionsFromLocal() {
-      try {
-        const raw = localStorage.getItem(LATEST_ACTIONS_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        if (Array.isArray(parsed)) {
-          comparisonLogsData = parsed.slice(0, 5).map(normalizeLatestAction);
-          saveLatestActions();
-        }
-      } catch (_) { }
-    }
-
+    function loadLatestActionsFromLocal() { saveLatestActions(); }
     function prependLatestAction(entry) {
-      comparisonLogsData = [entry, ...(comparisonLogsData || [])].slice(0, 5);
       saveLatestActions();
-      renderComparisonLogs(comparisonLogsData);
+      renderComparisonLogs([]);
     }
 
     async function loadComparisonLogs() {
@@ -4673,37 +4648,7 @@ Reason: ${reason}`))return;
     // REALTIME SUBSCRIPTIONS & POLLING FALLBACK
     // =========================================================================
     function setupRealtimeSubscriptions() {
-      if (!supabaseClient) return;
-
-      try {
-        // Subscribe to public.compartments changes
-        supabaseClient
-          .channel('compartments-changes')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'compartments' },
-            (payload) => {
-              if (payload.new && payload.new.shelf_id) {
-                const idx = compartmentsData.findIndex(c => c.shelf_id === payload.new.shelf_id);
-                if (idx >= 0) {
-                  const prev = compartmentsData[idx];
-                  compartmentsData[idx] = {
-                    ...prev,
-                    ...payload.new,
-                  };
-                } else {
-                  compartmentsData.push(payload.new);
-                }
-                renderCompartments(compartmentsData);
-                syncSelectedShelfTelemetry();
-              }
-            }
-          )
-          .subscribe();
-
-      } catch (err) {
-        console.warn('Realtime subscription fallback to polling:', err);
-      }
+      // Normal monitoring uses the bridge. Do not subscribe to cloud inventory.
     }
 
     // =========================================================================

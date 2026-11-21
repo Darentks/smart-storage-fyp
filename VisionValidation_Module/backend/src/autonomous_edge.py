@@ -137,9 +137,13 @@ class ActionTracker:
 
 def load_service_config(config_path, manifest_path, acceptance_path, code_paths):
     """Local-only activation gate, bound to code, models, calibrations and reports."""
+    if os.getenv('SMART_STORAGE_RELEASE_PHASE','6')!='5':
+        raise ValueError('PHASE6_RELEASE_BLOCKED: strict count/device-only cloud migration and field acceptance remain unresolved; Phase 5 compatibility requires explicit release selection')
     config_path=Path(config_path).resolve();base=config_path.parent
     config=json.loads(config_path.read_text());calibration_path=(base/config['calibration_file']).resolve()
     calibration=json.loads(calibration_path.read_text())
+    from .local_operations import validate_rois
+    calibration=validate_rois(calibration)
     if len(calibration.get('cameras',[]))!=3:raise ValueError('Exactly three camera calibrations required')
     acceptance=json.loads(Path(acceptance_path).read_text())
     code_hash=hashlib.sha256(b''.join(Path(p).read_bytes() for p in code_paths)).hexdigest()

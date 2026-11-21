@@ -43,6 +43,8 @@ def configure_logs(directory):
     LOG.handlers=[handler];LOG.setLevel(logging.INFO)
 
 def event(startup_id,event_type,**fields):
-    allowed={'shelf_id','trigger_id','lease','state','code','attempt','capture_number','revision','status'}
+    # Technical health/retry logs must not recreate the intent/event history.
+    allowed={'shelf_id','state','code','attempt','capture_number','status'}
+    if event_type in {'reconciliation','edge_shadow_prediction'}:return
     LOG.info(json.dumps(dict(timestamp=time.time(),startup_id=startup_id,event=event_type,
         **{k:(v[:200] if isinstance(v,str) else v) for k,v in fields.items() if k in allowed and type(v) in (str,int,float,bool,type(None))}),default=str))

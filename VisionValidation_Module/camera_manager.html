@@ -1113,6 +1113,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 &#128065; Preview Both Angles &amp; Run Teachable Machine
               </button>
               <button type="button" id="tmExportBtn" class="btn-action" style="justify-content:center;" onclick="downloadTMTrainingSnapshots()">Download TM Training Snapshots</button>
+              <button type="button" class="btn-action" onclick="exportEdgeTMFixture()">Download Service Comparison (Uploaded Photos)</button>
               <label style="color:var(--text-secondary);"><input type="checkbox" id="tmExportSweep"> Export Retry Sweep (3 lighting settings)</label>
               <div id="tmExportDownloads" style="font-size:12px;" aria-live="polite"></div>
               <button type="button" class="btn-action"
@@ -1441,6 +1442,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <section><button class="btn-action" onclick="startThreeCameras()">Start All Cameras</button>
           <button class="btn-action" id="threeCameraBackgroundBtn" onclick="toggleThreeCameraBackground()" title="Keep detection running but hide previews and skip drawing to save CPU/RAM">Hide Previews (Background Mode)</button>
           <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
+          <button class="btn-action" onclick="exportEdgeCalibrations()">Export Camera Calibrations</button>
+          <button class="btn-action" onclick="importLocalRois()">Load Local Service Calibrations</button>
+          <button class="btn-action" onclick="showLocalOperations()">Latest Five Intents &amp; Diagnostics</button>
+          <pre id="localOperationsStatus" style="max-height:240px;overflow:auto;white-space:pre-wrap"></pre>
+          <button class="btn-action" onclick="exportEdgePoseFixture()">Compare Service Pose (Saved Photo)</button>
+          <div id="edgeProcessorStatus" role="status">Processor: browser</div>
           <div id="threeCameraStatus" role="status">Stopped</div>
           <div id="threeCameraCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px"></div>
           <pre id="threeCameraEvents" aria-live="polite" style="max-height:220px;max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word"></pre></section>
@@ -1979,6 +1986,125 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         front_confidence: sample.prediction.frontConfidence, back_confidence: sample.prediction.backConfidence,
         capture: sample.preview?.capture
       }))};
+    }
+
+    // Explicit downloads only: fixtures contain images; they never enter validation.
+    function edgeBase64(bytes) {
+      let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+      return btoa(binary);
+    }
+    function edgeRGB(canvas) {
+      const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
+      const result=new Uint8Array(canvas.width*canvas.height*3);
+      for(let i=0,j=0;i<data.length;i+=4){result[j++]=data[i];result[j++]=data[i+1];result[j++]=data[i+2];}
+      return edgeBase64(result);
+    }
+    function edgeDownload(name,value) {
+      const url=URL.createObjectURL(new Blob([JSON.stringify(value)],{type:'application/json'}));
+      const anchor=document.createElement('a');anchor.href=url;anchor.download=name;anchor.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+    }
+    async function edgeHash(bytes) {
+      return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
+    }
+    async function edgeModelHash(model) {
+      if(!model?.model?.getWeights)throw Error('Loaded TM runtime does not expose model weights; comparison unavailable');
+      const weights=[];
+      for(const tensor of model.model.getWeights()) {const data=await tensor.data();weights.push(new Uint8Array(data.buffer,data.byteOffset,data.byteLength));}
+      const result=new Uint8Array(weights.reduce((sum,x)=>sum+x.length,0));
+      let offset=0;for(const bytes of weights){result.set(bytes,offset);offset+=bytes.length;}
+      return edgeHash(result);
+    }
+    async function exportEdgeTMFixture() {
+      try {
+        requireDualCamModel(window.tmFrontModel,'Front');requireDualCamModel(window.tmBackModel,'Back');
+        const read=file=>new Promise((resolve,reject)=>{if(!file)return reject(Error('Choose both photos in Offline Home Photo Tester first'));
+          const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(file);});
+        const back=await read(testBackFileInput?.files?.[0]),front=await read(testFrontFileInput?.files?.[0]);
+        const backImage=await decodeTMImage(back),frontImage=await decodeTMImage(front);
+        const models={Front:{weights_sha256:await edgeModelHash(window.tmFrontModel)},Back:{weights_sha256:await edgeModelHash(window.tmBackModel)}};
+        const samples=[];
+        for(const boost of ['off','auto','high']) {
+          const b=preprocessForTM(backImage,boost),f=preprocessForTM(frontImage,boost);
+          samples.push({kind:'pair',boost,image_back:back,image_front:front,
+            back:{rgb_base64:edgeRGB(b),predictions:await window.tmBackModel.predict(b)},
+            front:{rgb_base64:edgeRGB(f),predictions:await window.tmFrontModel.predict(f)}});
+        }
+        edgeDownload('edge-tm-browser-fixture.json',{version:1,created_at:new Date().toISOString(),runtime:{tfjs:tf.version.tfjs},models,samples});
+        showToast('Comparison fixture downloaded. Photos only; inventory unchanged.','success');
+      } catch(error){showToast(error.message||'Comparison export failed','error');}
+    }
+    async function pollEdgeProcessor() {
+      const label=document.getElementById('edgeProcessorStatus');if(!label)return;
+      try {
+        const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
+        if(!response.ok)throw Error('Unavailable');const data=await response.json();
+        label.textContent=`Processor: ${data.authoritative_processor}; ${data.state}; completed: ${data.processed||0}; waiting: ${data.queue_depth||0}. ${data.mode==='service'?'Dashboard monitoring; authorized recounts remain available.':'Service activation requires local acceptance.'}`;
+      }catch(_){label.textContent='Processor: browser; native comparison status unavailable';}
+    }
+    function exportEdgeCalibrations() {
+      try {
+        const cameras=['CCTV_01','CCTV_02','CCTV_03'].map((id,index)=>{
+          const config=cctvCamerasList.find(x=>x.cctv_id===id),key=`smart_storage_cctv_rois_${id}`;
+          if(!config||config.is_active===false)throw Error(`Configure and enable ${id} before exporting`);
+          const binding=JSON.parse(localStorage.getItem(key+'_binding')||'null');
+          const rois=JSON.parse(localStorage.getItem(key)||'null');
+          const role=index===2?'SIDE_PRESENCE':'GRID_6_ROI';
+          if(cameraRole(config)!==role||!binding||binding.camera_role!==role||binding.source!==cctvSourceBinding(config.rtsp_url)||!rois)
+            throw Error(`${id}: calibrate the current camera and role before exporting`);
+          const required=index===2?['RACK_ENTRY_ZONE']:ALL_SHELF_IDS;
+          if(required.some(s=>!rois[s]))throw Error(`${id}: save every required ROI before exporting`);
+          return {cctv_id:id,camera_role:role,binding,rois};
+        });
+        edgeDownload('edge-camera-calibrations.json',{version:1,created_at:new Date().toISOString(),cameras});
+        showToast('Calibrations exported. Service cutover still requires parity and hardware acceptance.','success');
+      }catch(error){showToast(error.message,'error');}
+    }
+    async function importLocalRois() {
+      try {
+        const response=await fetch(`${getBridgeUrl()}/local_rois`,{cache:'no-store'});
+        if(!response.ok)throw Error('Import calibrations on the bridge host using deploy/local_roi.py first');
+        const value=await response.json();if(value.version!==1||value.cameras?.length!==3)throw Error('Invalid local calibration');
+        for(const cam of value.cameras) {
+          const current=cctvCamerasList.find(c=>c.cctv_id===cam.cctv_id);
+          if(!current||cameraRole(current)!==cam.camera_role||cctvSourceBinding(current.rtsp_url)!==cam.binding.source)throw Error(`Source/role mismatch for ${cam.cctv_id}; no calibrations imported`);
+        }
+        for(const cam of value.cameras) {
+          localStorage.setItem(`smart_storage_cctv_rois_${cam.cctv_id}`,JSON.stringify(cam.rois));
+          localStorage.setItem(`smart_storage_cctv_rois_${cam.cctv_id}_binding`,JSON.stringify(cam.binding));
+        }
+        showToast('Local calibrations loaded. Stop/restart camera tracking to use the updated geometry.','success');
+      }catch(error){showToast(error.message,'error');}
+    }
+    async function showLocalOperations() {
+      const host=document.getElementById('localOperationsStatus');
+      try {const response=await fetch(`${getBridgeUrl()}/local_operations`,{cache:'no-store'});
+        if(!response.ok)throw Error('Local diagnostics unavailable');host.textContent=JSON.stringify(await response.json(),null,2);
+      }catch(error){host.textContent=error.message;}
+    }
+    function exportEdgePoseFixture() {
+      const picker=document.createElement('input');picker.type='file';picker.accept='image/jpeg,image/png';
+      picker.onchange=async()=>{
+        let tensor,outputs,acquired=false;
+        try {
+          const file=picker.files?.[0];if(!file)return;
+          if(isYoloInferencing || isPoseRunning || threeCameraDashboard.running)throw Error('Stop live CCTV inference before exporting a pose comparison');
+          isYoloInferencing=true;acquired=true;
+          const image=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(file);});
+          const source=await decodeTMImage(image),session=await getYoloPoseSession();
+          const scale=Math.min(320/source.naturalWidth,320/source.naturalHeight),w=Math.round(source.naturalWidth*scale),h=Math.round(source.naturalHeight*scale);
+          const canvas=document.createElement('canvas');canvas.width=canvas.height=320;const ctx=canvas.getContext('2d');
+          ctx.fillStyle='#727272';ctx.fillRect(0,0,320,320);ctx.drawImage(source,(320-w)/2,(320-h)/2,w,h);
+          const pixels=ctx.getImageData(0,0,320,320).data,area=320*320,input=new Float32Array(3*area);
+          for(let i=0;i<area;i++)for(let c=0;c<3;c++)input[c*area+i]=pixels[i*4+c]/255;
+          tensor=new ort.Tensor('float32',input,[1,3,320,320]);outputs=await session.run({[session.inputNames[0]]:tensor});
+          const output=outputs[session.outputNames[0]];
+          if(!yoloModelSha)throw Error('Pose comparison requires HTTPS or localhost and an updated page');
+          edgeDownload('edge-pose-browser-fixture.json',{version:1,models:{pose:{asset_sha256:yoloModelSha}},samples:[
+            {kind:'pose',image,rgb_base64:edgeRGB(canvas),dims:output.dims,output_base64:edgeBase64(new Uint8Array(output.data.buffer,output.data.byteOffset,output.data.byteLength))}]});
+        }catch(error){showToast(error.message||'Pose comparison export failed','error');}
+        finally{tensor?.dispose();if(outputs)Object.values(outputs).forEach(x=>x.dispose());if(acquired)isYoloInferencing=false;}
+      };picker.click();
     }
 
     // Toast helper
@@ -2621,7 +2747,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     const PERIODIC_CONFIRM_DELAY_MS = 2000;
     async function bridgePost(path, payload) {
       const response = await fetch(`${getBridgeUrl()}${path}`, {
-        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
+        signal:typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined
       });
       if (!response.ok) {
         let detail = '';
@@ -2643,8 +2770,32 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         && first.occupancyKey === second.occupancyKey;
     }
     const VALIDATION_MAX_ROUNDS = 3;
+    const VALIDATION_TIME_LIMIT_MS = 90000;
+    function validationTimeout(promise, ms) {
+      let timer;
+      return Promise.race([promise,new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(new Error('VALIDATION_TIMEOUT: capture/inference time limit exceeded')),ms);
+      })]).finally(()=>clearTimeout(timer));
+    }
+    function validationFailureCode(reason) {
+      const text=String(reason).toLowerCase();
+      if (/b1 unknown|unknown b1|back_x01/.test(text)) return 'UNKNOWN_B1';
+      if (/m2 conflict/.test(text)) return 'M2_CONFLICT';
+      if (/low confidence|confidence insufficient/.test(text)) return 'LOW_CONFIDENCE';
+      if (/occupancy changed|relocation/.test(text)) return 'OCCUPANCY_CHANGED';
+      if (/database|atomic inventory|revision/.test(text)) return 'DATABASE_FAILURE';
+      if (/stale|predates|reused|capture timing/.test(text)) return 'STALE_CAPTURE';
+      if (/timeout|time limit/.test(text)) return 'VALIDATION_TIMEOUT';
+      if (/cctv consensus/.test(text)) return 'MISSING_CCTV_CONSENSUS';
+      if (/database|atomic inventory|revision/.test(text)) return 'DATABASE_FAILURE';
+      if (/camera|preview failed|connection/.test(text)) return 'MISSING_CAMERA';
+      return 'VALIDATION_REJECTED';
+    }
     async function captureConfirmedPair(capture) {
       let captured = false;
+      const deadline=Date.now()+VALIDATION_TIME_LIMIT_MS;
+      const seenReceipts=new Set();
+      captureConfirmedPair.lastFailure=null;
       const required = window.dualCamSettings.consistentCaptures;
       if (!Number.isInteger(required) || required < 3 || required > 5) return null;
       for (let round = 0; round < VALIDATION_MAX_ROUNDS; round++) {
@@ -2653,17 +2804,20 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           for (let i = 0; i < required; i++) {
             if (captured) await new Promise(resolve => setTimeout(resolve, PERIODIC_CONFIRM_DELAY_MS));
             captured = true;
-            const sample = await capture(round);
+            if(Date.now()>=deadline)throw new Error('VALIDATION_TIMEOUT: validation deadline exceeded');
+            const sample = await validationTimeout(Promise.resolve().then(()=>capture(round)),Math.min(15000,deadline-Date.now()));
             const timing = sample?.preview?.capture;
             if (!timing || !timing.id || !Number.isFinite(timing.completed_at) ||
                 !Number.isFinite(timing.duration_ms) || timing.duration_ms < 0 || timing.duration_ms > 2000 ||
-                samples.some(s => s.preview.capture.id === timing.id) ||
-                !validPeriodicPrediction(sample?.prediction)) throw new Error('Missing, stale or uncertain dual-angle evidence');
+                seenReceipts.has(timing.id) || Date.now()/1000-timing.completed_at>60 || timing.completed_at>Date.now()/1000+1)
+              throw new Error('STALE_CAPTURE: missing, reused or expired capture timing');
+            seenReceipts.add(timing.id);
+            if(!validPeriodicPrediction(sample?.prediction))throw new Error(sample?.prediction?.scenarioLabel || 'Low confidence or unknown occupancy');
             if (samples.length && !periodicCountsAgree(samples[0].prediction, sample.prediction)) throw new Error('Occupancy changed; retry');
             samples.push(sample);
           }
           return {first: samples[0], second: samples[samples.length - 1], samples};
-        } catch (error) { console.warn('[Validation Retry]', error.message); }
+        } catch (error) { captureConfirmedPair.lastFailure=error.message; console.warn('[Validation Retry]', error.message); if(validationFailureCode(error.message)==='VALIDATION_TIMEOUT')break; }
       }
       return null;
     }
@@ -2762,6 +2916,106 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         }
       }
     }
+    async function operatorSession() {
+      if(!supabaseClient)throw new Error('Supabase authentication unavailable');
+      let {data}=await supabaseClient.auth.getSession();
+      if(data.session)return data.session;
+      return new Promise((resolve,reject)=>{
+        const dialog=document.createElement('dialog');
+        dialog.innerHTML='<form><p>Authorized inventory operator sign-in</p><input name="email" type="email" autocomplete="username" placeholder="Email" required><input name="password" type="password" autocomplete="current-password" placeholder="Password" required><p class="error"></p><button type="submit">Sign in</button><button type="button">Cancel</button></form>';
+        document.body.append(dialog);
+        const close=()=>{dialog.remove();reject(new Error('Operator sign-in cancelled'));};
+        dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
+        dialog.querySelector('button[type=button]').onclick=close;
+        dialog.querySelector('form').onsubmit=async event=>{
+          event.preventDefault();const form=event.target;
+          const result=await supabaseClient.auth.signInWithPassword({email:form.email.value,password:form.password.value});
+          form.password.value='';
+          if(result.error){dialog.querySelector('.error').textContent='Sign-in failed';return;}
+          dialog.remove();resolve(result.data.session);
+        };dialog.showModal();
+      });
+    }
+    async function reconcileShelf(encodedShelf) {
+      const shelfId=decodeURIComponent(encodedShelf);
+      try {
+        const session=await operatorSession();
+        const request=async(path,payload)=>{
+          const response=await fetch(getBridgeUrl()+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+session.access_token},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
+          const data=await response.json();if(!response.ok)throw new Error(data.error||'Recount failed');return data;
+        };
+        const context=await request('/reconciliation_context',{shelf_id:shelfId});
+        const bits=prompt(`Physical recount for ${shelfId}. Inspect every slot yourself.
+Saved: ${JSON.stringify(context.saved)}
+Current unverified observation: ${JSON.stringify(context.observed)}
+Enter exactly five 0/1 digits: F1 M1 M2 B1 B2. Do not guess an unknown slot.`);
+        if(bits===null)return;if(!/^[01]{5}$/.test(bits))throw new Error('All five physical slots must be explicitly verified');
+        const slots=bits.split('').map(Number);const entered=prompt('Enter the physically recounted quantity (0?5):');
+        if(entered===null)return;const quantity=Number(entered);
+        if(!/^[0-5]$/.test(entered)||quantity!==slots.reduce((a,b)=>a+b,0)||slots[2]>slots[1]||slots[4]>slots[3])throw new Error('Quantity/stacking contradicts the physical slot entries');
+        const reason=prompt('Reason for reconciliation (at least 5 characters):');if(reason===null)return;
+        if(reason.trim().length<5)throw new Error('A meaningful reason is required');
+        const changes=['F1','M1','M2','B1','B2'].map((name,i)=>`${name}: ${context.saved.confirmed_occupancy?.[i] ?? 'unverified'} -> ${slots[i]}`).join('\n');
+        if(!confirm(`Confirm operator-verified PHYSICAL RECOUNT, not BORROW/RETURN?
+${changes}
+Quantity ${context.saved.current_quantity} -> ${quantity}
+Revision ${context.saved.revision}
+Reason: ${reason}`))return;
+        const result=await request('/reconcile_inventory',{shelf_id:shelfId,run_id:context.run_id,reconciliation_id:crypto.randomUUID(),revision:context.saved.revision,slots,quantity,reason,confirmed:true});
+        if(!['accepted','duplicate'].includes(result.status))throw new Error('Recount not confirmed');
+        startupAttempts.delete(shelfId);await pollShelfReadiness();await refreshAllData();
+        showToast('Recount saved and audited. Fresh camera verification is required before Ready.','success');
+      } catch(error){showToast(error.message,'error');}
+    }
+    function readinessText(value) { return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+    let readinessRun = null;
+    let shelfOperatingStates = {};
+    const startupAttempts = new Set();
+    let readinessPolling = false;
+    let readinessReconnect = false;
+    async function pollShelfReadiness() {
+      if (readinessPolling) return;
+      readinessPolling = true;
+      try {
+        if(readinessReconnect && readinessRun) {
+          const recovered=await fetch(`${getBridgeUrl()}/readiness_recovery`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run_id:readinessRun})});
+          if(recovered.ok || recovered.status===409)readinessReconnect=false;
+        }
+        const response = await fetch(`${getBridgeUrl()}/shelf_readiness`, {cache:'no-store'});
+        if (!response.ok) throw new Error('Bridge readiness unavailable');
+        const data = await response.json();
+        if(data.processor_mode==='service') {
+          if(typeof threeCameraDashboard!=='undefined')threeCameraDashboard.stop();
+          if(typeof document!=='undefined') {
+            for(const button of document.querySelectorAll('button[onclick]')) {
+              if(/runFullDualCamValidation|fetchLiveAnglePreview|runOfflinePhotoTest|startThreeCameras|startCctv|runCctv|startPose/.test(button.getAttribute('onclick')||'')) {
+                button.disabled=true;button.title='Service owns processing; use monitoring and authorized recounts';
+              }
+            }
+          }
+        }
+        if (readinessRun !== data.run_id) {
+          if (readinessRun) showToast('Bridge restarted; verifying shelves again','warning');
+          readinessRun = data.run_id; startupAttempts.clear();
+        }
+        for (const [id,status] of Object.entries(data.shelves)) {
+          if(status.state==='Starting' && shelfOperatingStates[id]?.state && shelfOperatingStates[id].state!=='Starting') startupAttempts.delete(id);
+        }
+        shelfOperatingStates = data.shelves;
+        renderCompartments(compartmentsData);
+        for (const [shelfId,status] of Object.entries(data.shelves)) {
+          if (data.processor_mode !== 'service' && window.tmModel && status.state === 'Starting' && !startupAttempts.has(shelfId)) {
+            startupAttempts.add(shelfId);
+            validationWorker.submit({shelfId,source:'STARTUP',action:'RECHECK'});
+          }
+        }
+      } catch (error) {
+        readinessReconnect=true;
+        for (const shelfId of Object.keys(shelfOperatingStates)) shelfOperatingStates[shelfId]={state:'Offline',reason:error.message};
+        startupAttempts.clear();
+        renderCompartments(compartmentsData);
+      } finally { readinessPolling = false; }
+    }
     const MAX_PROCESSED_TRIGGER_IDS = 200;
     function rememberProcessedTrigger(id) {
       processedTriggerIds.delete(id);
@@ -2796,7 +3050,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         : item.kind === 'PREVIEW' ? fetchLiveAnglePreviewLocked(item.shelfId, item.ip1, item.ip2, item.boost)
         : item.kind === 'PHOTO' ? runOfflinePhotoTestLocked(item.shelfId, token)
         : item.source === 'PERIODIC_RECHECK' ? executePeriodicRecheckValidation(item.shelfId, item.trigger, token)
-        : executeFullDualCamValidation(item.shelfId, item.action || 'BORROW', item.source === 'CCTV', token, item.trigger?.trigger_id),
+        : executeFullDualCamValidation(item.shelfId, item.action || 'BORROW', item.source === 'CCTV', token, item.trigger?.trigger_id, item.source),
       release: (item, token) => bridgePost('/validation_end', {
         shelf_id:item.shelfId, token, trigger_id:item.claimed ? item.trigger?.trigger_id : undefined
       }),
@@ -2949,7 +3203,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
-    async function executeFullDualCamValidation(shelfId, action, isCctvTrigger, validationToken, triggerId) {
+    async function executeFullDualCamValidation(shelfId, action, isCctvTrigger, validationToken, triggerId, validationSource) {
       const comp = compartmentsData.find(c => c.shelf_id === shelfId);
       const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201');
       const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202');
@@ -2967,7 +3221,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const fetchSnapshots = async (stage) => {
           if (!(await bridgePost('/validation_renew', {shelf_id:shelfId, token:validationToken})).renewed) throw new Error('Validation lease expired');
           const previewUrl = `${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(stage.boost)}&duty=${stage.duty}&_t=${Date.now()}`;
-          const prevResp = await fetch(previewUrl, { cache: 'no-store' });
+          const prevResp = await fetch(previewUrl, { cache: 'no-store', signal:AbortSignal.timeout(8000) });
           if (!prevResp.ok) throw new Error(`Preview failed with status ${prevResp.status}`);
           return await prevResp.json();
         };
@@ -3047,22 +3301,31 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         ];
         let bestValidAttempt = null;
         let lastObservation = null;
+        let captureNumber = 0;
+        let previousRound = -1;
         const confirmed = await captureConfirmedPair(async round => {
           const stage = attempts[round];
+          if (previousRound !== round) { captureNumber=0; previousRound=round; }
+          captureNumber++;
+          await bridgePost('/validation_progress',{shelf_id:shelfId,validation_token:validationToken,run_id:readinessRun,trigger_id:triggerId,attempt:round+1,max_attempts:3,capture_number:captureNumber,boost:stage.boost,duty:stage.duty,
+            stage:`Capture ${captureNumber}/3; attempt ${round+1}/3; boost ${stage.boost}; duty ${stage.duty}`});
           const preview = await fetchSnapshots(stage);
           updatePreviewUI(preview, preview.image_back, preview.image_front);
           const prediction = await executePrediction(preview.image_back, preview.image_front, stage.boost);
           lastObservation = prediction;
+          await bridgePost('/validation_progress',{shelf_id:shelfId,validation_token:validationToken,run_id:readinessRun,trigger_id:triggerId,attempt:round+1,max_attempts:3,capture_number:captureNumber,boost:stage.boost,duty:stage.duty,front_confidence:prediction?.frontConfidence,back_confidence:prediction?.backConfidence,capture_completed_at:preview.capture?.completed_at,
+            stage:`Attempt ${round+1}/3, capture ${captureNumber}/3: ${prediction?.scenarioLabel || 'Model/camera unavailable'}; confidence ${prediction?.confidence ?? 'unknown'}%`});
           return {prediction, preview, settings: stage};
         });
         bestValidAttempt = confirmed?.second || null;
         if (!bestValidAttempt) {
-          const abortMsg = `${shelfId}: Unresolved - will recheck automatically. ${lastObservation?.status === 'INDETERMINATE_B1' ? lastObservation.scenarioLabel : 'Dual-angle evidence or stable counts are insufficient.'}`;
+          const abortMsg = `${shelfId}: HOLD after bounded retries. ${captureConfirmedPair.lastFailure || lastObservation?.scenarioLabel || 'Dual-angle evidence insufficient'}`;
           if (tmLivePredictionBanner) {
             tmLivePredictionBanner.style.display = 'block';
             tmLivePredictionBanner.textContent = abortMsg;
           }
           showToast(abortMsg, 'error');
+          await bridgePost('/validation_progress',{shelf_id:shelfId,validation_token:validationToken,failed:true,run_id:readinessRun,trigger_id:triggerId,stage:`${validationFailureCode(captureConfirmedPair.lastFailure || lastObservation?.scenarioLabel || abortMsg)}: ${captureConfirmedPair.lastFailure || lastObservation?.scenarioLabel || abortMsg}`});
           return { status: 'failed', error: abortMsg };
         }
         const { prediction: tmRes, preview: previewData, settings: acceptedSettings } = bestValidAttempt;
@@ -3078,7 +3341,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const valPayload = {
           shelf_id: shelfId,
           validation_token: validationToken,
-          source: isCctvTrigger ? "CCTV" : "MANUAL",
+          source: isCctvTrigger ? "CCTV" : validationSource === "STARTUP" ? "STARTUP" : "MANUAL",
           trigger_id: isCctvTrigger ? triggerId : undefined,
           expected_action: action,
           ip: ip1,
@@ -3092,7 +3355,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           boost: boostVal
         };
 
+        await bridgePost('/validation_progress',{shelf_id:shelfId,validation_token:validationToken,stage:'Expected-action check; saving inventory only after server validation'});
         const valResp = await fetch(`${getBridgeUrl()}/esp32_validate`, {
+          signal:typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(10000) : undefined,
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(valPayload)
@@ -3132,8 +3397,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           quantity_after: compRes.quantity_after != null ? compRes.quantity_after : tmRes.totalBoxes
         });
         refreshAllData();
+        pollShelfReadiness();
         return valResult;
       } catch (err) {
+        await bridgePost('/validation_progress',{shelf_id:shelfId,validation_token:validationToken,failed:true,run_id:readinessRun,trigger_id:triggerId,stage:`${validationFailureCode(err.message)}: ${err.message}`}).catch(()=>{});
         console.error('[runFullDualCamValidation] Error:', err);
         if (tmLivePredictionBanner) {
           tmLivePredictionBanner.style.display = 'block';
@@ -3199,6 +3466,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
     function consumeCctvTrigger(trigger) {
+      if (typeof shelfOperatingStates !== 'undefined' && shelfOperatingStates[trigger.shelf_id]?.state !== 'Ready') {
+        showToast(`${trigger.shelf_id}: not Ready; interaction not validated`,'warning');
+        return Promise.resolve({status:'failed',error:'Shelf not Ready'});
+      }
       if (!trigger.trigger_id || processedTriggerIds.has(trigger.trigger_id)) return Promise.resolve(null);
       if (trigger.source === 'CCTV' && trigger.consensus_met !== true) return Promise.resolve(null);
       if (!ALL_SHELF_IDS.includes(trigger.shelf_id)) return Promise.resolve(null);
@@ -3278,47 +3549,16 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     async function loadCompartments(forceCloud = false) {
-      const now = Date.now();
-      const shouldQueryCloud = forceCloud || (now - lastCloudCompartmentsFetchMs >= CLOUD_POLL_INTERVAL_MS);
-
-      if (shouldQueryCloud) {
-        lastCloudCompartmentsFetchMs = now;
-        try {
-          let data = null;
-          try {
-            data = await sbRest('compartments', 'GET', `?select=${COMPARTMENT_COLS}&order=shelf_id.asc`);
-          } catch (restErr) {
-            if (supabaseClient) {
-              const res = await supabaseClient
-                .from('compartments')
-                .select(COMPARTMENT_COLS)
-                .order('shelf_id', { ascending: true });
-              if (!res.error && res.data) data = res.data;
-            }
-          }
-
-          if (data && Array.isArray(data) && data.length > 0) {
-            dbStatusDot.className = 'status-dot connected';
-            dbStatusText.textContent = 'Cloud DB: Connected';
-            compartmentsData = mergeCloudCompartments(data, []);
-          }
-        } catch (err) {
-          console.warn('Cloud compartments fetch skipped/failed:', err);
-        }
-      }
-
-      // Merge local bridge data if available
+      // Live inventory comes from the local bridge; no background cloud reads.
       try {
-        const bridgeResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
-        if (bridgeResp.ok) mergeBridgeTelemetry(await bridgeResp.json());
-      } catch (bridgeErr) {
-        // Local bridge offline
+        const response=await fetch(`${getBridgeUrl()}/esp32_nodes`,{cache:'no-store'});
+        if(!response.ok)throw Error('Local bridge unavailable');
+        mergeBridgeTelemetry(await response.json());
+        dbStatusText.textContent='Inventory: Local Bridge';
+      } catch(error) {
+        dbStatusText.textContent='Local Bridge offline; displayed inventory may be stale';
       }
-
-      if (!compartmentsData || compartmentsData.length === 0) {
-        compartmentsData = [...DEFAULT_6_COMPARTMENTS];
-      }
-      renderCompartments(compartmentsData);
+      renderCompartments(compartmentsData || []);
       syncSelectedShelfTelemetry();
     }
 
@@ -3344,33 +3584,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function saveLatestActions() {
-      comparisonLogsData = (comparisonLogsData || []).slice(0, 5).map(normalizeLatestAction);
-      try {
-        localStorage.setItem(LATEST_ACTIONS_KEY, JSON.stringify(comparisonLogsData));
-      } catch (_) {
-        try {
-          localStorage.setItem(LATEST_ACTIONS_KEY, JSON.stringify(
-            comparisonLogsData.map(l => ({ ...l, before_image_url: null, after_image_url: null }))
-          ));
-        } catch (__) { }
-      }
+      // Phase 6: the bridge's global latest-five store is the sole intent buffer.
+      comparisonLogsData=[];
+      try { localStorage.removeItem(LATEST_ACTIONS_KEY); } catch (_) {}
     }
-
-    function loadLatestActionsFromLocal() {
-      try {
-        const raw = localStorage.getItem(LATEST_ACTIONS_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        if (Array.isArray(parsed)) {
-          comparisonLogsData = parsed.slice(0, 5).map(normalizeLatestAction);
-          saveLatestActions();
-        }
-      } catch (_) { }
-    }
-
+    function loadLatestActionsFromLocal() { saveLatestActions(); }
     function prependLatestAction(entry) {
-      comparisonLogsData = [entry, ...(comparisonLogsData || [])].slice(0, 5);
       saveLatestActions();
-      renderComparisonLogs(comparisonLogsData);
+      renderComparisonLogs([]);
     }
 
     async function loadComparisonLogs() {
@@ -3434,7 +3655,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div class="compartment-card ${isOnline ? 'online' : ''}">
             <div class="card-top">
               <div>
-                <div class="card-title">${comp.shelf_id}</div>
+                <div class="card-title">${comp.shelf_id}</div><button class="btn-action" onclick="reconcileShelf('${encodeURIComponent(comp.shelf_id)}')">Physical recount (operator)</button>
+                <div style="color:var(--warning);white-space:pre-wrap">${readinessText(shelfOperatingStates[comp.shelf_id]?.state || 'Starting')}: ${readinessText(shelfOperatingStates[comp.shelf_id]?.code || '')} ${readinessText(shelfOperatingStates[comp.shelf_id]?.reason || 'Waiting for startup verification')}</div>
                 <div class="card-subtitle">${comp.mqtt_client_id} &bull; ${comp.camera_name || 'ESP32 Node'}</div>
               </div>
               <div>
@@ -4426,37 +4648,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // REALTIME SUBSCRIPTIONS & POLLING FALLBACK
     // =========================================================================
     function setupRealtimeSubscriptions() {
-      if (!supabaseClient) return;
-
-      try {
-        // Subscribe to public.compartments changes
-        supabaseClient
-          .channel('compartments-changes')
-          .on(
-            'postgres_changes',
-            { event: '*', schema: 'public', table: 'compartments' },
-            (payload) => {
-              if (payload.new && payload.new.shelf_id) {
-                const idx = compartmentsData.findIndex(c => c.shelf_id === payload.new.shelf_id);
-                if (idx >= 0) {
-                  const prev = compartmentsData[idx];
-                  compartmentsData[idx] = {
-                    ...prev,
-                    ...payload.new,
-                  };
-                } else {
-                  compartmentsData.push(payload.new);
-                }
-                renderCompartments(compartmentsData);
-                syncSelectedShelfTelemetry();
-              }
-            }
-          )
-          .subscribe();
-
-      } catch (err) {
-        console.warn('Realtime subscription fallback to polling:', err);
-      }
+      // Normal monitoring uses the bridge. Do not subscribe to cloud inventory.
     }
 
     // =========================================================================
@@ -4593,6 +4785,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     let isYoloInferencing = false;
     let yoloOrtSession = null;
     let yoloSessionPromise = null;
+    let yoloModelSha = null;
     const YOLO_INPUT_SIZE = 320;
     const yoloOffscreen = Object.assign(document.createElement('canvas'), { width: 320, height: 320 });
     const yoloOffCtx = yoloOffscreen.getContext('2d', { willReadFrequently: true });
@@ -4619,7 +4812,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml')) {
               throw new Error('Model URL returned HTML instead of an ONNX file.');
             }
-            yoloOrtSession = await ort.InferenceSession.create(path, { executionProviders: ['wasm'] });
+            const modelResponse = await fetch(path);
+            if(!modelResponse.ok)throw Error('Pose model download failed');
+            const modelBytes = await modelResponse.arrayBuffer();
+            yoloOrtSession = await ort.InferenceSession.create(modelBytes, { executionProviders: ['wasm'] });
+            yoloModelSha = window.crypto?.subtle ? await edgeHash(modelBytes) : null;
             return yoloOrtSession;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -6458,6 +6655,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     populateAssignedIpDropdowns();
     loadTeachableMachineModel();
+    setInterval(pollShelfReadiness, 5000);
+    setInterval(pollEdgeProcessor, 5000);
+    pollShelfReadiness();
     refreshAllData();
     loadEsp32CameraNodes();
     setupRealtimeSubscriptions();

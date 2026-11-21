@@ -88,21 +88,27 @@ def _supabase_rest(
     if payload is not None:
         data_bytes = json.dumps(payload).encode("utf-8")
 
+    from .local_operations import CLOUD_METRICS
+    response_bytes=0;ok=False
+    request_size=len(url.encode())+sum(len(k.encode())+len(str(v).encode()) for k,v in headers.items())+len(data_bytes or b'')
     req = urllib.request.Request(url, data=data_bytes, headers=headers, method=method.upper())
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if not 200 <= resp.status < 300:
                 return False if method.upper() in {"PATCH", "DELETE"} else []
             if resp.status == 204:
+                ok=True
                 return False if method.upper() == "PATCH" else True
-            raw_text = resp.read().decode("utf-8")
+            raw=resp.read();response_bytes=len(raw);raw_text = raw.decode("utf-8");ok=True
             result = json.loads(raw_text) if raw_text else []
             if method.upper() == "PATCH" and (not isinstance(result, list) or not result):
                 return False
             return result
-    except Exception as exc:
-        print(f"[_supabase_rest] {method.upper()} on '{table}' failed: {exc}")
+    except Exception:
+        print(f"[_supabase_rest] {method.upper()} request failed; details omitted")
         return False if method.upper() in {"PATCH", "DELETE"} else []
+    finally:
+        CLOUD_METRICS.record(method,request_size,response_bytes,ok)
 
 
 # Alias for backward compatibility

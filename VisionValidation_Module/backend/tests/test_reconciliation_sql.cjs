@@ -1,0 +1,30 @@
+const fs=require('fs'),assert=require('node:assert/strict');
+if(!process.env.PHASE1_PGLITE_MODULE){console.log('SKIP: reconciliation SQL requires test-only PGlite');process.exit(0)}
+const {PGlite}=require(process.env.PHASE1_PGLITE_MODULE);
+(async()=>{
+ const db=new PGlite();await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role;
+ CREATE SCHEMA auth;CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;`);
+ const schema=fs.readFileSync('supabase_schema.sql','utf8').replace(/CREATE EXTENSION IF NOT EXISTS .pgcrypto.;/,'');
+ await db.exec(schema);
+ const shelf='SHELF_R1_C3',user='11111111-1111-4111-8111-111111111111',id='22222222-2222-4222-8222-222222222222';
+ const query='SELECT public.reconcile_inventory($1,$2::uuid,$3,$4,$5::jsonb,$6) AS result';
+ const args=[shelf,id,0,4,'[0,1,1,1,1]','Physical recount after downtime'];
+ const rpc=async a=>(await db.query(query,a)).rows[0].result;
+ await db.exec(`SET ROLE authenticated;SET request.jwt.claim.sub='${user}'`);
+ await assert.rejects(()=>rpc(args),/access denied/);
+ await db.exec('RESET ROLE');await db.query('INSERT INTO public.inventory_operators(user_id) VALUES($1::uuid)',[user]);await db.exec('SET ROLE authenticated');
+ await assert.rejects(()=>rpc([...args.slice(0,4),'[0,1,1,null,0]',args[5]]),/Exact supported/);
+ const accepted=await rpc(args);assert.equal(accepted.status,'accepted');assert.equal(accepted.audit.event_type,'RECONCILIATION');assert.equal(accepted.audit.operator_id,user);
+ assert.equal(accepted.state.current_quantity,4);assert.equal(accepted.state.revision,1);
+ assert.equal((await rpc(args)).status,'duplicate');
+ await assert.rejects(()=>rpc([shelf,'33333333-3333-4333-8333-333333333333',0,5,'[1,1,1,1,1]','Another physical count']),/Stale/);
+ await assert.rejects(()=>rpc([shelf,id,0,5,'[1,1,1,1,1]',args[5]]),/reused/);
+ await db.exec('RESET ROLE');
+ assert.equal((await db.query('SELECT count(*)::int AS n FROM public.inventory_reconciliations')).rows[0].n,1);
+ const row=(await db.query('SELECT current_quantity,revision FROM public.compartments WHERE shelf_id=$1',[shelf])).rows[0];assert.equal(row.current_quantity,4);assert.equal(row.revision,1);
+ await db.exec(`CREATE FUNCTION public.fail_recount_audit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit failure'; END $$;CREATE TRIGGER fail_audit BEFORE INSERT ON public.inventory_reconciliations FOR EACH ROW EXECUTE FUNCTION public.fail_recount_audit();SET ROLE authenticated;`);
+ await assert.rejects(()=>rpc([shelf,'44444444-4444-4444-8444-444444444444',1,5,'[1,1,1,1,1]','Verified recount with simulated failure']),/audit failure/);
+ await db.exec('RESET ROLE');
+ const unchanged=(await db.query('SELECT current_quantity,revision FROM public.compartments WHERE shelf_id=$1',[shelf])).rows[0];assert.equal(unchanged.current_quantity,4);assert.equal(unchanged.revision,1);
+ await db.close();console.log('PASS: operator allowlist, exact recount, audited identity/before-after state, duplicate safety and stale revision rejection');
+})().catch(e=>{console.error(e.message);process.exit(1)});
