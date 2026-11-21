@@ -33,7 +33,13 @@ def decode_pair(front, back) -> tuple[int, int, int, int, int]:
     observation = decode_observation(front, back)
     if observation["total"] is None:
         raise ValueError("B1 unknown (Back_X01); exact inventory update held, retry a trusted observation")
-    return observation["slots"]
+    slots = observation["slots"]
+    if not isinstance(slots, tuple) or len(slots) != 5:
+        raise ValueError("Invalid occupancy slots")
+    f1, m1, m2, b1, b2 = slots
+    if b1 is None:
+        raise ValueError("B1 unknown (Back_X01); exact inventory update held, retry a trusted observation")
+    return (int(f1), int(m1), int(m2), int(b1), int(b2))
 
 
 def validate_evidence(evidence, count, now, captures, shelf_id, validation_token=None, not_before=None) -> tuple[tuple[int, int, int, int, int], set[str]]:
