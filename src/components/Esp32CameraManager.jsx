@@ -26,7 +26,7 @@ const DUAL_CAM_LABELS = {
   Front: ['000', '010', '011', '100', '110', '111'].map((bits) => `Front_${bits}`),
   Back: ['000', '100', 'X01', '11X'].map((bits) => `Back_${bits}`),
 };
-const MIN_CONFIDENCE = 0.85;
+const MIN_CONFIDENCE = 0.80;
 
 function pending(reason, extra = {}) {
   return {

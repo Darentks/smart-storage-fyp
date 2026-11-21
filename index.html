@@ -1715,7 +1715,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       Front: ['000', '010', '011', '100', '110', '111'].map(bits => `Front_${bits}`),
       Back: ['000', '100', 'X01', '11X'].map(bits => `Back_${bits}`)
     };
-    window.dualCamSettings = {confidence: 0.85, consistentCaptures: 3};
+    window.dualCamSettings = {confidence: 0.80, consistentCaptures: 3};
     window.tmModel = null; // Compatibility readiness flag for existing dashboard workflows.
     window.tmFrontModel = null;
     window.tmBackModel = null;
@@ -1946,7 +1946,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           backConfidence: Number((back.probability * 100).toFixed(1)), frontConfidence: Number((front.probability * 100).toFixed(1)),
           confidence: Number((Math.min(back.probability, front.probability) * 100).toFixed(1))};
         const threshold = window.dualCamSettings.confidence;
-        if (!Number.isFinite(threshold) || threshold < 0.85 || threshold > 1 ||
+        if (!Number.isFinite(threshold) || threshold < 0.80 || threshold > 1 ||
             back.probability < threshold || front.probability < threshold) return pending('Low confidence; quantity retained', details);
         const frontStates = {Front_000:[0,0,0], Front_010:[0,1,0], Front_011:[0,1,1],
           Front_100:[1,0,0], Front_110:[1,1,0], Front_111:[1,1,1]};
@@ -2592,7 +2592,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
 
       const tmRes = await predictDualCamerasWithTM(rawBackImg, rawFrontImg, boostMode);
-      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null || !Number.isFinite(tmRes.confidence) || tmRes.confidence < 85) {
+      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null || !Number.isFinite(tmRes.confidence) || tmRes.confidence < 80) {
         const abortMsg = tmRes ? `${tmRes.status}: ${tmRes.scenarioLabel}` : 'Validation pending';
         if (tmLivePredictionBanner) {
           tmLivePredictionBanner.style.display = 'block';
@@ -2636,7 +2636,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function validPeriodicPrediction(result) {
       return !!result && !result.degraded && Number.isInteger(result.totalBoxes)
         && result.totalBoxes >= 0 && result.totalBoxes <= 5 && !!result.occupancyKey
-        && Number.isFinite(result.confidence) && result.confidence >= 85;
+        && Number.isFinite(result.confidence) && result.confidence >= 80;
     }
     function periodicCountsAgree(first, second) {
       return validPeriodicPrediction(first) && validPeriodicPrediction(second)

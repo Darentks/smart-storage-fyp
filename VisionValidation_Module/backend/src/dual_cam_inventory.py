@@ -57,8 +57,8 @@ def validate_evidence(evidence, count, now, captures, shelf_id, validation_token
         slots = current
         for key in ("front_confidence", "back_confidence"):
             confidence = sample.get(key)
-            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 85 <= confidence <= 100:
-                raise ValueError("Both cameras require at least 85% confidence")
+            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 80 <= confidence <= 100:
+                raise ValueError("Both cameras require at least 80% confidence")
         capture = sample.get("capture")
         if not isinstance(capture, dict):
             raise ValueError("Missing live capture timing")
