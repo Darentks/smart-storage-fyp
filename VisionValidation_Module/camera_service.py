@@ -41,6 +41,7 @@ import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.client import HTTPMessage
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -240,22 +241,22 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
                                 if cam["camera_role"] == "GRID_6_ROI")
         aligned = (target is not None and target in shelves and all_grids_present and len(supporters) == len(active))
         if not aligned or target is None:
-            if consensus_context is None and globals().get('LOCAL_INTENTS'):
-                LOCAL_INTENTS.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=shelf_id,
+            if consensus_context is None and (intent_store := globals().get('LOCAL_INTENTS')) is not None:
+                intent_store.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=shelf_id,
                     action=action or None,status='PENDING',reason='MISSING_CCTV_CONSENSUS'))
             return {"status": "pending_consensus", "consensus_met": False, "shelf_id": shelf_id,
                     "confirmed_count": len(supporters), "required_cameras": len(active),
                     "window_seconds": CONSENSUS_WINDOW_SEC}
         last_ts = last_triggers.get(target)
         if last_ts is not None and now - last_ts < CONSENSUS_COOLDOWN_SEC:
-            if consensus_context is None and globals().get('LOCAL_INTENTS'):
-                LOCAL_INTENTS.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=target,
+            if consensus_context is None and (intent_store := globals().get('LOCAL_INTENTS')) is not None:
+                intent_store.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=target,
                     action=target_action,status='HELD',reason='VALIDATION_REJECTED'))
             return {"status": "debounced", "consensus_met": False, "shelf_id": target,
                     "retry_after": CONSENSUS_COOLDOWN_SEC - (now - last_ts)}
         confirmed_id = f"trig_{target}_{uuid.uuid4().hex}"
-        if consensus_context is None and globals().get('LOCAL_INTENTS'):
-            LOCAL_INTENTS.add(dict(id=confirmed_id,timestamp=now,camera_id=camera_id,shelf_id=target,action=target_action,status='CONSENSUS',reason=None))
+        if consensus_context is None and (intent_store := globals().get('LOCAL_INTENTS')) is not None:
+            intent_store.add(dict(id=confirmed_id,timestamp=now,camera_id=camera_id,shelf_id=target,action=target_action,status='CONSENSUS',reason=None))
         result = {"status": "consensus_confirmed", "consensus_met": True,
                   "shelf_id": target, "confirmed_shelf_id": target, "trigger_id": confirmed_id,
                   "expected_action": target_action, "required_cameras": len(active),
@@ -1104,6 +1105,7 @@ def push_ota_firmware_to_esp32(esp32_ip: str, bin_path: str, timeout: float = 45
 
 
 class CameraServiceRequestHandler(BaseHTTPRequestHandler):
+    _processor_capability: Optional[object] = None
     """HTTP Request Handler for camera control, MQTT triggers, and ESP32 reference validation."""
 
     def log_message(self, format: str, *args: Any) -> None:
@@ -1190,13 +1192,17 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path == '/local_operations':
+            failures=READINESS.failures
             self._send_json(200,dict(run_id=READINESS.run_id,intents=LOCAL_INTENTS.snapshot() if LOCAL_INTENTS else [],
                 cloud_metrics=CLOUD_METRICS.snapshot(),metrics_scope='Python PostgREST helper only; SDK/browser calls excluded',
-                unresolved_failures=READINESS.failures.snapshot() if getattr(READINESS,'failures',None) else {},
+                unresolved_failures=failures.snapshot() if failures is not None else {},
                 release_blockers=['STRICT_CLOUD_SCHEMA_MIGRATION','REAL_CAMERA_ACCEPTANCE'],strict_cloud_scope=False))
             return
         if path == '/local_rois':
-            try:self._send_json(200,LOCAL_ROIS.load())
+            try:
+                roi_store=LOCAL_ROIS
+                if roi_store is None:raise ValueError('Local ROI store not initialized')
+                self._send_json(200,roi_store.load())
             except (OSError,ValueError,TypeError,KeyError):self._send_json(409,{'error':'Missing or invalid local ROI configuration; import using local CLI'})
             return
         if globals().get('PROCESSOR_AUTHORITY') == 'service' and path == '/esp32_preview' and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
@@ -1694,8 +1700,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 old=READINESS.get(shelf)
                 stage=str(body.get('stage',''))[:300]
                 if body.get('failed'):
-                    if globals().get('LOCAL_INTENTS') and body.get('trigger_id'):
-                        LOCAL_INTENTS.update(body['trigger_id'],'HELD',failure_code(stage))
+                    if (intent_store := globals().get('LOCAL_INTENTS')) is not None and body.get('trigger_id'):
+                        intent_store.update(body['trigger_id'],'HELD',failure_code(stage))
                     if old['state'] != 'Needs Reconciliation':
                         READINESS.set(shelf,'Offline' if any(word in stage.lower() for word in ('camera unavailable','preview failed','connection refused')) else 'Held',stage)
                 elif old['state'] in {'Ready','Validating Action'}:
@@ -2167,8 +2173,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     if row.get('shelf_id')==shelf_id:row['current_quantity']=predicted_box_count
                 committed_revision = committed_state["revision"] if committed_state is not None else None
                 READINESS.set(shelf_id,"Ready",f"Inventory updated ({curr_qty} -> {predicted_box_count}) after confirmed commit",committed_revision)
-                if globals().get('LOCAL_INTENTS') and body.get('trigger_id'):
-                    LOCAL_INTENTS.update(body['trigger_id'],'ACCEPTED')
+                if (intent_store := globals().get('LOCAL_INTENTS')) is not None and body.get('trigger_id'):
+                    intent_store.update(body['trigger_id'],'ACCEPTED')
                 self._send_json(200, {
                     "status": "success",
                     "occupancy": list(slots),
@@ -2603,10 +2609,11 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                     os.environ['SMART_STORAGE_EDGE_ACCEPTANCE'],code_paths)
                 def local_request(path,body):
                     handler=object.__new__(CameraServiceRequestHandler)
-                    handler.path=path;handler.headers={};handler.client_address=('127.0.0.1',0)
+                    handler.path=path;handler.headers=HTTPMessage();handler.client_address=('127.0.0.1',0)
                     handler._processor_capability=_PROCESSOR_CAPABILITY
                     handler._read_json_body=lambda:body
-                    replies=[];handler._send_json=lambda status,value:replies.append((status,value))
+                    replies: List[tuple[int, Any]]=[]
+                    handler._send_json=lambda status_code,payload:replies.append((status_code,payload))
                     (CameraServiceRequestHandler.do_GET if body is None else CameraServiceRequestHandler.do_POST)(handler)
                     if len(replies)!=1 or not 200<=replies[0][0]<300:raise ValueError('Guarded bridge request rejected')
                     return replies[0][1]

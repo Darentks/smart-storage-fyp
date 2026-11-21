@@ -2,6 +2,9 @@
 import time
 import threading
 import uuid
+from typing import TYPE_CHECKING, Optional
+if TYPE_CHECKING:
+    from .local_operations import LocalFailures
 from collections import deque
 from .validation_diagnostics import failure_code
 from .bridge_runtime import event
@@ -13,6 +16,8 @@ class ShelfReadiness:
         self.observations={}
         self.diagnostics=deque(maxlen=200)
         self.lock=threading.RLock()
+        self.failures: Optional[LocalFailures] = None
+        self.recovery_retries: dict[str, float] = {}
 
     def get(self,shelf):
         with self.lock:
@@ -29,7 +34,7 @@ class ShelfReadiness:
                 ready_at=time.time() if state=='Ready' else old.get('ready_at',0),
                 code=failure_code(reason) if state in {'Held','Offline','Needs Reconciliation'} else None,
                 retryable=False)
-            if getattr(self,'failures',None):self.failures.set(shelf,state,self.states[shelf]['code'])
+            if self.failures is not None:self.failures.set(shelf,state,self.states[shelf]['code'])
             event(self.run_id,'health_transition',shelf_id=shelf,state=state,code=self.states[shelf]['code'])
 
     def record(self,shelf,token,trigger_id=None,**metadata):
