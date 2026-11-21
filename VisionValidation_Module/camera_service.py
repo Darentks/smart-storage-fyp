@@ -75,10 +75,12 @@ from src.config_loader import (  # type: ignore
 )
 from src.periodic_recheck import (RecheckCoordinator, StaggeredPollSchedule, inspect_candidate,
                                   has_pending_shelf, queue_periodic_trigger)
-from src.dual_cam_inventory import validate_evidence
+from src.dual_cam_inventory import validate_evidence, validate_transition
 
 # Short-lived local capture receipts, never sent to Supabase.
 DUAL_CAM_CAPTURES = {}
+# Confirmed occupancy is intentionally volatile; startup requires a matching recount.
+CONFIRMED_OCCUPANCY = {}
 DUAL_CAM_CAPTURE_LOCK = threading.Lock()
 
 from src.replay_manager import CctvReplayManager
@@ -248,14 +250,20 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
 
 CCTV_REPLAY_MANAGER = CctvReplayManager(record_cctv_consensus, window_seconds=CONSENSUS_WINDOW_SEC)
 
-def claim_cctv_trigger(trigger_id):
-    """Let only one dashboard tab consume each queued validation event."""
-    with CCTV_CONSENSUS_LOCK:
-        for trigger in PENDING_CCTV_TRIGGERS:
-            if (trigger.get("trigger_id") == trigger_id and not trigger.get("claimed")
-                    and time.time() - trigger["timestamp"] < 60.0):
-                trigger["claimed"] = True
-                return True
+def claim_cctv_trigger(trigger_id, shelf_id=None, validation_token=None):
+    """Bind one queued event to its owning shelf lease before taking evidence."""
+    with RECHECKS.global_lock:
+        if not RECHECKS.owns(shelf_id, validation_token):
+            return False
+        with CCTV_CONSENSUS_LOCK:
+            if any(t.get("validation_token") == validation_token for t in PENDING_CCTV_TRIGGERS):
+                return False
+            for trigger in PENDING_CCTV_TRIGGERS:
+                if (trigger.get("trigger_id") == trigger_id and trigger.get("shelf_id") == shelf_id
+                        and not trigger.get("claimed")
+                        and 0 <= time.time() - trigger["timestamp"] < 60.0):
+                    trigger.update(claimed=True, validation_token=validation_token, claimed_at=time.time())
+                    return True
     return False
 
 
@@ -1398,6 +1406,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
 
             if esp32_ip and esp32_ip2:
+                # Bind receipts to the lease that existed BEFORE camera HTTP requests.
+                with RECHECKS.global_lock:
+                    capture_token = RECHECKS.leases.get(shelf_id, (None,))[0] if RECHECKS.busy(shelf_id) else None
                 # Dual-camera capture: Back Cam (ip) + Front Cam (ip2)
                 frame_bgr, combined_url, url1, url2 = esp32_ref_manager.fetch_dual_esp32_frame(
                     esp32_ip1=esp32_ip,
@@ -1415,7 +1426,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             del DUAL_CAM_CAPTURES[key]
                     if len(DUAL_CAM_CAPTURES) >= 200:
                         DUAL_CAM_CAPTURES.pop(next(iter(DUAL_CAM_CAPTURES)))
-                    DUAL_CAM_CAPTURES[capture["id"]] = {**capture, "shelf_id": shelf_id, "complete": bool(url1 and url2)}
+                    DUAL_CAM_CAPTURES[capture["id"]] = {**capture, "shelf_id": shelf_id, "validation_token": capture_token, "complete": bool(url1 and url2)}
 
                 self._send_json(200, {
                     "capture": capture,
@@ -1531,12 +1542,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         esp32_ref_manager.baseline_freeze_until.pop(shelf, None)
                         trigger_id = body.get("trigger_id")
                         with CCTV_CONSENSUS_LOCK:
-                            PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("trigger_id") != trigger_id]
+                            PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if not (t.get("trigger_id") == trigger_id and t.get("validation_token") == body.get("token"))]
                     self._send_json(200, {"released": ended})
             return
 
         if path == "/cctv_trigger_claim":
-            self._send_json(200, {"claimed": claim_cctv_trigger(body.get("trigger_id"))})
+            self._send_json(200, {"claimed": claim_cctv_trigger(body.get("trigger_id"), body.get("shelf_id"), body.get("validation_token"))})
             return
 
         if path == "/run_calibration":
@@ -1775,8 +1786,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 if RECHECKS.busy() and not RECHECKS.owns(shelf_id, body.get("validation_token")):
                     self._send_json(409, {"error": "Shelf validation already active"})
                     return
-                if (body.get("validation_token") or body.get("source") == "PERIODIC_RECHECK") and not RECHECKS.owns(shelf_id, body.get("validation_token")):
-                    self._send_json(409, {"error": "Periodic validation lease expired"})
+                if not RECHECKS.owns(shelf_id, body.get("validation_token")):
+                    self._send_json(409, {"error": "Validation lease expired; start a fresh validation"})
                     return
                 boost = body.get("boost") or "auto"
                 if boost in ("auto", "high", "off"):
@@ -1810,10 +1821,36 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 if curr_qty < 0 or curr_qty > 5:
                     self._send_json(409, {"error": "Five-slot layout requires an explicit physical recount and quantity migration; existing quantity was retained"})
                     return
+                cctv_event: Optional[Dict[str, Any]] = None
+                try:
+                    if source == "CCTV":
+                        with CCTV_CONSENSUS_LOCK:
+                            events = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") == shelf_id
+                                      and t.get("trigger_id") == body.get("trigger_id")
+                                      and t.get("validation_token") == body.get("validation_token")
+                                      and t.get("claimed") and t.get("consensus_met")
+                                      and t.get("expected_action") in {"BORROW", "RETURN"}
+                                      and 0 <= time.time() - t.get("timestamp", 0) < 60]
+                        if len(events) != 1:
+                            raise ValueError("Fresh CCTV consensus bound to this trigger and validation lease is required")
+                        selected_event = events[0]
+                        if not isinstance(selected_event, dict):
+                            raise ValueError("Fresh CCTV consensus bound to this trigger and validation lease is required")
+                        cctv_event = selected_event
+                        expected_action = selected_event["expected_action"]
+                    elif periodic:
+                        expected_action = "RECHECK"
+                    elif source != "MANUAL" or expected_action not in {"BORROW", "RETURN"}:
+                        raise ValueError("Expected BORROW or RETURN action is required")
+                except ValueError as exc:
+                    self._send_json(409, {"status": "VALIDATION_PENDING", "error": str(exc)})
+                    return
                 try:
                     with DUAL_CAM_CAPTURE_LOCK:
                         slots, capture_ids = validate_evidence(body.get("dual_cam_evidence"), predicted_box_count,
-                            time.time(), DUAL_CAM_CAPTURES, shelf_id)
+                            time.time(), DUAL_CAM_CAPTURES, shelf_id, body.get("validation_token"),
+                            max(cctv_event["timestamp"], cctv_event["claimed_at"]) if cctv_event is not None else None)
+                    validate_transition(CONFIRMED_OCCUPANCY.get(shelf_id), slots, curr_qty, expected_action)
                     if not after_image or not body.get("image_back") or not body.get("image_front"):
                         raise ValueError("Both camera images are required")
                 except (ValueError, TypeError, KeyError) as exc:
@@ -1823,7 +1860,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 predicted_box_count = sum(slots)
                 tm_confidence = min(min(sample["front_confidence"], sample["back_confidence"])
                                     for sample in body["dual_cam_evidence"]["samples"])
-                scenario_label = f"{predicted_box_count}/5 Boxes Present (shared M2 verified)"
+                scenario_label = f"{predicted_box_count}/5 Boxes Present | M2 {'SKIPPED_OCCLUDED' if slots[4] else 'PASS'}"
                 with DUAL_CAM_CAPTURE_LOCK:
                     for capture_id in capture_ids:
                         DUAL_CAM_CAPTURES.pop(capture_id, None)
@@ -1901,8 +1938,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         LATEST_COMPARISONS_DEQUE.appendleft(log_entry)
                     else:
                         log_entry = None
-                    with CCTV_CONSENSUS_LOCK:
-                        PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get("shelf_id") != shelf_id]
+                    if cctv_event is not None:
+                        with CCTV_CONSENSUS_LOCK:
+                            PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS
+                                if not (t.get("trigger_id") == cctv_event["trigger_id"]
+                                        and t.get("validation_token") == body.get("validation_token"))]
 
                 if isinstance(after_image, str) and after_image and body.get("image_back") and body.get("image_front"):
                     decoded = decode_data_url_to_bgr(after_image) if isinstance(after_image, str) and after_image else None
@@ -1911,8 +1951,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                             frame_bgr=decoded, data_url=after_image, data_url_2=body["image_front"],
                             url_back=body["image_back"], url_front=body["image_front"],
                             updated_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                CONFIRMED_OCCUPANCY[shelf_id] = slots
                 self._send_json(200, {
                     "status": "success",
+                    "occupancy": list(slots),
+                    "m2_check": "SKIPPED_OCCLUDED" if slots[4] else "PASS",
                     "comparison": comp_res,
                     "log": log_entry,
                     "latest_comparisons": list(LATEST_COMPARISONS_DEQUE),
@@ -2161,11 +2204,11 @@ def esp32_http_baseline_poller():
 
 
 _FRONT_OCCUPANCY_LABELS = {f"Front_{s}" for s in ("000", "010", "011", "100", "110", "111")}
-_BACK_OCCUPANCY_LABELS = {f"Back_{s}" for s in ("000", "001", "100", "101", "110", "111")}
+_BACK_OCCUPANCY_LABELS = {f"Back_{s}" for s in ("000", "100", "X01", "11X")}
 
 
 def _has_valid_occupancy_metadata(dir_path: str) -> bool:
-    """True for the combined 12-class model or a single role-specific 6-class model."""
+    """True for the combined 10-class model or a role-specific 6-class front / 4-class back model."""
     meta_path = os.path.join(dir_path, "metadata.json")
     try:
         with open(meta_path, "r", encoding="utf-8") as mf:

@@ -24,7 +24,7 @@ const SCENARIO_LABELS = Object.fromEntries(Array.from({ length: 6 }, (_, n) => [
 
 const DUAL_CAM_LABELS = {
   Front: ['000', '010', '011', '100', '110', '111'].map((bits) => `Front_${bits}`),
-  Back: ['000', '001', '100', '101', '110', '111'].map((bits) => `Back_${bits}`),
+  Back: ['000', '100', 'X01', '11X'].map((bits) => `Back_${bits}`),
 };
 const MIN_CONFIDENCE = 0.85;
 
@@ -39,19 +39,20 @@ function pending(reason, extra = {}) {
 
 function modelHasRoleLabels(model, role) {
   const labels = model.getClassLabels();
-  const expected = labels.length === 12 ? [...DUAL_CAM_LABELS.Front, ...DUAL_CAM_LABELS.Back] : DUAL_CAM_LABELS[role];
+  const expected = labels.length === 10 ? [...DUAL_CAM_LABELS.Front, ...DUAL_CAM_LABELS.Back] : DUAL_CAM_LABELS[role];
   return labels.length === expected.length && new Set(labels).size === expected.length && expected.every((label) => labels.includes(label));
 }
 
 /**
- * Five-slot stacked occupancy classifier (F1, M1, M2, B1, B2) with shared middle position M2.
- * Front classes are Front_<F1><M1><M2>; back classes are Back_<B1><B2><M2>. M2 must agree.
+ * Five-slot stacked occupancy classifier (F1, M1, M2, B1, B2) with visibility-aware M2 validation.
+ * Front classes are Front_<F1><M1><M2>; back classes are Back_<B1><B2><M2 or X>.
  * Accepts { front, back } models (as window.tmModel) or window.tmFrontModel / window.tmBackModel.
  */
-export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = typeof window !== 'undefined' ? window.tmModel : null) {
+export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = typeof window !== 'undefined' ? window.tmModel : null, boostMode = 'off') {
+  if (!['off', 'auto', 'high'].includes(boostMode)) return pending('Unsupported boost mode');
   const frontModel = tmModel?.front || (typeof window !== 'undefined' ? window.tmFrontModel : null);
   const backModel = tmModel?.back || (typeof window !== 'undefined' ? window.tmBackModel : null);
-  if (!frontModel || !backModel) return pending('Load the combined 12-class model or both six-class models');
+  if (!frontModel || !backModel) return pending('Load the combined 10-class model or separate 6-class front and 4-class back models');
   if (!modelHasRoleLabels(frontModel, 'Front') || !modelHasRoleLabels(backModel, 'Back')) {
     return pending('Model labels do not match the occupancy classes');
   }
@@ -67,7 +68,44 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
 
   const best = async (model, image, role) => {
     const expected = model.getClassLabels();
-    const predictions = await model.predict(image);
+    const width = image.naturalWidth || image.videoWidth || image.width;
+    const height = image.naturalHeight || image.videoHeight || image.height;
+    if (!(width > 0 && height > 0)) throw new Error('Invalid camera dimensions');
+    const input = document.createElement('canvas');
+    input.width = input.height = 224;
+    const ctx = input.getContext('2d');
+    if (!ctx) throw new Error('Canvas preprocessing unavailable');
+    ctx.drawImage(image, 0, 0, width, height, 0, 0, 224, 224);
+    if (boostMode !== 'off') {
+      if (typeof ctx.getImageData !== 'function' || typeof ctx.putImageData !== 'function')
+        throw new Error('Requested boost unavailable: canvas pixel access is required');
+      const imgData = ctx.getImageData(0, 0, 224, 224);
+      const data = imgData.data;
+      let totalL = 0;
+      let sampleCount = 0;
+      for (let i = 0; i < data.length; i += 16) {
+        totalL += 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        sampleCount++;
+      }
+      const meanL = sampleCount > 0 ? totalL / sampleCount : 128;
+      if (boostMode !== 'auto' || meanL < 115.0) {
+        let gamma = 0.72;
+        if (meanL < 55) gamma = 0.42;
+        else if (meanL < 85) gamma = 0.55;
+        else if (boostMode === 'high') gamma = 0.45;
+        const lut = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) {
+          lut[i] = Math.min(255, Math.max(0, Math.round(Math.pow(i / 255.0, gamma) * 255)));
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = lut[data[i]];
+          data[i + 1] = lut[data[i + 1]];
+          data[i + 2] = lut[data[i + 2]];
+        }
+        ctx.putImageData(imgData, 0, 0);
+      }
+    }
+    const predictions = await model.predict(input);
     if (!Array.isArray(predictions) || predictions.length !== expected.length
       || new Set(predictions.map((p) => p.className)).size !== expected.length
       || predictions.some((p) => !expected.includes(p.className) || !Number.isFinite(p.probability) || p.probability < 0 || p.probability > 1)) {
@@ -90,16 +128,26 @@ export async function predictDualCamerasWithTM(backImgEl, frontImgEl, tmModel = 
     if (back.probability < MIN_CONFIDENCE || front.probability < MIN_CONFIDENCE) {
       return pending('Low confidence; quantity retained', details);
     }
-    const [F1, M1, M2] = front.className.slice(6).split('').map(Number);
-    const [B1, B2, backM2] = back.className.slice(5).split('').map(Number);
-    if (M2 !== backM2) return pending('MIDDLE_CONFLICT: cameras disagree on M2', { ...details, status: 'MIDDLE_CONFLICT' });
-    if (M2 > M1 || B2 > B1) return pending('Unsupported upper box; retry capture', details);
+    const frontStates = {Front_000:[0,0,0], Front_010:[0,1,0], Front_011:[0,1,1],
+          Front_100:[1,0,0], Front_110:[1,1,0], Front_111:[1,1,1]};
+        const [F1, M1, M2] = frontStates[front.className];
+    const backStates = {Back_000:[0,0,0], Back_100:[1,0,0],
+      Back_X01:[null,0,1], Back_11X:[1,1,null]};
+    const [B1, B2, observedM2] = backStates[back.className];
+    const m2Check = observedM2 === null ? 'SKIPPED_OCCLUDED' : observedM2 === M2 ? 'PASS' : 'CONFLICT';
+    Object.assign(details, {observedM2, m2Observable: observedM2 !== null, m2Check});
+    if (m2Check === 'CONFLICT') return pending('M2 conflict; quantity retained', details);
+    if (M2 > M1 || (B2 === 1 && B1 !== 1)) return pending('Unsupported upper box; retry capture', details);
+    if (B1 === null) return pending(`B1 unknown: total range ${F1+M1+M2}..${F1+M1+M2+1}/5; inventory held`, {
+          ...details, status:'INDETERMINATE_B1', frontCount:F1+M1+M2, backCount:null, totalBoxes:null,
+          slots:{F1,M1,M2,B1:null,B2}, countRange:{min:F1+M1+M2,max:F1+M1+M2+1}, occupancyKey:null
+        });
     const totalBoxes = F1 + M1 + M2 + B1 + B2;
     return {
       ...details, totalBoxes, frontCount: F1 + M1 + M2, backCount: B1 + B2,
-      slots: { F1, M1, M2, B1, B2 }, sharedM2: M2, occupancyKey: `${F1}${M1}${M2}${B1}${B2}`,
+      slots: { F1, M1, M2, B1, B2 }, occupancyKey: `${F1}${M1}${M2}${B1}${B2}`,
       status: 'VERIFIED_PAIR', degraded: false,
-      scenarioLabel: SCENARIO_LABELS[totalBoxes] || `${totalBoxes}/5 Boxes`,
+      scenarioLabel: `${totalBoxes}/5 Boxes | Front + back | F1=${F1} M1=${M1} M2=${M2} B1=${B1} B2=${B2} | M2 ${m2Check}`,
     };
   } catch (error) {
     return pending(error.message);
