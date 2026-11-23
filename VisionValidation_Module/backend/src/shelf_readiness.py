@@ -1,4 +1,4 @@
-"""Per-process operating state. Persisted inventory remains the only baseline."""
+"""Per-process operating state; RuntimeInventory owns the active camera baseline."""
 import time
 import threading
 import uuid
@@ -54,6 +54,7 @@ class ShelfReadiness:
         return self.get(shelf)['state'] in {'Ready','Validating Action'}
 
     def verify(self,shelf,saved,slots):
+        """Historical persistence compatibility check; active runtime uses its own accept guard."""
         self.set(shelf,'Checking Shelf','Comparing fresh observations with persisted slots')
         if saved['confirmed_occupancy'] is None:
             self.set(shelf,'Needs Reconciliation','No independently verified baseline; operator commissioning required')

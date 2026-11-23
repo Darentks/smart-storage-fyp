@@ -8,6 +8,10 @@ from src.shelf_readiness import ShelfReadiness
 
 class DiagnosticsTests(unittest.TestCase):
     def test_actionable_codes(self):
+        self.assertEqual(failure_code('VISIBLE_CHANGE_NET_UNPROVEN: single net action not proven'),'VISIBLE_CHANGE_NET_UNPROVEN')
+        self.assertEqual(failure_code('MQTT unavailable'),'MQTT_UNAVAILABLE')
+        self.assertEqual(failure_code('UNKNOWN_B1'),'UNKNOWN_B1')
+        self.assertEqual(failure_code('LOW_CONFIDENCE'),'LOW_CONFIDENCE')
         for text,code in [('Low confidence; quantity retained','LOW_CONFIDENCE'),('M2 conflict','M2_CONFLICT'),
           ('B1 unknown (Back_X01)','UNKNOWN_B1'),('Occupancy changed between captures','OCCUPANCY_CHANGED'),
           ('Missing, stale or mismatched camera frames','STALE_CAPTURE'),('Fresh CCTV consensus bound to this lease is required','MISSING_CCTV_CONSENSUS'),

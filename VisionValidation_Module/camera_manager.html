@@ -6,7 +6,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Storage &bull; 30s Baseline &amp; ESP32-CAM Inventory Monitor</title>
   <!-- Supabase JS Client via CDN -->
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <!-- TensorFlow.js & Google Teachable Machine Image Library -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
@@ -969,14 +968,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <div>
           <h2 class="panel-title">&#128230; Panel 1 &bull; Shelf Compartments, Live Inventory &amp; 30s Baselines</h2>
           <p class="panel-desc">Real-time stock level, latest 30-second resting baseline snapshot, and hardware
-            telemetry from <code>public.compartments</code>.</p>
+            telemetry from the local RAM inventory bridge.</p>
         </div>
         <span class="badge badge-online" id="liveBadge"><span class="pulse-dot"></span>Live Sync Active</span>
       </div>
 
       <div id="compartmentsGrid" class="compartments-grid">
         <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
-          Loading shelf compartments from Supabase...
+          Loading local shelf telemetry...
         </div>
       </div>
     </section>
@@ -1119,7 +1118,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <button type="button" class="btn-action"
                 style="height: 40px; justify-content: center; background: rgba(56, 189, 248, 0.1); border-color: var(--primary); color: var(--primary);"
                 onclick="runFullDualCamValidation(refShelfSelect.value, 'BORROW')">
-                &#9889; Run Full Validation &amp; Update Supabase DB
+                &#9889; Native Validation: Monitor Results
               </button>
             </div>
           </div>
@@ -1629,28 +1628,36 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     const SUPABASE_URL = 'https://tosvjwxvcuxvgtcmakta.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l';
 
-    let supabaseClient = null;
-    try {
-      if (window.supabase && typeof window.supabase.createClient === 'function') {
-        supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-      }
-    } catch (e) {
-      console.error('Failed to initialize Supabase client:', e);
-    }
-
+    window.inventoryMode = 'runtime'; // Native service is the only inventory authority.
+    const cloudRequestMetrics = window.cloudRequestMetrics ||= {calls:0,failures:0,decoded_response_body_bytes:0};
     // Direct Supabase REST API helper using native browser fetch
     async function sbRest(table, method = 'GET', query = '', body = null, prefer = null) {
+      if(!['esp32_cameras','cctv_cameras'].includes(table))throw Error('Runtime mode permits cloud device administration only');
       if (query && typeof query === 'object' && body === null) {
         body = query;
         query = '';
       }
+      if (/\w+(?:!\w+)*\s*\(/.test(decodeURIComponent(String(query || '')))) throw Error('Request device columns only; embedded relations/functions are disabled');
       const upperMethod = String(method || 'GET').toUpperCase();
       const effectivePrefer = prefer !== null ? prefer : (upperMethod === 'GET' ? null : 'return=minimal');
       const cleanQuery = query && !String(query).startsWith('?') ? '?' + query : (query || '');
       const url = `${SUPABASE_URL}/rest/v1/${table}${cleanQuery}`;
+      // Optional host Auth session is RAM-only. Never put service-role/secret keys in a browser.
+      let bearer = SUPABASE_ANON_KEY;
+      const adminSession = window.smartStorageDeviceAdminSession;
+      if (adminSession) {
+        try {
+          const token = adminSession.access_token;
+          const parts = typeof token === 'string' ? token.split('.') : [];
+          if (parts.length !== 3) throw Error();
+          const claims = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
+          if (claims.role !== 'authenticated' || !Number.isFinite(claims.exp) || claims.exp <= Date.now()/1000) throw Error();
+          bearer = token; // Server verifies signature and camera_admin app_metadata via RLS.
+        } catch (_) { throw Error('Valid unexpired authenticated device-admin session required; server secrets are forbidden'); }
+      }
       const headers = {
         'apikey': SUPABASE_ANON_KEY,
-        'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+        'Authorization': `Bearer ${bearer}`,
         'Content-Type': 'application/json',
       };
       if (effectivePrefer) headers['Prefer'] = effectivePrefer;
@@ -1661,14 +1668,15 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         body: body ? JSON.stringify(body) : undefined,
       };
 
-      const resp = await fetch(url, opts);
-      if (!resp.ok) {
-        const errText = await resp.text();
-        throw new Error(`Supabase REST ${upperMethod} ${table} error (${resp.status}): ${errText}`);
-      }
-      if (resp.status === 204 || (effectivePrefer && effectivePrefer.includes('return=minimal'))) return null;
-      const text = await resp.text();
-      return text ? JSON.parse(text) : null;
+      cloudRequestMetrics.calls++;
+      try {
+        const resp = await fetch(url, opts);
+        const text = await resp.text();
+        cloudRequestMetrics.decoded_response_body_bytes += new TextEncoder().encode(text).length;
+        if (!resp.ok) throw new Error(`Supabase device request failed (${resp.status})`);
+        if (resp.status === 204 || (effectivePrefer && effectivePrefer.includes('return=minimal'))) return null;
+        return text ? JSON.parse(text) : null;
+      } catch (error) { cloudRequestMetrics.failures++; throw error; }
     }
 
     // DOM Elements
@@ -2039,8 +2047,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       try {
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
         if(!response.ok)throw Error('Unavailable');const data=await response.json();
-        label.textContent=`Processor: ${data.authoritative_processor}; ${data.state}; completed: ${data.processed||0}; waiting: ${data.queue_depth||0}. ${data.mode==='service'?'Dashboard monitoring; authorized recounts remain available.':'Service activation requires local acceptance.'}`;
-      }catch(_){label.textContent='Processor: browser; native comparison status unavailable';}
+        label.textContent=`Processor: ${data.authoritative_processor}; ${data.state}; completed: ${data.processed||0}; waiting: ${data.queue_depth||0}. ${data.mode==='service'?'Dashboard monitoring; recovery uses fresh camera baselines.':'Service activation requires local acceptance.'}`;
+      }catch(_){label.textContent='Processor unavailable; dashboard is monitoring-only';}
     }
     function exportEdgeCalibrations() {
       try {
@@ -2079,7 +2087,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     async function showLocalOperations() {
       const host=document.getElementById('localOperationsStatus');
       try {const response=await fetch(`${getBridgeUrl()}/local_operations`,{cache:'no-store'});
-        if(!response.ok)throw Error('Local diagnostics unavailable');host.textContent=JSON.stringify(await response.json(),null,2);
+        if(!response.ok)throw Error('Local diagnostics unavailable');host.textContent=JSON.stringify({...await response.json(),browser_device_rest:{...cloudRequestMetrics},browser_metrics_scope:'This window only; decoded response bytes, not wire egress; Supabase SDK removed'},null,2);
       }catch(error){host.textContent=error.message;}
     }
     function exportEdgePoseFixture() {
@@ -2501,6 +2509,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function fetchLiveAnglePreview() {
+      if(window.inventoryMode==='runtime') { showToast('Native service owns validation; use the monitoring dashboard.','info'); return; }
       return validationWorker.submit({shelfId:refShelfSelect.value, source:'MANUAL', kind:'PREVIEW',
         ip1:refEspIpInput.value.trim(), ip2:refEspIp2Input.value.trim(),
         boost:document.getElementById('visionBoostSelect')?.value || 'off'});
@@ -2779,6 +2788,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     function validationFailureCode(reason) {
       const text=String(reason).toLowerCase();
+      if (/visible.change.net.unproven/.test(text)) return 'VISIBLE_CHANGE_NET_UNPROVEN';
       if (/b1 unknown|unknown b1|back_x01/.test(text)) return 'UNKNOWN_B1';
       if (/m2 conflict/.test(text)) return 'M2_CONFLICT';
       if (/low confidence|confidence insufficient/.test(text)) return 'LOW_CONFIDENCE';
@@ -2916,103 +2926,36 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         }
       }
     }
-    async function operatorSession() {
-      if(!supabaseClient)throw new Error('Supabase authentication unavailable');
-      let {data}=await supabaseClient.auth.getSession();
-      if(data.session)return data.session;
-      return new Promise((resolve,reject)=>{
-        const dialog=document.createElement('dialog');
-        dialog.innerHTML='<form><p>Authorized inventory operator sign-in</p><input name="email" type="email" autocomplete="username" placeholder="Email" required><input name="password" type="password" autocomplete="current-password" placeholder="Password" required><p class="error"></p><button type="submit">Sign in</button><button type="button">Cancel</button></form>';
-        document.body.append(dialog);
-        const close=()=>{dialog.remove();reject(new Error('Operator sign-in cancelled'));};
-        dialog.addEventListener('cancel',event=>{event.preventDefault();close();});
-        dialog.querySelector('button[type=button]').onclick=close;
-        dialog.querySelector('form').onsubmit=async event=>{
-          event.preventDefault();const form=event.target;
-          const result=await supabaseClient.auth.signInWithPassword({email:form.email.value,password:form.password.value});
-          form.password.value='';
-          if(result.error){dialog.querySelector('.error').textContent='Sign-in failed';return;}
-          dialog.remove();resolve(result.data.session);
-        };dialog.showModal();
-      });
-    }
-    async function reconcileShelf(encodedShelf) {
-      const shelfId=decodeURIComponent(encodedShelf);
-      try {
-        const session=await operatorSession();
-        const request=async(path,payload)=>{
-          const response=await fetch(getBridgeUrl()+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+session.access_token},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
-          const data=await response.json();if(!response.ok)throw new Error(data.error||'Recount failed');return data;
-        };
-        const context=await request('/reconciliation_context',{shelf_id:shelfId});
-        const bits=prompt(`Physical recount for ${shelfId}. Inspect every slot yourself.
-Saved: ${JSON.stringify(context.saved)}
-Current unverified observation: ${JSON.stringify(context.observed)}
-Enter exactly five 0/1 digits: F1 M1 M2 B1 B2. Do not guess an unknown slot.`);
-        if(bits===null)return;if(!/^[01]{5}$/.test(bits))throw new Error('All five physical slots must be explicitly verified');
-        const slots=bits.split('').map(Number);const entered=prompt('Enter the physically recounted quantity (0?5):');
-        if(entered===null)return;const quantity=Number(entered);
-        if(!/^[0-5]$/.test(entered)||quantity!==slots.reduce((a,b)=>a+b,0)||slots[2]>slots[1]||slots[4]>slots[3])throw new Error('Quantity/stacking contradicts the physical slot entries');
-        const reason=prompt('Reason for reconciliation (at least 5 characters):');if(reason===null)return;
-        if(reason.trim().length<5)throw new Error('A meaningful reason is required');
-        const changes=['F1','M1','M2','B1','B2'].map((name,i)=>`${name}: ${context.saved.confirmed_occupancy?.[i] ?? 'unverified'} -> ${slots[i]}`).join('\n');
-        if(!confirm(`Confirm operator-verified PHYSICAL RECOUNT, not BORROW/RETURN?
-${changes}
-Quantity ${context.saved.current_quantity} -> ${quantity}
-Revision ${context.saved.revision}
-Reason: ${reason}`))return;
-        const result=await request('/reconcile_inventory',{shelf_id:shelfId,run_id:context.run_id,reconciliation_id:crypto.randomUUID(),revision:context.saved.revision,slots,quantity,reason,confirmed:true});
-        if(!['accepted','duplicate'].includes(result.status))throw new Error('Recount not confirmed');
-        startupAttempts.delete(shelfId);await pollShelfReadiness();await refreshAllData();
-        showToast('Recount saved and audited. Fresh camera verification is required before Ready.','success');
-      } catch(error){showToast(error.message,'error');}
-    }
     function readinessText(value) { return String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
     let readinessRun = null;
     let shelfOperatingStates = {};
-    const startupAttempts = new Set();
     let readinessPolling = false;
-    let readinessReconnect = false;
     async function pollShelfReadiness() {
       if (readinessPolling) return;
       readinessPolling = true;
       try {
-        if(readinessReconnect && readinessRun) {
-          const recovered=await fetch(`${getBridgeUrl()}/readiness_recovery`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({run_id:readinessRun})});
-          if(recovered.ok || recovered.status===409)readinessReconnect=false;
-        }
         const response = await fetch(`${getBridgeUrl()}/shelf_readiness`, {cache:'no-store'});
         if (!response.ok) throw new Error('Bridge readiness unavailable');
         const data = await response.json();
-        if(data.processor_mode==='service') {
+        window.inventoryMode='runtime';
+        if(window.inventoryMode==='runtime') {
           if(typeof threeCameraDashboard!=='undefined')threeCameraDashboard.stop();
           if(typeof document!=='undefined') {
             for(const button of document.querySelectorAll('button[onclick]')) {
               if(/runFullDualCamValidation|fetchLiveAnglePreview|runOfflinePhotoTest|startThreeCameras|startCctv|runCctv|startPose/.test(button.getAttribute('onclick')||'')) {
-                button.disabled=true;button.title='Service owns processing; use monitoring and authorized recounts';
+                button.disabled=true;button.title='Native service owns processing; dashboard is monitoring-only';
               }
             }
           }
         }
         if (readinessRun !== data.run_id) {
           if (readinessRun) showToast('Bridge restarted; verifying shelves again','warning');
-          readinessRun = data.run_id; startupAttempts.clear();
-        }
-        for (const [id,status] of Object.entries(data.shelves)) {
-          if(status.state==='Starting' && shelfOperatingStates[id]?.state && shelfOperatingStates[id].state!=='Starting') startupAttempts.delete(id);
+          readinessRun = data.run_id;
         }
         shelfOperatingStates = data.shelves;
         renderCompartments(compartmentsData);
-        for (const [shelfId,status] of Object.entries(data.shelves)) {
-          if (data.processor_mode !== 'service' && window.tmModel && status.state === 'Starting' && !startupAttempts.has(shelfId)) {
-            startupAttempts.add(shelfId);
-            validationWorker.submit({shelfId,source:'STARTUP',action:'RECHECK'});
-          }
-        }
       } catch (error) {
-        readinessReconnect=true;
         for (const shelfId of Object.keys(shelfOperatingStates)) shelfOperatingStates[shelfId]={state:'Offline',reason:error.message};
-        startupAttempts.clear();
         renderCompartments(compartmentsData);
       } finally { readinessPolling = false; }
     }
@@ -3149,6 +3092,7 @@ Reason: ${reason}`))return;
       return manifest;
     }
     function runFullDualCamValidation(shelfId, action, isCctvTrigger = false) {
+      if(window.inventoryMode==='runtime') { showToast('Native service owns validation; use the monitoring dashboard.','info'); return; }
       return validationWorker.submit({shelfId, action, source:isCctvTrigger ? 'CCTV' : 'MANUAL'});
     }
     function runPeriodicRecheckValidation(shelfId, trigger) {
@@ -3425,11 +3369,9 @@ Reason: ${reason}`))return;
       mqtt_client_id: `ESP32_R1_C${i + 1}`, secondary_mqtt_client_id: `ESP32_R1_C${i + 1}_CAM2`,
       camera_name: `ESP32 Dual Node R1-C${i + 1}`,
       ip_address: `192.168.0.${201 + i * 2}`, secondary_ip_address: `192.168.0.${202 + i * 2}`,
-      current_quantity: 5, max_capacity: 5, status: 'OFFLINE'
+      current_quantity: null, inventory_mode:'runtime', precision:'UNKNOWN', state:'Starting', max_capacity: 5, status: 'OFFLINE'
     }));
 
-    let lastCloudCompartmentsFetchMs = 0;
-    const CLOUD_POLL_INTERVAL_MS = 300000; // 5 minutes throttle for Supabase Egress reduction
 
     // Minimal clean schema columns only (runtime telemetry such as status / RSSI / baselines is bridge-RAM only)
     const COMPARTMENT_COLS = 'shelf_id,rack_id,current_quantity,max_capacity,tm_model_url,esp32_cameras(id,device_id,camera_name,angle_index,ip_address)';
@@ -3466,6 +3408,7 @@ Reason: ${reason}`))return;
 
     // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
     function consumeCctvTrigger(trigger) {
+      if(window.inventoryMode==='runtime') return;
       if (typeof shelfOperatingStates !== 'undefined' && shelfOperatingStates[trigger.shelf_id]?.state !== 'Ready') {
         showToast(`${trigger.shelf_id}: not Ready; interaction not validated`,'warning');
         return Promise.resolve({status:'failed',error:'Shelf not Ready'});
@@ -3511,7 +3454,9 @@ Reason: ${reason}`))return;
             baseline_image_url: live.baseline_image_url || c.baseline_image_url,
             baseline_image_2_url: live.baseline_image_2_url || c.baseline_image_2_url,
             baseline_updated_at: live.baseline_updated_at || c.baseline_updated_at,
-            current_quantity: live.current_quantity != null ? live.current_quantity : c.current_quantity,
+            current_quantity: live.inventory_mode==='runtime' ? live.current_quantity : live.current_quantity != null ? live.current_quantity : c.current_quantity,
+            inventory_mode:live.inventory_mode, precision:live.precision,count_range:live.count_range,state:live.state,
+            authoritative:live.authoritative,baseline:live.baseline,latest_observation:live.latest_observation,
           };
         });
         const seen = new Set(merged.map(c => c.shelf_id));
@@ -3619,22 +3564,31 @@ Reason: ${reason}`))return;
         bridgeStatusText.textContent = 'Local Bridge: Offline';
       }
 
-      // If local bridge is offline, fallback to cloud poll at most once every 120s
-      const now = Date.now();
-      if (now - lastCloudCompartmentsFetchMs >= CLOUD_POLL_INTERVAL_MS) {
-        loadCompartments(true);
-        loadComparisonLogs(true);
-      }
+      // An unavailable bridge cannot authorize a displayed live quantity.
+      for (const shelfId of Object.keys(shelfOperatingStates)) shelfOperatingStates[shelfId]={state:'Offline',reason:'Bridge unavailable; waiting for local status'};
+      renderCompartments(compartmentsData);
     }
 
     // =========================================================================
     // RENDER FUNCTIONS
     // =========================================================================
+    function runtimeInventoryView(comp, status) {
+      const runtime=status?.runtime || comp;
+      const state=status?.state || runtime.state || 'Starting';
+      const ready=state==='Ready' && runtime.state==='Ready' && runtime.authoritative===true;
+      const exact=ready && runtime.precision==='EXACT' && Number.isInteger(runtime.current_quantity);
+      const range=ready && runtime.precision==='RANGE';
+      const slots=observation=>observation?.slots?.map((value,i)=>`${['F1','M1','M2','B1','B2'][i]}=${value===null?'unknown':value}`).join(' ') || 'None';
+      return {quantity:exact?runtime.current_quantity:null,
+        label:exact?`Exact ${runtime.current_quantity}`:range?`Estimated ${runtime.count_range.join('\u2013')}`:'Unverified',
+        state:range?'Ready Limited':state,
+        details:`${range?'B1 unknown; actions require proof across all possibilities.\n':''}Last accepted baseline (history): ${slots(runtime.baseline)}\nLatest observed: ${slots(runtime.latest_observation)}\n${runtime.latest_observation?.hold_code || status?.code || ''}`};
+    }
     function renderCompartments(items) {
       if (!items || items.length === 0) {
         compartmentsGrid.innerHTML = `
           <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
-            No compartments found in <code>public.compartments</code>. Run <code>supabase_schema.sql</code> seed queries.
+            No local shelf bindings available. Check bridge connectivity and ESP32 device assignments.
           </div>
         `;
         return;
@@ -3642,21 +3596,23 @@ Reason: ${reason}`))return;
 
       compartmentsGrid.innerHTML = items.map((comp) => {
         const isOnline = (comp.status || '').toUpperCase() === 'ONLINE';
-        const qty = comp.current_quantity ?? 5;
+        const view=runtimeInventoryView(comp,shelfOperatingStates[comp.shelf_id]);
+        const qty=view.quantity;
+        const qtyText=view.label;
         const maxQty = comp.max_capacity ?? 5;
         const rssi = comp.rssi_dbm != null ? `${comp.rssi_dbm} dBm` : 'N/A';
 
         let slotPillsHtml = '';
         for (let i = 1; i <= maxQty; i++) {
-          slotPillsHtml += `<div class="slot-pill ${i <= qty ? 'active' : ''}"></div>`;
+          slotPillsHtml += `<div class="slot-pill ${qty!==null && i <= qty ? 'active' : ''}"></div>`;
         }
 
         return `
           <div class="compartment-card ${isOnline ? 'online' : ''}">
             <div class="card-top">
               <div>
-                <div class="card-title">${comp.shelf_id}</div><button class="btn-action" onclick="reconcileShelf('${encodeURIComponent(comp.shelf_id)}')">Physical recount (operator)</button>
-                <div style="color:var(--warning);white-space:pre-wrap">${readinessText(shelfOperatingStates[comp.shelf_id]?.state || 'Starting')}: ${readinessText(shelfOperatingStates[comp.shelf_id]?.code || '')} ${readinessText(shelfOperatingStates[comp.shelf_id]?.reason || 'Waiting for startup verification')}</div>
+                <div class="card-title">${comp.shelf_id}</div>
+                <div style="color:var(--warning);white-space:pre-wrap">${readinessText(view.state)}: ${readinessText(shelfOperatingStates[comp.shelf_id]?.code || '')} ${readinessText(shelfOperatingStates[comp.shelf_id]?.reason || 'Waiting for startup verification')}</div>
                 <div class="card-subtitle">${comp.mqtt_client_id} &bull; ${comp.camera_name || 'ESP32 Node'}</div>
               </div>
               <div>
@@ -3671,7 +3627,7 @@ Reason: ${reason}`))return;
             <div class="card-stats">
               <div class="stat-item">
                 <span class="stat-lbl">Stock Quantity</span>
-                <span class="stat-val qty">${qty} / ${maxQty} Boxes</span>
+                <span class="stat-val qty">${qtyText} / ${maxQty} Boxes</span><span style="white-space:pre-wrap;font-size:11px">${readinessText(view.details)}</span>
                 <div class="slot-bar">${slotPillsHtml}</div>
               </div>
               <div class="stat-item">
@@ -3688,12 +3644,7 @@ Reason: ${reason}`))return;
                 Heap: <strong>${comp.free_heap_bytes ? Math.round(comp.free_heap_bytes / 1024) + ' KB' : 'N/A'}</strong>
               </div>
               <div style="display: flex; gap: 6px;">
-                <button type="button" class="btn-action" style="padding: 4px 10px; font-size: 11px;" onclick="triggerTestCapture('${comp.shelf_id}', 'BORROW')">
-                  Test Borrow (-1)
-                </button>
-                <button type="button" class="btn-action" style="padding: 4px 10px; font-size: 11px;" onclick="triggerTestCapture('${comp.shelf_id}', 'RETURN')">
-                  Test Return (+1)
-                </button>
+                <span>Native validation: monitoring only</span>
               </div>
             </div>
           </div>
@@ -4002,22 +3953,6 @@ Reason: ${reason}`))return;
         } catch (_) { }
       }
 
-      if (supabaseClient) {
-        try {
-          const { data, error } = await supabaseClient
-            .from('esp32_cameras')
-            .select(CAMERA_COLS)
-            .order('shelf_id', { ascending: true })
-            .order('angle_index', { ascending: true });
-          if (!error && data && data.length > 0) {
-            try {
-              localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(data));
-              localStorage.setItem('smart_storage_esp32_cameras_fetched_at', String(Date.now()));
-            } catch (_) { }
-            return data;
-          }
-        } catch (_) { }
-      }
       try {
         const restData = await sbRest('esp32_cameras', 'GET', `?select=${CAMERA_COLS}&order=shelf_id.asc,angle_index.asc`, null, 'return=representation');
         if (Array.isArray(restData) && restData.length > 0) {
@@ -4088,13 +4023,7 @@ Reason: ${reason}`))return;
     }
 
     async function deleteCamera(id) {
-      if (supabaseClient && id && !String(id).startsWith('cam-')) {
-        const { error } = await supabaseClient
-          .from('esp32_cameras')
-          .delete()
-          .eq('id', id);
-        if (error) throw error;
-      }
+      if (id && !String(id).startsWith('cam-')) await sbRest('esp32_cameras','DELETE','?id=eq.'+encodeURIComponent(id));
       return true;
     }
 
@@ -4941,6 +4870,7 @@ Reason: ${reason}`))return;
     }
     try { if (localStorage.getItem('smart_storage_three_camera_background') === '1') toggleThreeCameraBackground(true); } catch (_) {}
     async function startThreeCameras() {
+      if(window.inventoryMode==='runtime') { showToast('Native service owns validation; use the monitoring dashboard.','info'); return; }
       stopMediaPipeTracker();
       threeCameraDashboard.stop();
       let startup = threeCameraDashboard.startupGeneration;
@@ -6328,7 +6258,8 @@ Reason: ${reason}`))return;
       const url = new URL(value);
       if (!['rtsp:', 'rtsps:'].includes(url.protocol)) throw new Error('Use an RTSP stream URL or webcam index.');
       // Credentials are deliberately excluded from identity, display and saved ROI metadata.
-      return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || '554'}${url.pathname}${url.search}`;
+      const query=url.search.slice(1).split('&').filter(part=>part && !['user','pass','token','secret','auth','credential','key'].some(word=>decodeURIComponent(part.split('=',1)[0].replace(/\+/g,' ')).toLowerCase().includes(word))).join('&');
+      return `${url.protocol}//${url.hostname.toLowerCase()}:${url.port || '554'}${url.pathname}${query?'?'+query:''}`;
     }
 
     function validateCctvBinding(cameraId, source, ipAddress = null) {

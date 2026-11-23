@@ -31,10 +31,13 @@ class RuntimeTests(unittest.TestCase):
                 configure_logs(directory)
                 LOG.handlers[0].maxBytes=20000
                 for _ in range(1000):event('run','failure',shelf_id='s',code='DATABASE_FAILURE',token='SECRET',image='SECRET')
+                event('run','failure',state='rtsp://user:SECRET@host/stream',status='data:image/jpeg;base64,SECRET',code='SECRET')
+                event('run','data:image/jpeg;base64,SECRET',code='DATABASE_FAILURE')
                 files=list(Path(directory).glob('bridge.jsonl*'))
                 self.assertGreater(len(files),1)
                 self.assertLessEqual(len(files),6)
                 self.assertNotIn('SECRET',''.join(p.read_text() for p in files))
+                self.assertFalse(LOG.propagate)
             finally:
                 for handler in LOG.handlers:handler.close()
                 LOG.handlers=handlers

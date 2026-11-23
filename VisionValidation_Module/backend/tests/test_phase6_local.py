@@ -1,8 +1,11 @@
 import ast
 import io
 import json
+import importlib.util
+import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import threading
 import time
@@ -23,6 +26,74 @@ def rois():
     return dict(version=1,cameras=cameras)
 
 class LocalStoreTests(unittest.TestCase):
+    def test_backend_device_key_prefers_explicit_server_secret_without_browser_exposure(self):
+        from src import config_loader
+        with patch.dict(os.environ,{'SUPABASE_SERVICE_ROLE_KEY':'server-fixture','NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY':'public-fixture'},clear=True),patch.object(config_loader,'find_and_load_env'):
+            self.assertEqual(config_loader.get_resolved_supabase_key(),'server-fixture')
+        with patch.dict(os.environ,{'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY':'public-fixture'},clear=True),patch.object(config_loader,'find_and_load_env'):
+            self.assertEqual(config_loader.get_resolved_supabase_key(),'public-fixture')
+
+    def deployment_module(self,name):
+        spec=importlib.util.spec_from_file_location(name,Path(__file__).parents[3]/'deploy'/f'{name}.py')
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+
+    def test_acceptance_distinguishes_skip_failure_and_missing_executable(self):
+        module=self.deployment_module('phase6_acceptance')
+        for stdout,code,status in [('ok',0,'PASS'),('SKIP: optional dependency',0,'SKIP'),('',1,'FAIL')]:
+            with patch.object(module.subprocess,'run',return_value=types.SimpleNamespace(stdout=stdout,stderr='',returncode=code)):
+                self.assertEqual(module.run_check('fixture',['unused'],{})['status'],status)
+        with patch.object(module.subprocess,'run',side_effect=OSError()):self.assertEqual(module.run_check('fixture',['unused'],{})['status'],'BLOCKED')
+
+    def test_egress_live_counter_delta_and_restart_are_not_zero_total_claims(self):
+        module=self.deployment_module('measure_monitoring_egress')
+        def response(run,calls):return io.BytesIO(json.dumps(dict(run_id=run,inventory_contract='runtime-v1',cloud_metrics={'calls':calls,'response_bytes':calls*10})).encode())
+        with patch.object(module.urllib.request,'urlopen',side_effect=[response('one',3),response('one',4)]),patch.object(module.time,'monotonic',side_effect=[0,0,0,1,1]),patch.object(module.time,'sleep'):
+            measured=module.live_python_metrics('http://localhost',1,1)
+        self.assertEqual(measured['counters']['calls'],1);self.assertEqual(measured['counters']['response_bytes'],10)
+        with patch.object(module.urllib.request,'urlopen',side_effect=[response('one',3),response('two',4)]),patch.object(module.time,'monotonic',side_effect=[0,0,0]),patch.object(module.time,'sleep'):
+            self.assertEqual(module.live_python_metrics('http://localhost',1,1)['status'],'BLOCKED')
+        with patch.object(module.urllib.request,'urlopen',side_effect=OSError('offline')):
+            blocked=module.live_python_metrics('http://localhost',1,1)
+        self.assertEqual(blocked['status'],'BLOCKED');self.assertIsNone(blocked['requests'])
+
+    def test_cloud_device_relations_cannot_embed_inventory_reads(self):
+        from src import config_loader
+        with patch.object(config_loader,'get_resolved_supabase_url') as url,patch.object(config_loader.urllib.request,'urlopen') as network:
+            for query in ('?select=*,compartments(current_quantity)','?select=stock:compartments!fk(confirmed_occupancy)','?select=compartments%28revision%29'):
+                with self.assertRaisesRegex(ValueError,'Embedded cloud'):config_loader._supabase_rest(table='esp32_cameras',query=query)
+            url.assert_not_called();network.assert_not_called()
+
+    def test_unresolved_file_contains_only_failures_and_never_restores_inventory(self):
+        from src.shelf_readiness import ShelfReadiness
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'failures';store=LocalFailures(path);store.set('SHELF_R1_C1','Held','UNKNOWN_B1')
+            restored=LocalFailures(path);readiness=ShelfReadiness();readiness.failures=restored
+            self.assertEqual(readiness.get('SHELF_R1_C1')['state'],'Starting')
+            value=json.loads(path.read_text());self.assertEqual(set(value['SHELF_R1_C1']),{'state','code','at'})
+            value['SHELF_R1_C1']['current_quantity']=3;path.write_text(json.dumps(value))
+            with self.assertRaises(ValueError):LocalFailures(path)
+
+    def test_roi_source_binding_excludes_credentials_and_query_tokens(self):
+        from src.autonomous_edge import source_binding
+        clean=source_binding('rtsp://operator:password@HOST/stream?channel=1&token=secret&api_key=secret&subtype=0')
+        self.assertEqual(clean,'rtsp://host:554/stream?channel=1&subtype=0')
+        value=rois();value['cameras'][0]['binding']['source']='rtsp://192.168.0.1:554/stream?token=secret'
+        with self.assertRaises(ValueError):validate_rois(value)
+
+    def test_local_roi_cli_import_export_backup_and_recovery(self):
+        script=Path(__file__).parents[3]/'deploy/local_roi.py'
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);source=root/'input.json';source.write_text(json.dumps(rois()));export=root/'export.json'
+            def run(operation,file=None):
+                command=[sys.executable,'-B',str(script),operation,'--directory',str(root/'data')]
+                if file is not None:command+=['--file',str(file)]
+                result=subprocess.run(command,capture_output=True,text=True);self.assertEqual(result.returncode,0,result.stderr)
+            run('import',source);run('export',export);original=json.loads(export.read_text())
+            changed=rois();changed['cameras'][2]['rois']['RACK_ENTRY_ZONE']['x_min']=.1;source.write_text(json.dumps(changed));run('import',source)
+            (root/'data/camera-rois.json').write_text('{corrupt');run('recover');run('export',export)
+            self.assertEqual(json.loads(export.read_text()),original)
+            self.assertEqual({p.name for p in (root/'data').iterdir()},{'camera-rois.json','camera-rois.json.previous'})
+
     def test_display_cache_changes_only_after_confirmed_commit(self):
         from test_periodic_recheck import ValidationRouteTests
         for failure in (False,True):
@@ -36,8 +107,8 @@ class LocalStoreTests(unittest.TestCase):
             else:self.assertEqual(row['current_quantity'],fixture.response[1]['comparison']['quantity_after'])
     def test_phase6_release_cannot_be_approved_around_storage_blocker(self):
         from src.autonomous_edge import load_service_config
-        with patch.dict('os.environ',{'SMART_STORAGE_RELEASE_PHASE':'6'}):
-            with self.assertRaisesRegex(ValueError,'PHASE6_RELEASE_BLOCKED'):load_service_config('unused','unused','unused',[])
+        with patch.dict('os.environ',{'SMART_STORAGE_RELEASE_PHASE':'5','SMART_STORAGE_INVENTORY_MODE':'persistent'}):
+            with self.assertRaisesRegex(ValueError,'Only runtime inventory'):load_service_config('unused','unused','unused',[])
     def test_unresolved_failure_survives_restart_and_only_ready_resolves(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory)/'failures';store=LocalFailures(path)
@@ -51,7 +122,7 @@ class LocalStoreTests(unittest.TestCase):
         response=io.BytesIO(b'[]');response.status=200
         before=CLOUD_METRICS.snapshot()
         with patch.object(config_loader,'get_resolved_supabase_url',return_value='https://fixture.invalid'),patch.object(config_loader,'get_resolved_supabase_key',return_value='fixture'),patch.object(config_loader.urllib.request,'urlopen',return_value=response):
-            self.assertEqual(config_loader._supabase_rest(table='compartments',query='?select=current_quantity'),[])
+            self.assertEqual(config_loader._supabase_rest(table='esp32_cameras',query='?select=device_id'),[])
         after=CLOUD_METRICS.snapshot()
         self.assertEqual(after['calls']-before['calls'],1);self.assertEqual(after['response_bytes']-before['response_bytes'],2)
         self.assertGreater(after['request_bytes_estimate']-before['request_bytes_estimate'],0)

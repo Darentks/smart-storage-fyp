@@ -93,7 +93,7 @@ class EdgeShadow:
 
     def snapshot(self):
         with self.lock:
-            return dict(mode=self.mode, authoritative_processor='browser', service_cutover_available=False,
+            return dict(mode=self.mode, authoritative_processor='none', inventory_mode='runtime', service_cutover_available=False,
                 startup_id=self.startup_id, state=self.state, queue_depth=int(self.pending is not None),
                 in_flight=self.in_flight, processed=self.processed, dropped=self.dropped,
                 restart_count=self.failures, model_versions=self.versions, latest=list(self.latest),

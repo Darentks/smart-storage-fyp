@@ -145,7 +145,7 @@ class StaggerTests(unittest.TestCase):
         network.request.Request=urllib.request.Request
         network.request.urlopen=Mock(side_effect=[OSError('offline'),response])
         inspector=Mock(return_value=5)
-        ns=dict(time=time,urllib=network,json=json,mqtt_bridge=types.SimpleNamespace(edge_nodes={}),
+        ns=dict(runtime_enabled=lambda:False,time=time,urllib=network,json=json,mqtt_bridge=types.SimpleNamespace(edge_nodes={}),
             record_probe_result=Mock(),RECHECKS=periodic.RecheckCoordinator(),
             CCTV_CONSENSUS_LOCK=existing.threading.RLock(),PENDING_CCTV_TRIGGERS=[],
             has_pending_shelf=periodic.has_pending_shelf,queue_periodic_trigger=periodic.queue_periodic_trigger,

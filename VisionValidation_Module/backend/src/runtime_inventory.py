@@ -1,0 +1,135 @@
+"""Camera-first inventory authority. RAM only: no file, cloud or restore path."""
+from collections import OrderedDict
+import copy
+import math
+import os
+import threading
+import time
+import uuid
+from .dual_cam_inventory import decode_observation, prove_unit_action, validate_confidences, validate_capture
+
+
+def runtime_enabled():
+    mode=os.getenv('SMART_STORAGE_INVENTORY_MODE','runtime').strip().lower()
+    if mode!='runtime':raise ValueError('Only runtime inventory is supported; remove the legacy SMART_STORAGE_INVENTORY_MODE setting')
+    return True
+
+
+class RuntimeInventory:
+    def __init__(self,run_id=None,quiet_seconds=2,clock=time.time,monotonic=time.monotonic):
+        if not math.isfinite(quiet_seconds) or not 0<quiet_seconds<=60:raise ValueError('Quiet window must be positive and at most 60 seconds')
+        self.run_id=run_id or str(uuid.uuid4());self.quiet_seconds=quiet_seconds
+        self.clock=clock;self.monotonic=monotonic;self.guard=threading.RLock()
+        self.shelves={};self.cameras={};self.models_ready=False;self.last_interaction=monotonic()
+
+    def _state(self,shelf):
+        if shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)}:raise ValueError('Unknown shelf')
+        if shelf not in self.shelves:
+            self.shelves[shelf]=dict(lock=threading.RLock(),version=0,state='Starting',baseline=None,observation=None,
+                born_at=self.clock(),ready_at=None,events=OrderedDict())
+        return self.shelves[shelf]
+
+    def snapshot(self,shelf):
+        with self.guard:
+            row=self._state(shelf)
+            with row['lock']:
+                baseline=copy.deepcopy(row['baseline'])
+                return dict(shelf_id=shelf,run_id=self.run_id,version=row['version'],state=row['state'],
+                    ready_at=row['ready_at'],born_at=row['born_at'],baseline=baseline,latest_observation=copy.deepcopy(row['observation']),
+                    authoritative=row['state']=='Ready',
+                    display_state='Ready Limited' if row['state']=='Ready' and baseline and baseline['precision']=='RANGE' else row['state'],
+                    slots=baseline['slots'] if baseline and row['state']=='Ready' else [None]*5,precision=baseline['precision'] if baseline and row['state']=='Ready' else 'UNKNOWN',
+                    current_quantity=baseline['total'] if baseline and row['state']=='Ready' else None,
+                    count_range=baseline['count_range'] if baseline and row['state']=='Ready' else [0,5],inventory_mode='runtime')
+
+    def invalidate(self,reason='Offline'):
+        with self.guard:
+            self.last_interaction=self.monotonic()
+            for row in self.shelves.values():
+                with row['lock']:
+                    row.update(state=reason,ready_at=None,born_at=self.clock(),version=row['version']+1)
+                    # Retain last accepted baseline in RAM as diagnostic history only;
+                    # state/ready_at prevent it from authorizing further actions.
+
+    def hold(self,shelf,event_id=None):
+        if event_id is not None and (not isinstance(event_id,str) or not event_id):event_id=None
+        with self.guard:
+            row=self._state(shelf)
+            with row['lock']:
+                if event_id is not None and event_id in row['events']:return False
+                if event_id is not None and len(row['events'])<200:row['events'][event_id]='HELD'
+                row.update(state='Held',ready_at=None,born_at=self.clock(),version=row['version']+1)
+                return True
+
+    def observe(self,shelf,candidate,capture):
+        with self.guard:
+            self._state(shelf)['observation']=dict(candidate=copy.deepcopy(candidate),capture=copy.deepcopy(capture),accepted=False)
+
+    def camera(self,cid,observed_at,healthy,interacting=False):
+        if cid not in ('CCTV_01','CCTV_02','CCTV_03'):raise ValueError('Unknown CCTV')
+        with self.guard:
+            previous=self.cameras.get(cid)
+            valid=healthy and 0<=self.clock()-observed_at<1.5
+            self.cameras[cid]=dict(at=observed_at,healthy=valid)
+            if interacting:self.last_interaction=self.monotonic()
+            if not valid and (previous is None or previous['healthy']):self.invalidate()
+
+    def environment_ready(self):
+        with self.guard:
+            if not self.models_ready:raise ValueError('Native models unavailable')
+            if any(not self.cameras.get(c,{}).get('healthy') or not 0<=self.clock()-self.cameras[c]['at']<1.5 for c in ('CCTV_01','CCTV_02','CCTV_03')):
+                raise ValueError('Fresh CCTV feeds required')
+            if self.monotonic()-self.last_interaction<self.quiet_seconds:raise ValueError('Quiet interaction window not satisfied')
+            return True
+
+    def accept(self,shelf,*,run_id,event_id,expected_version,samples,captures,lease,source,event=None):
+        with self.guard:
+            row=self._state(shelf)
+            with row['lock']:
+                if run_id!=self.run_id or type(expected_version) is not int or expected_version!=row['version']:raise ValueError('Stale run or inventory version')
+                if not isinstance(lease,str) or not lease:raise ValueError('Lease identity required')
+                if not isinstance(event_id,str) or not event_id or event_id in row['events']:raise ValueError('Duplicate/invalid event')
+                if len(row['events'])>=200:raise ValueError('In-run event limit reached; restart and reobserve')
+                self.environment_ready()
+                if not isinstance(samples,list) or len(samples)!=3:raise ValueError('Three paired captures required')
+                seen=set();slots=None;previous=None;latest=None;first_start=None
+                for sample in samples:
+                    validate_confidences(sample)
+                    observation=decode_observation(sample.get('front_class'),sample.get('back_class'))
+                    if slots is not None and slots!=observation['slots']:raise ValueError('Occupancy changed between captures')
+                    slots=observation['slots']
+                    timing=validate_capture(sample,self.clock(),captures,shelf,lease,seen,previous,row['born_at'],self.run_id)
+                    identity,completed,started=timing
+                    first_start=started if first_start is None else first_start
+                    if self.clock()-started > self.monotonic()-self.last_interaction:
+                        raise ValueError('Interaction overlaps capture window')
+                    seen.add(identity);previous=completed;latest=dict(observation)
+                latest.update(slots=list(slots),count_range=list(latest['count_range']),precision='RANGE' if latest['total'] is None else 'EXACT',
+                    observation_valid=True,action_authorized=False,
+                    first_capture_at=first_start,last_capture_at=previous)
+                row['observation']=latest
+                baseline=row['baseline']
+                if source=='STARTUP':
+                    # A new camera baseline is an observation, never a historical transaction.
+                    if row['state']=='Ready':raise ValueError('Ready shelf cannot be silently rebaselined')
+                else:
+                    if row['state']!='Ready' or row['ready_at'] is None or baseline is None:raise ValueError('Shelf not Ready')
+                    if source!='CCTV' or not event or event.get('trigger_id')!=event_id or event.get('shelf_id')!=shelf or not event.get('claimed') or not event.get('consensus_met') or event.get('validation_token')!=lease:
+                        raise ValueError('Bound CCTV event required')
+                    if event.get('expected_action') not in ('BORROW','RETURN'):raise ValueError('Server action required')
+                    if not row['ready_at']<=event.get('timestamp',0)<=event.get('claimed_at',0)<=first_start or not 0<=self.clock()-event['timestamp']<60:
+                        raise ValueError('Event predates runtime readiness or capture')
+                    proof=prove_unit_action(baseline['slots'],slots,event['expected_action'])
+                    latest['possible_deltas']=list(proof.possible_deltas)
+                    if not proof.accepted:
+                        latest['hold_code']=proof.code;self.hold(shelf,event_id)
+                        raise ValueError(f'{proof.code}: single net action not proven')
+                    latest['action_authorized']=True
+                before=baseline['total'] if baseline else None
+                row.update(baseline=latest,version=row['version']+1,state='Ready',ready_at=self.clock())
+                row['events'][event_id]='BASELINE' if source=='STARTUP' else 'ACCEPTED'
+                for identity in seen:captures.pop(identity,None)
+                return dict(status='success',run_id=self.run_id,version=row['version'],precision=latest['precision'],
+                    occupancy=list(slots),count_range=latest['count_range'],readiness='Ready',snapshot_initialized=source=='STARTUP',
+                    comparison=dict(quantity_before=before,quantity_after=latest['total'],delta=None if source=='STARTUP' or before is None or latest['total'] is None else latest['total']-before,
+                        state_delta='BASELINE' if source=='STARTUP' else 'VERIFIED_RUNTIME_ACTION'))

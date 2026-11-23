@@ -135,11 +135,21 @@ class GateTests(unittest.TestCase):
             report=root/'parity';report.write_text(json.dumps(dict(pass_=True)))
             # Synthetic gate fixtures exercise binding logic only; never use as field acceptance.
             report.write_text(json.dumps({'pass':True,'models':{'Front':{},'Back':{},'pose':{}},'cases':[{'kind':'pair','pass':True},{'kind':'pose','pass':True}]}))
-            record=dict(version=1,operator_accepted=True,operator='test fixture',accepted_at=time.time(),code_sha256=digest(code),manifest_sha256=digest(manifest),
+            record=dict(version=1,inventory_contract='runtime-v1',operator_accepted=True,operator='test fixture',accepted_at=time.time(),code_sha256=digest(code),manifest_sha256=digest(manifest),
                 calibration_sha256=digest(calibration),checks={k:True for k in CHECKS},reports=[dict(path='parity',sha256=digest(report))])
             acceptance=root/'acceptance';acceptance.write_text(json.dumps(record))
             with patch.dict(os.environ,dict(env,SMART_STORAGE_RELEASE_PHASE='5')):
                 self.assertEqual(len(load_service_config(config,manifest,acceptance,[code])[0]),3)
+                self.assertEqual(len(load_service_config(config,manifest,acceptance,[code],calibration)[0]),3)
+                with self.assertRaisesRegex(ValueError,'local ROI store'):load_service_config(config,manifest,acceptance,[code],root/'different-rois')
+                record['inventory_contract']='persistent-v1';acceptance.write_text(json.dumps(record))
+                with self.assertRaisesRegex(ValueError,'Runtime contract'):load_service_config(config,manifest,acceptance,[code])
+                record['inventory_contract']='runtime-v1'
+                for check in CHECKS:
+                    record['checks'][check]=False;acceptance.write_text(json.dumps(record))
+                    with self.assertRaisesRegex(ValueError,'SERVICE_CUTOVER_BLOCKED'):load_service_config(config,manifest,acceptance,[code])
+                    record['checks'][check]=True
+                acceptance.write_text(json.dumps(record))
                 code.write_text('changed')
                 with self.assertRaises(ValueError):load_service_config(config,manifest,acceptance,[code])
                 code.write_text('code');record['checks']['camera_outage']=False;acceptance.write_text(json.dumps(record))

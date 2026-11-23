@@ -86,10 +86,26 @@ function fileToBase64(file) {
 }
 
 async function supabaseRestRequest(table, method = 'GET', query = '', body = null, prefer = 'return=minimal') {
+  if (!['esp32_cameras', 'cctv_cameras'].includes(table)) throw new Error('Cloud access is restricted to device administration');
+  if (/\w+(?:!\w+)*\s*\(/.test(decodeURIComponent(String(query || '')))) throw new Error('Embedded cloud relations/functions are disabled');
+  const metrics = window.cloudRequestMetrics ||= {calls:0,failures:0,decoded_response_body_bytes:0};
   const url = `${SUPABASE_URL}/rest/v1/${table}${query}`;
+  // Optional host Auth session is RAM-only. Never put service-role/secret keys in a browser.
+  let bearer = SUPABASE_ANON_KEY;
+  const adminSession = window.smartStorageDeviceAdminSession;
+  if (adminSession) {
+    try {
+      const token = adminSession.access_token;
+      const parts = typeof token === 'string' ? token.split('.') : [];
+      if (parts.length !== 3) throw Error();
+      const claims = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
+      if (claims.role !== 'authenticated' || !Number.isFinite(claims.exp) || claims.exp <= Date.now()/1000) throw Error();
+      bearer = token; // Server verifies signature and camera_admin app_metadata via RLS.
+    } catch (_) { throw Error('Valid unexpired authenticated device-admin session required; server secrets are forbidden'); }
+  }
   const headers = {
     apikey: SUPABASE_ANON_KEY,
-    Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+    Authorization: `Bearer ${bearer}`,
     'Content-Type': 'application/json',
   };
   if (prefer) headers.Prefer = prefer;
@@ -97,13 +113,15 @@ async function supabaseRestRequest(table, method = 'GET', query = '', body = nul
   const options = { method, headers };
   if (body !== null) options.body = JSON.stringify(body);
 
-  const resp = await fetch(url, options);
-  if (!resp.ok) {
-    const errText = await resp.text();
-    throw new Error(`Supabase ${method} ${table} failed (${resp.status}): ${errText}`);
-  }
-  if (resp.status === 204 || prefer.includes('return=minimal')) return null;
-  return await resp.json();
+  metrics.calls++;
+  try {
+    const resp = await fetch(url, options);
+    const text = await resp.text();
+    metrics.decoded_response_body_bytes += new TextEncoder().encode(text).length;
+    if (!resp.ok) throw new Error(`Supabase device request failed (${resp.status})`);
+    if (resp.status === 204 || (prefer && prefer.includes('return=minimal'))) return null;
+    return text ? JSON.parse(text) : null;
+  } catch (error) { metrics.failures++; throw error; }
 }
 
 /**

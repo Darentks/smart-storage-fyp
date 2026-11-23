@@ -23,7 +23,7 @@ class EdgeShadowTests(unittest.TestCase):
         worker.start()
         self.assertIsNone(worker.thread)
         self.assertFalse(worker.snapshot()['authorizes_write'])
-        self.assertEqual(worker.snapshot()['authoritative_processor'],'browser')
+        self.assertEqual(worker.snapshot()['authoritative_processor'],'none')
 
     def test_missing_models_are_held_without_affecting_browser(self):
         with tempfile.TemporaryDirectory() as directory:

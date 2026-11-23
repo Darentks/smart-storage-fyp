@@ -576,11 +576,16 @@ class ValidationRouteTests(unittest.TestCase):
 
 
 class InventoryWriteTests(unittest.TestCase):
+    """Historical compatibility algorithm only: mocked transport, no live activation path."""
+    def setUp(self):
+        self.legacy_mode=patch('src.runtime_inventory.runtime_enabled',return_value=False)
+        self.legacy_mode.start();self.addCleanup(self.legacy_mode.stop)
+
     def test_six_box_write_and_clamping(self):
         for predicted, expected in [(5, 5), (6, 6), (9, 6), (-2, 0)]:
             with self.subTest(predicted=predicted):
                 rest = Mock(return_value=[{'shelf_id': 's', 'current_quantity': expected}])
-                ns = dict(SupabaseRestFallback=Mock(), _supabase_rest=rest, urllib=urllib,
+                ns = dict(__name__='src.config_loader',__package__='src',SupabaseRestFallback=Mock(), _supabase_rest=rest, urllib=urllib,
                           datetime=datetime, timezone=timezone, uuid=uuid)
                 apply = isolated_function(method(SRC/'config_loader.py','apply_inventory_delta_in_supabase'), ns)
                 result = apply('s','device','RETURN',dict(delta=predicted-4,
@@ -591,7 +596,7 @@ class InventoryWriteTests(unittest.TestCase):
 
     def test_compare_and_set_rejects_concurrent_database_change(self):
         rest = Mock(return_value=[])
-        ns = dict(SupabaseRestFallback=Mock(), _supabase_rest=rest, urllib=urllib,
+        ns = dict(__name__='src.config_loader',__package__='src',SupabaseRestFallback=Mock(), _supabase_rest=rest, urllib=urllib,
                   datetime=datetime, timezone=timezone, uuid=uuid)
         apply = isolated_function(method(SRC/'config_loader.py','apply_inventory_delta_in_supabase'), ns)
         result = apply('s','device','BORROW',dict(delta=-1,state_delta='ITEM_REMOVED',matched_box_count=3),4)

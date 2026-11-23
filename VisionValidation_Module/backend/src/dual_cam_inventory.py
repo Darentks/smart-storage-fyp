@@ -1,5 +1,7 @@
 """Five-slot stacked inventory contract. No I/O or inference in this module."""
 import math
+from typing import NamedTuple
+from itertools import product
 
 FRONT_STATES = {"Front_000": (0,0,0), "Front_010": (0,1,0),
                 "Front_011": (0,1,1), "Front_100": (1,0,0),
@@ -42,6 +44,46 @@ def decode_pair(front, back) -> tuple[int, int, int, int, int]:
     return (int(f1), int(m1), int(m2), int(b1), int(b2))
 
 
+class CaptureTiming(NamedTuple):
+    capture_id: str
+    completed_at: float
+    started_at: float
+
+
+def validate_confidences(sample):
+    """Shared raw per-role 80% floor; never round or renormalize here."""
+    for key in ("front_confidence", "back_confidence"):
+        confidence = sample.get(key)
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 80 <= confidence <= 100:
+            raise ValueError("Both cameras require at least 80% confidence")
+
+
+def validate_capture(sample, now, captures, shelf_id, validation_token, seen,
+                     previous=None, not_before=None, run_id=None) -> CaptureTiming:
+    """Validate one server receipt; callers retain sequence/occupancy authority."""
+    capture = sample.get("capture")
+    if not isinstance(capture, dict):
+        raise ValueError("Missing live capture timing")
+    capture_id = capture.get("id")
+    if not isinstance(capture_id, str):
+        raise ValueError("Invalid capture ID")
+    record = captures.get(capture_id)
+    if not record or capture_id in seen or record.get("shelf_id") != shelf_id:
+        raise ValueError("Unknown, reused or mismatched capture")
+    if validation_token is not None and record.get("validation_token") != validation_token:
+        raise ValueError("Capture belongs to another validation event")
+    if run_id is not None and record.get("run_id") != run_id:
+        raise ValueError("Capture belongs to another runtime generation")
+    completed = record["completed_at"]
+    if not_before is not None and completed - record["duration_ms"] / 1000 < not_before:
+        raise ValueError("Capture predates the established inventory event")
+    if not record["complete"] or not 0 <= now - completed <= 60 or not 0 <= record["duration_ms"] <= 2000:
+        raise ValueError("Missing, stale or mismatched camera frames")
+    if previous is not None and completed - previous < 1.5:
+        raise ValueError("Confirmation captures must be separated in time")
+    return CaptureTiming(capture_id, completed, completed-record["duration_ms"]/1000)
+
+
 def validate_evidence(evidence, count, now, captures, shelf_id, validation_token=None, not_before=None) -> tuple[tuple[int, int, int, int, int], set[str]]:
     """Require three distinct recent server-issued captures with identical occupancy."""
     if not isinstance(evidence, dict) or evidence.get("version") != VERSION:
@@ -61,28 +103,10 @@ def validate_evidence(evidence, count, now, captures, shelf_id, validation_token
         if slots is not None and current != slots:
             raise ValueError("Occupancy changed between captures")
         slots = current
-        for key in ("front_confidence", "back_confidence"):
-            confidence = sample.get(key)
-            if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 80 <= confidence <= 100:
-                raise ValueError("Both cameras require at least 80% confidence")
-        capture = sample.get("capture")
-        if not isinstance(capture, dict):
-            raise ValueError("Missing live capture timing")
-        capture_id = capture.get("id")
-        if not isinstance(capture_id, str):
-            raise ValueError("Invalid capture ID")
-        record = captures.get(capture_id)
-        if not record or capture_id in seen or record.get("shelf_id") != shelf_id:
-            raise ValueError("Unknown, reused or mismatched capture")
-        if validation_token is not None and record.get("validation_token") != validation_token:
-            raise ValueError("Capture belongs to another validation event")
-        completed = record["completed_at"]
-        if not_before is not None and completed - record["duration_ms"] / 1000 < not_before:
-            raise ValueError("Capture predates the established inventory event")
-        if not record["complete"] or not 0 <= now - completed <= 60 or not 0 <= record["duration_ms"] <= 2000:
-            raise ValueError("Missing, stale or mismatched camera frames")
-        if previous is not None and completed - previous < 1.5:
-            raise ValueError("Confirmation captures must be separated in time")
+        validate_confidences(sample)
+        timing = validate_capture(sample, now, captures, shelf_id, validation_token,
+                                  seen, previous, not_before)
+        completed, capture_id = timing.completed_at, timing.capture_id
         previous = completed
         seen.add(capture_id)
     # Explicitly narrow the loop accumulator before returning it to callers.
@@ -109,3 +133,41 @@ def validate_transition(previous, current, quantity, action):
     if action == "RETURN" and all(change >= 0 for change in changes):
         return
     raise ValueError("Occupancy change conflicts with expected action; relocation/recheck requires review")
+
+
+class ActionProof(NamedTuple):
+    accepted: bool
+    code: str | None
+    possible_deltas: tuple[int, ...]
+
+
+def feasible_completions(slots):
+    """Enumerate stack-supported states, without assuming hidden-slot continuity."""
+    if len(slots)!=5 or any(bit is not None and (type(bit) is not int or bit not in (0,1)) for bit in slots):
+        raise ValueError('Five 0/1/null slots required')
+    states=tuple(state for state in product(*[(0,1) if bit is None else (bit,) for bit in slots])
+                 if state[2]<=state[1] and state[4]<=state[3])
+    if not states:raise ValueError('No physically feasible completion')
+    return states
+
+
+def prove_unit_action(before, after, action) -> ActionProof:
+    """Accept iff every independent completion proves one same-direction slot move.
+
+    This is runtime policy; persistent compatibility retains validate_transition.
+    No prior quantity, repeated X01 or direction candidate resolves a hidden bit.
+    """
+    if action not in ('BORROW','RETURN'):raise ValueError('BORROW or RETURN required')
+    expected=-1 if action=='BORROW' else 1
+    deltas=set();all_proven=True
+    before_states=feasible_completions(before);after_states=feasible_completions(after)
+    for previous in before_states:
+        for current in after_states:
+            changes=tuple(new-old for old,new in zip(previous,current));net=sum(changes)
+            deltas.add(net)
+            all_proven=all_proven and net==expected and sum(abs(change) for change in changes)==1
+    if all_proven:return ActionProof(True,None,tuple(sorted(deltas)))
+    unknown=any(bit is None for bit in (*before,*after))
+    visible=any(a is not None and b is not None and a!=b for a,b in zip(before,after))
+    code=('VISIBLE_CHANGE_NET_UNPROVEN' if visible else 'UNKNOWN_B1') if unknown else 'OCCUPANCY_CHANGED'
+    return ActionProof(False,code,tuple(sorted(deltas)))

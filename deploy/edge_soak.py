@@ -28,8 +28,9 @@ def main():
             except (psutil.NoSuchProcess,psutil.AccessDenied):row['unavailable_samples']+=1
     for row in stats.values():row['cpu_percent_mean']=row.pop('cpu_percent_sum')/row['samples'] if row['samples'] else None
     report=dict(version=1,created_at=time.time(),actual_duration_seconds=time.monotonic()-start,conditions=args.conditions,
+        target_scope='explicit_processes' if args.pid else 'measurement_tool_only',hardware_acceptance='BLOCKED',
         host={'logical_cpus':psutil.cpu_count(),'physical_cpus':psutil.cpu_count(logical=False),'total_ram_bytes':psutil.virtual_memory().total},processes=stats,
-        missed_actions=None,wrong_accepted_updates=None,hold_rate=None,restarts=None,recovery=None,
+        missed_actions=None,wrong_accepted_updates=None,hold_rate=None,restarts=None,recovery=None,action_latency_ms=None,
         note='Unmeasured action/recovery outcomes are unknown, never zero. CPU uses psutil per-process convention; no acceptance thresholds invented.')
     path=Path(args.output);path.parent.mkdir(parents=True,exist_ok=True);path.write_text(json.dumps(report,indent=2))
     print(json.dumps({'duration_seconds':report['actual_duration_seconds'],'processes':len(stats),'output':str(path)}))

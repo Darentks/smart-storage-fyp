@@ -29,7 +29,7 @@ DEFAULT_SUPABASE_URL = "https://tosvjwxvcuxvgtcmakta.supabase.co"
 DEFAULT_SUPABASE_KEY = "sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l"
 
 # Lightweight non-Base64 column lists to prevent Supabase Egress bloat
-# Minimal clean schema: public.compartments only stores inventory state
+# Legacy column list only; runtime device helpers never query compartments
 COMPARTMENTS_LIGHT_COLS = "shelf_id,rack_id,current_quantity,max_capacity,tm_model_url"
 # public.esp32_cameras stores the static hardware mapping (IP per angle)
 ESP32_CAMERAS_COLS = "id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address"
@@ -64,6 +64,11 @@ def _supabase_rest(
     with headers 'apikey', 'Authorization: Bearer', 'Content-Type: application/json', and 'Prefer'.
     Returns parsed JSON data (or True/False for DELETE, or [] on error).
     """
+    from .runtime_inventory import runtime_enabled
+    if runtime_enabled() and table.lstrip('/') not in {'esp32_cameras','cctv_cameras'}:
+        raise ValueError('Runtime mode permits Supabase device administration only')
+    if re.search(r'\w+(?:!\w+)*\s*\(',urllib.parse.unquote(query or '')):
+        raise ValueError('Embedded cloud relations/functions are disabled; request device columns only')
     base_url = get_resolved_supabase_url()
     api_key = api_key or get_resolved_supabase_key()
 
@@ -234,12 +239,12 @@ def get_resolved_supabase_url() -> str:
 def get_resolved_supabase_key() -> str:
     find_and_load_env()
     key = (
-        os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
+        os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY")
         or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
         or os.getenv("SUPABASE_KEY")
         or os.getenv("VITE_SUPABASE_ANON_KEY")
         or os.getenv("SUPABASE_ANON_KEY")
-        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
     )
     return key.strip() if key else DEFAULT_SUPABASE_KEY
 
@@ -249,6 +254,8 @@ def get_supabase_client() -> Optional[Any]:
     Initializes and returns a cached Supabase Client using environment variables
     or default fallback credentials.
     """
+    from .runtime_inventory import runtime_enabled
+    if runtime_enabled():return None  # All active device requests use the scoped, measured REST adapter.
     global _client_cache
     if _client_cache is not None:
         return _client_cache
@@ -349,12 +356,27 @@ def _clean_host(ip: Any) -> str:
     return str(ip or "").strip().split("//")[-1].split("/")[0].strip()
 
 
+def device_shelves(devices) -> List[Dict[str, Any]]:
+    """Build local shelf bindings exclusively from device administration records."""
+    grouped = {}
+    for camera in devices if isinstance(devices,list) else []:
+        sid=camera.get('shelf_id')
+        if sid not in {f'SHELF_R1_C{i}' for i in range(1,7)}:continue
+        row=grouped.setdefault(sid,dict(shelf_id=sid,rack_id=camera.get('rack_id'),max_capacity=5,current_quantity=None))
+        angle=str(camera.get('angle_index'))
+        if angle=='1':row.update(ip_address=_clean_host(camera.get('ip_address')),mqtt_client_id=camera.get('device_id'),camera_name=camera.get('camera_name'))
+        elif angle=='2':row.update(secondary_ip_address=_clean_host(camera.get('ip_address')),secondary_mqtt_client_id=camera.get('device_id'))
+    return list(grouped.values())
+
+
 def list_esp32_cameras() -> List[Dict[str, Any]]:
     """
     READ: Fetches shelf compartments (public.compartments) and merges the static camera mapping
     from public.esp32_cameras (angle 1 -> ip_address / mqtt_client_id, angle 2 -> secondary_*).
     Live telemetry (status, rssi, heap, last_seen) is NOT stored in Supabase; it lives in the bridge RAM.
     """
+    from .runtime_inventory import runtime_enabled
+    if runtime_enabled():return device_shelves(_supabase_rest(table='esp32_cameras',query=f'?select={ESP32_CAMERAS_COLS}&order=shelf_id.asc,angle_index.asc'))
     compartments: List[Dict[str, Any]] = []
     cameras: List[Dict[str, Any]] = []
 
@@ -440,6 +462,8 @@ def apply_inventory_delta_in_supabase(
     Applies inventory deduction (-1 / +1) in public.compartments ONLY when delta != 0,
     and returns a log for the camera service to retain in RAM.
     """
+    from .runtime_inventory import runtime_enabled
+    if runtime_enabled():raise ValueError('Persistent inventory writes disabled in runtime mode')
     shelf_id = shelf_id.strip()
     mqtt_client_id = mqtt_client_id.strip()
     delta = int(comparison_result.get("delta", 0))

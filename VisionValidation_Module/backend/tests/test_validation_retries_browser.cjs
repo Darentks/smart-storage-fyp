@@ -9,6 +9,7 @@ const vm=require('node:vm');
   const start=html.indexOf('    function validPeriodicPrediction');
   const end=html.indexOf('    // Metadata-only queue.',start);
   vm.runInContext('const PERIODIC_CONFIRM_DELAY_MS=2000;'+html.slice(start,end)+'\nglobalThis.confirm=captureConfirmedPair;',ctx);
+  assert.equal(ctx.validationFailureCode('VISIBLE_CHANGE_NET_UNPROVEN'),'VISIBLE_CHANGE_NET_UNPROVEN');
   let receipt=0; const sample=count=>({preview:{capture:{id:String(receipt++),completed_at:Date.now()/1000,duration_ms:500}},prediction:{totalBoxes:count,occupancyKey:String(count),confidence:90,degraded:false}});
   let calls=0;
   const sequence=[3,2,3,3,3];

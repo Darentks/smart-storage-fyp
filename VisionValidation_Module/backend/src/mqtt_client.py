@@ -73,6 +73,7 @@ class MQTTClientNode:
         self.on_verification_response = on_verification_response
         self.on_health_ping = on_health_ping
         self.on_roi_reload = on_roi_reload
+        self.on_connection_lost: Optional[Callable[[], None]] = None
 
         # Live in-memory state of discovered ESP32 nodes & recent verification responses
         self.edge_nodes: Dict[str, Dict[str, Any]] = {}
@@ -111,7 +112,11 @@ class MQTTClientNode:
             print(f"[MQTT] Connection failed with result code {rc}")
 
     def _on_disconnect(self, client, userdata, rc):
+        was_connected = self.is_connected
         self.is_connected = False
+        if was_connected and self.on_connection_lost is not None:
+            try:self.on_connection_lost()
+            except OSError:print('[MQTT] Recovery invalidated; local intent metadata unavailable')
         print(f"[MQTT] Disconnected from broker (rc={rc})")
 
     def _on_message(self, client, userdata, msg):

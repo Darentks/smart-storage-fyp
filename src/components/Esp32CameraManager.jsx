@@ -258,30 +258,7 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
     const snapUrl = captureLiveSnapshotUrl(cam.ip_address, mode);
     setSnapshotUrls((prev) => ({ ...prev, [cam.device_id]: snapUrl }));
 
-    // Require BOTH Angle 1 (Back) and Angle 2 (Front) cameras to be configured & online for dual-angle validation
-    const shelfCams = groupedByShelf[cam.shelf_id] || [];
-    const cam1 = shelfCams.find((c) => Number(c.angle_index) === 1);
-    const cam2 = shelfCams.find((c) => Number(c.angle_index) === 2);
-    if (!cam1 || !cam2 || cam1.status === 'OFFLINE' || cam2.status === 'OFFLINE') {
-      notify('Validation aborted: Dual-angle required (1 camera unreachable)', 'error');
-      return;
-    }
-
-    try {
-      await fetch(`${activeBridgeUrl}/esp32_trigger`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          shelf_id: cam.shelf_id,
-          command: 'CAPTURE_STATE',
-          expected_action: 'BORROW',
-          source: 'NODE_MANAGER_TEST',
-        }),
-      });
-      notify(`Triggered capture & MQTT state check for ${cam.device_id} (${cam.ip_address})`, 'success');
-    } catch {
-      notify(`Refreshed direct HTTP snapshot from ${cam.ip_address}`, 'info');
-    }
+    notify('Snapshot refreshed. Native service owns CCTV validation; this manager is monitoring-only.', 'info');
   };
 
   // 1-Click PlatformIO Build & Wireless OTA Flash (Single or Batch)

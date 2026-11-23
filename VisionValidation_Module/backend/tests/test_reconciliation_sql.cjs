@@ -4,7 +4,7 @@ const {PGlite}=require(process.env.PHASE1_PGLITE_MODULE);
 (async()=>{
  const db=new PGlite();await db.exec(`CREATE ROLE anon;CREATE ROLE authenticated;CREATE ROLE service_role;
  CREATE SCHEMA auth;CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$ SELECT nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$;`);
- const schema=fs.readFileSync('supabase_schema.sql','utf8').replace(/CREATE EXTENSION IF NOT EXISTS .pgcrypto.;/,'');
+ const schema=fs.readFileSync('VisionValidation_Module/backend/tests/fixtures/legacy_supabase_schema.sql','utf8').replace(/CREATE EXTENSION IF NOT EXISTS .pgcrypto.;/,'');
  await db.exec(schema);
  const shelf='SHELF_R1_C3',user='11111111-1111-4111-8111-111111111111',id='22222222-2222-4222-8222-222222222222';
  const query='SELECT public.reconcile_inventory($1,$2::uuid,$3,$4,$5::jsonb,$6) AS result';

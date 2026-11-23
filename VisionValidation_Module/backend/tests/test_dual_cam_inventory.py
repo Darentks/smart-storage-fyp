@@ -150,4 +150,50 @@ class TransitionTests(unittest.TestCase):
                 inventory.validate_evidence(evidence,3,100,captures,'s',token,timestamp)
 
 
+class RangeProofTests(unittest.TestCase):
+    def test_all_24_pairs_keep_exact_range_and_conflict_contract(self):
+        exact=partial=conflict=0
+        for front in inventory.FRONT_STATES:
+            for back in inventory.BACK_STATES:
+                try:observation=inventory.decode_observation(front,back)
+                except ValueError:conflict+=1;continue
+                if observation['total'] is None:
+                    partial+=1;self.assertEqual(back,'Back_X01');self.assertIsNone(observation['slots'][3])
+                    self.assertEqual(observation['count_range'],(2,3) if front=='Front_011' else (3,4))
+                    self.assertNotEqual(observation['count_range'],(4,5))
+                else:exact+=1
+        self.assertEqual((exact,partial,conflict),(14,2,8))
+
+    def test_visible_removal_and_return_do_not_assume_hidden_continuity(self):
+        borrow=inventory.prove_unit_action((1,1,1,None,0),(0,1,1,None,0),'BORROW')
+        self.assertFalse(borrow.accepted);self.assertEqual(borrow.code,'VISIBLE_CHANGE_NET_UNPROVEN')
+        self.assertEqual(borrow.possible_deltas,(-2,-1,0))
+        returned=inventory.prove_unit_action((0,1,1,None,0),(1,1,1,None,0),'RETURN')
+        self.assertFalse(returned.accepted);self.assertEqual(returned.possible_deltas,(0,1,2))
+
+    def test_hidden_only_and_one_unknown_side_remain_held(self):
+        slots=(0,1,1,None,0);result=inventory.prove_unit_action(slots,slots,'BORROW')
+        self.assertFalse(result.accepted);self.assertEqual(result.code,'UNKNOWN_B1')
+        self.assertEqual(result.possible_deltas,(-1,0,1))
+        for before,after,action in [((1,1,1,1,0),(0,1,1,None,0),'BORROW'),((0,1,1,None,0),(1,1,1,1,0),'RETURN')]:
+            self.assertFalse(inventory.prove_unit_action(before,after,action).accepted)
+
+    def test_every_exact_physical_transition_matches_single_slot_policy(self):
+        states=inventory.feasible_completions((None,)*5);self.assertEqual(len(states),18)
+        for before in states:
+            for after in states:
+                differing=[i for i in range(5) if before[i]!=after[i]]
+                for action,delta in [('BORROW',-1),('RETURN',1)]:
+                    allowed=len(differing)==1 and sum(after)-sum(before)==delta
+                    self.assertEqual(inventory.prove_unit_action(before,after,action).accepted,allowed)
+
+    def test_net_one_with_multi_slot_move_and_relocation_are_not_accepted(self):
+        for before,after in [((1,1,1,1,0),(1,0,0,1,1)),((1,1,0,0,0),(0,1,0,1,0))]:
+            self.assertFalse(inventory.prove_unit_action(before,after,'BORROW').accepted)
+
+    def test_invalid_completions_are_rejected(self):
+        for slots in [(0,0,1,0,0),(0,0,0,0,1),(True,0,0,0,0),(None,)*4]:
+            with self.assertRaises(ValueError):inventory.feasible_completions(slots)
+
+
 if __name__ == '__main__': unittest.main()

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "calibration_file": "edge-camera-calibrations.json",
+  "calibration_file": "camera-rois.json",
   "source_environment": {
     "CCTV_01": "EDGE_CCTV_01_SOURCE",
     "CCTV_02": "EDGE_CCTV_02_SOURCE",

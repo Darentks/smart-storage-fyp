@@ -14,12 +14,15 @@ import urllib.parse
 import uuid
 
 from .edge_shadow import EdgeShadow
+from .runtime_inventory import RuntimeInventory, runtime_enabled
+from .validation_diagnostics import failure_code
 
 
 CHECKS = ('same_frame_tm', 'same_frame_pose', 'action_consensus_parity',
           'browser_closed_borrow_return', 'duplicate_clients', 'camera_outage',
           'mqtt_outage', 'database_outage', 'reboot_reverification', 'load_budget',
-          'cutover_rollback')
+          'cutover_rollback', 'runtime_three_pair_rebaseline', 'unknown_b1_hold', 'no_cloud_inventory',
+          'bridge_crash_mid_action','roi_source_swap','range_2_3_and_3_4','stale_duplicate_events','runtime_exact_baseline')
 
 
 def digest(path):
@@ -39,7 +42,11 @@ def source_binding(source):
     url = urllib.parse.urlsplit(source)
     if url.scheme not in {'rtsp', 'rtsps'} or not url.hostname:
         raise ValueError('Invalid camera source')
-    return f'{url.scheme}://{url.hostname.lower()}:{url.port or 554}{url.path}'+('?' + url.query if url.query else '')
+    # Credentials belong in the protected source environment, never ROI bindings.
+    query='&'.join(part for part in url.query.split('&') if part and not any(
+        word in urllib.parse.unquote_plus(part.split('=',1)[0]).lower()
+        for word in ('user','pass','token','secret','auth','credential','key')))
+    return f'{url.scheme}://{url.hostname.lower()}:{url.port or 554}{url.path}'+('?' + query if query else '')
 
 
 def polygon(roi):
@@ -135,17 +142,18 @@ class ActionTracker:
         return votes
 
 
-def load_service_config(config_path, manifest_path, acceptance_path, code_paths):
+def load_service_config(config_path, manifest_path, acceptance_path, code_paths,roi_path=None):
     """Local-only activation gate, bound to code, models, calibrations and reports."""
-    if os.getenv('SMART_STORAGE_RELEASE_PHASE','6')!='5':
-        raise ValueError('PHASE6_RELEASE_BLOCKED: strict count/device-only cloud migration and field acceptance remain unresolved; Phase 5 compatibility requires explicit release selection')
+    runtime_enabled()  # Legacy release selection cannot restore cloud inventory authority.
     config_path=Path(config_path).resolve();base=config_path.parent
     config=json.loads(config_path.read_text());calibration_path=(base/config['calibration_file']).resolve()
+    if roi_path is not None and calibration_path!=Path(roi_path).resolve():raise ValueError('Native calibration must use the deployed local ROI store')
     calibration=json.loads(calibration_path.read_text())
     from .local_operations import validate_rois
     calibration=validate_rois(calibration)
     if len(calibration.get('cameras',[]))!=3:raise ValueError('Exactly three camera calibrations required')
     acceptance=json.loads(Path(acceptance_path).read_text())
+    if acceptance.get('inventory_contract')!='runtime-v1':raise ValueError('Runtime contract needs separate explicit acceptance')
     code_hash=hashlib.sha256(b''.join(Path(p).read_bytes() for p in code_paths)).hexdigest()
     if (config.get('version')!=1 or calibration.get('version')!=1 or acceptance.get('version')!=1
         or acceptance.get('operator_accepted') is not True or not acceptance.get('operator')
@@ -223,6 +231,7 @@ class AutonomousProcessor:
         self.request=request;self.capture=capture;self.shelves=shelves;self.pending=pending
         self.invalidate=invalidate;self.log=log;self.stop=threading.Event();self.threads=[]
         self.state='Starting';self.last_frames={};self.health={};self.retry_at={};self.metrics={}
+        self.runtime: RuntimeInventory | None=None
 
     def start(self):
         # Warm up and verify parity was produced by these exact loaded model weights.
@@ -231,11 +240,13 @@ class AutonomousProcessor:
             for role,version in report['models'].items():
                 if role in ('Front','Back','pose') and version!=self.native.versions[role]:raise ValueError('Loaded model differs from accepted parity report')
         self.native.accepted_versions=json.loads(json.dumps(self.native.versions))
+        if self.runtime is not None:self.runtime.models_ready=True
         for target in (self._poses,self._validations):
             thread=threading.Thread(target=target,daemon=True,name='AutonomousEdge');self.threads.append(thread);thread.start()
 
     def snapshot(self):
         return dict(mode='service',authoritative_processor='service',service_cutover_available=True,
+            inventory_mode='runtime' if self.runtime is not None else 'persistent',
             startup_id=self.run_id,state=self.state,cameras=dict(self.health),model_versions=self.native.versions,
             metrics=dict(self.metrics),restart_count=self.native.failures,authorizes_write=False)
 
@@ -257,14 +268,24 @@ class AutonomousProcessor:
                     self.last_frames[cam['id']]=identity
                     result=self.native.infer({'kind':'pose','image':frame['image']},ttl=1.5)
                     self.metrics['pose']=result['metrics'];self.health[cam['id']]={'state':'Online','at':now}
-                    for vote in cam['tracker'].update(result['persons'],now):
+                    votes=cam['tracker'].update(result['persons'],now)
+                    if self.runtime is not None:
+                        interacting=any(t['seen']==now for t in cam['tracker'].states.values())
+                        self.runtime.camera(cam['id'],now,True,interacting)
+                    for vote in votes:
                         try:
                             self.request('/esp32_trigger',dict(vote,source='CCTV',camera_id=cam['id'],camera_role=cam['role'],
                                 trigger_id=str(uuid.uuid4()),detected_at=now))
                         except ValueError:
                             self.log(self.run_id,'native_vote_held',code='SHELF_NOT_READY')
                 except Exception:
-                    cam['tracker'].reset();self.invalidate();self.health[cam['id']]={'state':'Offline','at':time.time()}
+                    was_online=self.health.get(cam['id'],{}).get('state')!='Offline'
+                    if self.runtime is not None:self.runtime.camera(cam['id'],time.time(),False)
+                    cam['tracker'].reset()
+                    if was_online:
+                        for camera in self.cameras:camera['tracker'].reset()
+                        self.invalidate()
+                    self.health[cam['id']]={'state':'Offline','at':time.time()}
             self.stop.wait(.1)
 
     def validate(self, shelf, trigger=None):
@@ -275,7 +296,15 @@ class AutonomousProcessor:
             if not token:raise ValueError('Lease unavailable')
             if trigger and not self.request('/cctv_trigger_claim',dict(shelf_id=sid,trigger_id=trigger['trigger_id'],validation_token=token))['claimed']:
                 raise ValueError('Trigger not claimable')
-            deadline=time.monotonic()+90;accepted=None
+            deadline=time.monotonic()+90;accepted=None;last_failure='VALIDATION_REJECTED'
+            runtime=self.runtime
+            runtime_version=runtime.snapshot(sid)['version'] if runtime is not None else None
+            if runtime is not None:
+                while True:
+                    try:runtime.environment_ready();break
+                    except ValueError:
+                        if self.stop.is_set() or time.monotonic()>=deadline:raise TimeoutError('Quiet/healthy baseline window unavailable')
+                        self.stop.wait(.2)
             for boost,duty in (('off',90),('auto',135),('high',185)):
                 samples=[];slots=None
                 for number in range(3):
@@ -286,23 +315,32 @@ class AutonomousProcessor:
                     preview=self.request('/esp32_preview?'+query,None)
                     result=self.native.infer(dict(kind='pair',image_back=preview['image_back'],image_front=preview['image_front'],boost=boost))
                     self.metrics['pair']=result['metrics'];candidate=result['candidate']
-                    if candidate.get('hold') or preview['capture']['duration_ms']>2000 or (slots is not None and slots!=candidate['slots']):break
+                    if runtime is not None:runtime.observe(sid,candidate,preview['capture'])
+                    valid_range=runtime is not None and candidate.get('hold')=='UNKNOWN_B1'
+                    if candidate.get('hold') and not valid_range:
+                        last_failure=candidate['hold'];break
+                    if preview['capture']['duration_ms']>2000:
+                        last_failure='STALE_CAPTURE';break
+                    if slots is not None and slots!=candidate['slots']:
+                        last_failure='OCCUPANCY_CHANGED';break
                     slots=candidate['slots'];samples.append(dict(front_class=candidate['front_class'],back_class=candidate['back_class'],
                         front_confidence=candidate['front_confidence'],back_confidence=candidate['back_confidence'],capture=preview['capture']))
                     if number<2 and self.stop.wait(2):raise RuntimeError('Stopping')
                 if len(samples)==3:accepted=(preview,candidate,samples,boost);break
                 if self.stop.wait(2):raise RuntimeError('Stopping')
-            if accepted is None:raise ValueError('No three stable trusted pairs; inventory held')
+            if accepted is None:raise ValueError(last_failure+': no three stable trusted pairs; inventory held')
             preview,candidate,samples,boost=accepted
             if self.stop.is_set() or not self.cameras_ready():raise ValueError('CCTV health lost before validation')
             return self.request('/esp32_validate',dict(shelf_id=sid,validation_token=token,source=source,
                 trigger_id=trigger['trigger_id'] if trigger else None,expected_action=action,ip=shelf['ip_address'],ip2=shelf['secondary_ip_address'],
                 image=preview['image'],image_back=preview['image_back'],image_front=preview['image_front'],
-                predicted_box_count=candidate['total'],dual_cam_evidence={'version':'stacked-visibility-v4-x01','samples':samples},
+                predicted_box_count=candidate.get('total'),dual_cam_evidence={'version':'stacked-visibility-v4-x01','samples':samples},
+                run_id=self.run_id,expected_version=runtime_version,runtime_event_id='baseline:'+request_id,
                 tm_confidence=min(candidate['front_confidence'],candidate['back_confidence']),boost=boost))
-        except Exception:
+        except Exception as exc:
             if token:
-                try:self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,failed=True,stage='Native validation failed; fresh verification required'))
+                try:self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,trigger_id=trigger.get('trigger_id') if trigger else None,
+                    failed=True,stage=failure_code(exc)+': native validation held; fresh verification required'))
                 except Exception:pass
             raise
         finally:
@@ -312,7 +350,10 @@ class AutonomousProcessor:
     def _validations(self):
         while not self.stop.is_set():
             try:
-                statuses=self.request('/shelf_readiness',None)['shelves'];shelves={s['shelf_id']:s for s in self.shelves()}
+                status_response=self.request('/shelf_readiness',None)
+                if status_response.get('mqtt_connected') is False:
+                    self.state='Held: MQTT unavailable';self.stop.wait(1);continue
+                statuses=status_response['shelves'];shelves={s['shelf_id']:s for s in self.shelves()}
                 if not self.cameras_ready():
                     self.state='Held: waiting for all three fresh cameras'
                     self.stop.wait(1)
@@ -324,10 +365,11 @@ class AutonomousProcessor:
                     sid=shelf['shelf_id'];self.retry_at[sid]=time.monotonic()+30
                     try:self.validate(shelf,trigger)
                     except Exception:self.log(self.run_id,'native_validation_held',shelf_id=sid,code='VALIDATION_PENDING')
-            except Exception:self.state='Held: bridge/database unavailable'
+            except Exception:self.state='Held: bridge or device configuration unavailable'
             self.stop.wait(1)
 
     def close(self):
+        if self.runtime is not None:self.runtime.models_ready=False;self.runtime.invalidate()
         self.stop.set();self.native.close()
         for thread in self.threads:thread.join(timeout=10)
         self.state='Stopped'

@@ -9,6 +9,7 @@ import threading
 import time
 
 from .autonomous_edge import polygon, source_binding
+from .validation_diagnostics import FAILURE_CODES
 
 
 def atomic_json(path, value):
@@ -46,7 +47,7 @@ class LatestIntents:
         if result.get('action') not in (None,'BORROW','RETURN','RECHECK'):raise ValueError('Invalid candidate action')
         if result.get('status') not in ('PENDING','CONSENSUS','HELD','ACCEPTED','RECONCILED'):raise ValueError('Invalid intent status')
         # Reasons are codes only, never arbitrary client text/PII/URLs.
-        if result.get('reason') not in (None,'LOW_CONFIDENCE','UNKNOWN_B1','M2_CONFLICT','OCCUPANCY_CHANGED','STALE_CAPTURE','DATABASE_FAILURE','VALIDATION_TIMEOUT','MISSING_CAMERA','LEASE_EXPIRED','MODEL_FAILURE','MISSING_CCTV_CONSENSUS','VALIDATION_REJECTED'):
+        if result.get('reason') is not None and result['reason'] not in FAILURE_CODES:
             result['reason']='VALIDATION_REJECTED'
         return result
 
@@ -60,7 +61,8 @@ class LatestIntents:
 
     def update(self,identity,status,reason=None):
         with self.lock:
-            records=[self.clean(dict(r,status=status,reason=reason)) if r['id']==identity else dict(r) for r in self.records]
+            records=[self.clean(dict(r,status=status,reason=reason)) if r['id']==identity and not
+                (status=='HELD' and r['status'] in ('ACCEPTED','RECONCILED')) else dict(r) for r in self.records]
             atomic_json(self.path,dict(version=1,records=records));self.records=records
 
     def snapshot(self):
@@ -127,8 +129,14 @@ class LocalFailures:
         self.path=Path(path);self.lock=threading.RLock()
         self.values=json.loads(self.path.read_text()) if self.path.exists() else {}
         if not isinstance(self.values,dict) or len(self.values)>6:raise ValueError('Invalid local failure state')
+        for shelf,row in self.values.items():
+            if (shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)} or not isinstance(row,dict)
+                or set(row)!={'state','code','at'} or row['state'] not in {'Held','Offline','Needs Reconciliation'}
+                or row['code'] not in FAILURE_CODES | {None} or type(row['at']) not in (int,float) or not math.isfinite(row['at'])):
+                raise ValueError('Local failures may contain only bounded technical metadata')
     def set(self,shelf,state,code):
         if shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)}:return
+        if code is not None and code not in FAILURE_CODES:code='VALIDATION_REJECTED'
         with self.lock:
             if state=='Ready':self.values.pop(shelf,None)
             elif state in {'Held','Offline','Needs Reconciliation'}:

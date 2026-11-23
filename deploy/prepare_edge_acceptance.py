@@ -8,6 +8,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'VisionValidation_Module/backend'))
 from src.autonomous_edge import CHECKS, acceptance_code_paths, digest
+from src.runtime_inventory import runtime_enabled
 
 def main():
     parser=argparse.ArgumentParser()
@@ -20,6 +21,7 @@ def main():
     if output.exists():raise ValueError('Refusing to replace an existing acceptance record')
     config=Path(args.config).resolve();settings=json.loads(config.read_text())
     record=dict(version=1,operator_accepted=False,operator='',accepted_at=0,
+        inventory_contract='runtime-v1' if runtime_enabled() else 'persistent-v1',
         manifest_sha256=digest(args.manifest),calibration_sha256=digest(config.parent/settings['calibration_file']),
         code_sha256=hashlib.sha256(b''.join(p.read_bytes() for p in acceptance_code_paths(ROOT))).hexdigest(),
         checks={name:False for name in CHECKS},reports=[])
