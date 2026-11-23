@@ -27,8 +27,9 @@ class PanelTests(unittest.TestCase):
   store=NativeObservations()
   for i in range(1,7):store.put(f'SHELF_R1_C{i}',{'image_back':'back'},{'hold':'LOW_CONFIDENCE'})
   store.put('unknown',{},{});self.assertEqual(len(store.rows),6)
-  row=store.get('SHELF_R1_C1');row['candidate']['hold']='changed'
-  self.assertEqual(store.get('SHELF_R1_C1')['candidate']['hold'],'LOW_CONFIDENCE')
+  row=store.get('SHELF_R1_C1');assert row is not None;row['candidate']['hold']='changed'
+  row2=store.get('SHELF_R1_C1');assert row2 is not None
+  self.assertEqual(row2['candidate']['hold'],'LOW_CONFIDENCE')
   with patch('src.preview_panel.time.time',return_value=time.time()+31):self.assertIsNone(store.get('SHELF_R1_C1'))
   store.clear();self.assertEqual(store.rows,{})
 if __name__=='__main__':unittest.main()

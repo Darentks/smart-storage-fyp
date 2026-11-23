@@ -3098,7 +3098,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       });
     }
     async function exportTMTrainingLocked(item, token) {
-      const settings = [{boost:item.boost, duty:90}, {boost:'auto', duty:135}, {boost:'high', duty:185}];
+      const settings = [{boost:item.boost, duty:140}, {boost:'auto', duty:180}, {boost:'high', duty:220}];
       const rounds = item.sweep ? settings : settings.slice(0,1);
       const stamp = new Date().toISOString().replace(/[:.]/g,'-');
       const safeShelf = item.shelfId.replace(/[^a-zA-Z0-9_-]/g,'_');
@@ -3163,7 +3163,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const capture = async () => {
           if (!(await bridgePost('/validation_renew', {shelf_id:shelfId, token})).renewed) throw new Error('Validation lease expired');
           // Fixed lighting/processing for both confirmation samples.
-          const response = await fetch(`${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(comp.ip_address)}&ip2=${encodeURIComponent(comp.secondary_ip_address)}&shelf_id=${encodeURIComponent(shelfId)}&boost=off&duty=90&_t=${Date.now()}`, {cache:'no-store'});
+          const response = await fetch(`${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(comp.ip_address)}&ip2=${encodeURIComponent(comp.secondary_ip_address)}&shelf_id=${encodeURIComponent(shelfId)}&boost=off&duty=140&_t=${Date.now()}`, {cache:'no-store'});
           if (!response.ok) throw new Error('Periodic dual-camera capture failed');
           const preview = await response.json();
           if (!preview.image_back || !preview.image_front || !preview.image) throw new Error('Missing dual-angle evidence');
@@ -3295,9 +3295,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
         const uiBoost = document.getElementById('visionBoostSelect')?.value || 'auto';
         const attempts = [
-          { delay: 0, boost: uiBoost, duty: 90 },
-          { delay: 2000, boost: 'auto', duty: 135 },
-          { delay: 2000, boost: 'high', duty: 185 }
+          { delay: 0, boost: uiBoost, duty: 140 },
+          { delay: 2000, boost: 'auto', duty: 180 },
+          { delay: 2000, boost: 'high', duty: 220 }
         ];
         let bestValidAttempt = null;
         let lastObservation = null;

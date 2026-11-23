@@ -29,7 +29,7 @@ def diagnostic_preview(query,manager,coordinator,native):
         if not all(ipaddress.ip_address(ip).is_private for ip in ips):raise ValueError('Private camera addresses required')
         with coordinator.global_lock:
             if coordinator.busy():return 409,{'error':'Validation owns cameras; retry after validation'}
-            _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=0,duty=0,boost_mode='off')
+            _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=140,boost_mode='off')
         if not back or not front:return 502,{'error':'Both camera frames required'}
         return 200,dict(status='success',run_mode='diagnostic',authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
     except (ValueError,OSError):return 502,{'error':'Diagnostic capture failed; verify camera addresses/connectivity'}
