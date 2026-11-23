@@ -78,6 +78,7 @@ from src.periodic_recheck import (RecheckCoordinator, StaggeredPollSchedule, ins
 from src.bridge_runtime import InstanceLock, configure_logs, event
 from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
+from src.preview_panel import diagnostic_preview
 from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence
 RUNTIME_INVENTORY = None
 from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
@@ -1215,6 +1216,15 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
+        if path == '/diagnostic_preview':
+            code,payload=diagnostic_preview(urllib.parse.parse_qs(parsed.query),esp32_ref_manager,RECHECKS,AUTONOMOUS)
+            self._send_json(code,payload)
+            return
+        if path == '/native_observation':
+            shelf=urllib.parse.parse_qs(parsed.query).get('shelf_id',[''])[0]
+            row=AUTONOMOUS.panel_observations.get(shelf) if AUTONOMOUS else None
+            self._send_json(200,{'observation':row,'authorizes_write':False})
+            return
         if path == '/local_operations':
             failures=READINESS.failures
             self._send_json(200,dict(run_id=READINESS.run_id,intents=LOCAL_INTENTS.snapshot() if LOCAL_INTENTS else [],
@@ -2702,6 +2712,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                     except OSError:event(READINESS.run_id,'local_metadata_failure',code='VALIDATION_REJECTED')
                     esp32_ref_manager.baseline_freeze_until.clear()
                     if AUTONOMOUS is not None:
+                        AUTONOMOUS.panel_observations.clear()
                         for camera in AUTONOMOUS.cameras:camera['tracker'].reset()
                 mqtt_bridge.on_connection_lost=lambda:invalidate('MQTT unavailable')
                 AUTONOMOUS=AutonomousProcessor(READINESS.run_id,

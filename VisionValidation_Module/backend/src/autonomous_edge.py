@@ -15,6 +15,7 @@ import uuid
 
 from .edge_shadow import EdgeShadow
 from .runtime_inventory import RuntimeInventory, runtime_enabled
+from .preview_panel import NativeObservations
 from .validation_diagnostics import failure_code
 
 
@@ -232,6 +233,7 @@ class AutonomousProcessor:
         self.invalidate=invalidate;self.log=log;self.stop=threading.Event();self.threads=[]
         self.state='Starting';self.last_frames={};self.health={};self.retry_at={};self.metrics={}
         self.runtime: RuntimeInventory | None=None
+        self.panel_observations=NativeObservations()
 
     def start(self):
         # Warm up and verify parity was produced by these exact loaded model weights.
@@ -315,6 +317,7 @@ class AutonomousProcessor:
                     preview=self.request('/esp32_preview?'+query,None)
                     result=self.native.infer(dict(kind='pair',image_back=preview['image_back'],image_front=preview['image_front'],boost=boost))
                     self.metrics['pair']=result['metrics'];candidate=result['candidate']
+                    self.panel_observations.put(sid,preview,candidate)
                     if runtime is not None:runtime.observe(sid,candidate,preview['capture'])
                     valid_range=runtime is not None and candidate.get('hold')=='UNKNOWN_B1'
                     if candidate.get('hold') and not valid_range:

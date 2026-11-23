@@ -18,7 +18,7 @@ const vm=require('node:vm');
     await ctx.worker.release(item,'lease');
     assert.equal(requests.at(-1).payload.trigger_id,'selected');
     // Exercise the real final payload, with confirmation substituted for camera I/O.
-    Object.assign(ctx,{compartmentsData:[{shelf_id:'s',ip_address:'back',secondary_ip_address:'front'}],
+    Object.assign(ctx,{window:{inventoryMode:'legacy-test-fixture'},bridgeStatus:{authoritative_processor:'native'},compartmentsData:[{shelf_id:'s',ip_address:'back',secondary_ip_address:'front'}],
       validationFailureCode:()=>"VALIDATION_REJECTED",readinessRun:"test-run",pollShelfReadiness(){},showToast(){},document:{getElementById:()=>null},tmLivePredictionBanner:{style:{}},
       livePreviewImg:null,previewPlaceholder:null,backPreviewImg:null,frontPreviewImg:null,backPlaceholder:null,frontPlaceholder:null,
       dualCamEvidence:()=>({}),prependLatestAction(){},refreshAllData(){},getBridgeUrl:()=>'',
