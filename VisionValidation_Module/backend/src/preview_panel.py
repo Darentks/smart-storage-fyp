@@ -40,9 +40,13 @@ def diagnostic_preview(query,manager,coordinator,native):
         ips=[str(ipaddress.IPv4Address(query.get(key,[''])[0])) for key in ('ip','ip2')]
         if ips[0]==ips[1]:raise ValueError('Two different camera IPs required')
         if not all(ipaddress.ip_address(ip).is_private for ip in ips):raise ValueError('Private camera addresses required')
-        with coordinator.global_lock:
+        if not coordinator.global_lock.acquire(blocking=False):
+            return 409,{'error':'Another capture is in progress; retry in a few seconds'}
+        try:
             if coordinator.busy(shelf):return 409,{'error':'This shelf is being scanned right now; try again in a few seconds'}
             _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=LIVE_CAPTURE_DUTY,boost_mode=LIVE_CAPTURE_BOOST)
+        finally:
+            coordinator.global_lock.release()
         if not back or not front:return 502,{'error':'Both camera frames required'}
         return 200,dict(status='success',run_mode='diagnostic',authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
     except (ValueError,OSError):return 502,{'error':'Diagnostic capture failed; verify camera addresses/connectivity'}

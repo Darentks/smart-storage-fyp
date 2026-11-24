@@ -2711,13 +2711,16 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       batchButton.title=!online?'Bridge unavailable':native?'Native owns cameras; batch capture is unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':'Read-only capture; manually verify both labels first';
       if(!native && !diagnosticRunning){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
     }
+    function renderPanelFrames(row){
+      for(const [img,placeholder,url] of [[backPreviewImg,backPlaceholder,row.image_back],[frontPreviewImg,frontPlaceholder,row.image_front],[livePreviewImg,previewPlaceholder,row.image]]){
+        if(url){img.src=url;img.style.display='block';placeholder.style.display='none';}
+      }
+    }
     function renderPanelObservation(row,native=false) {
       tmComparisonFrames=!native && row.image_back && row.image_front?{back:row.image_back,front:row.image_front,shelf:refShelfSelect.value}:null;
       document.getElementById('tmPreprocessingComparison').style.display='none';
       updateTMComparisonButton();
-      for(const [img,placeholder,url] of [[backPreviewImg,backPlaceholder,row.image_back],[frontPreviewImg,frontPlaceholder,row.image_front],[livePreviewImg,previewPlaceholder,row.image]]) {
-        if(url){img.src=url;img.style.display='block';placeholder.style.display='none';}
-      }
+      renderPanelFrames(row);
       const candidate=row.candidate || {};
       backPredBadge.style.display=frontPredBadge.style.display='block';
       backPredBadge.textContent=`${candidate.back_class || candidate.backClass || 'Unknown'} (${candidate.back_confidence ?? candidate.backConfidence ?? '?'}%)`;
@@ -2739,12 +2742,25 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',signal:AbortSignal.timeout(10000)});
         const row=await response.json();if(!response.ok)throw Error(row.error || 'Diagnostic capture failed');
         if(owned!==previewGeneration || !bridgeStatus.online || refShelfSelect.value!==shelf)return;
+        renderPanelFrames(row);
+        backPredBadge.style.display=frontPredBadge.style.display='none';
+        document.getElementById('previewModeBadge').textContent='Diagnostic images (No Inventory Write) — classifying';
+        previewOverlayText.textContent='Pictures received; classifying...';
+        tmLivePredictionBanner.textContent='Fresh pictures received. Running browser Teachable Machine classification...';
+        tmLivePredictionBanner.style.display='block';
         const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
         if(owned!==previewGeneration || !bridgeStatus.online)return;
         const candidate=await predictDualCamerasWithTM(images[0],images[1],document.getElementById('visionBoostSelect')?.value || 'off');
         console.info('[Diagnostic] Skipping inventory write');
         if(owned===previewGeneration && bridgeStatus.online && refShelfSelect.value===shelf){lastManualPreviewAt=Date.now();renderPanelObservation({...row,candidate},false);}
-      } catch(error){if(owned===previewGeneration){tmLivePredictionBanner.style.display='block';tmLivePredictionBanner.textContent='Diagnostic failed: '+error.message;}}
+      } catch(error){if(owned===previewGeneration){
+        lastManualPreviewAt=0;
+        previewOverlayText.textContent='Diagnostic preview did not complete';
+        tmLivePredictionBanner.style.display='block';
+        tmLivePredictionBanner.textContent=String(error.message).includes('Native service owns cameras')?
+          'The running bridge has the older preview restriction. Restart the updated bridge, then retry. Native processing remains responsible for inventory.':
+          'Diagnostic failed: '+error.message;
+      }}
       finally{diagnosticRunning=false;panelState(bridgeStatus,bridgeStatus.online);}
     }
     // Uncompressed ZIP: one download avoids browser multiple-download blocking.
