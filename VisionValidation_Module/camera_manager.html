@@ -789,17 +789,21 @@ class ThreeCameraDashboard {
   reset(c) { c.epoch++; c.frame = null; c.results = null; c.processed = 0; c.detectionStatus = 'Idle'; c.detectionAt = null; c.trackers = Object.fromEntries(Object.keys(c.rois).map(id => [id, this.resetTracker()])); }
   healthy(c, now = performance.now()) { return c.received > 0 && now - c.received < 1500 && c.processed > 0 && now - c.processed < 1500; }
   async post(path, body, signal) {
+    if(this.diagnosticOnly)throw Error('Diagnostic camera test cannot send POST requests');
     const response = await fetch(this.bridge() + path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal});
     const data = await response.json(); if (!response.ok) throw Error(data.error || response.status); return data;
   }
   stop() {
+    if(this.diagnosticOnly)this.resetDiagnostic?.();
+    this.diagnosticOnly=false;
     this.running = false; this.generation++; this.startupGeneration++; clearTimeout(this.timer); clearTimeout(this.telemetryTimer);
     this.controller?.abort(); for (const c of this.contexts.values()) { clearTimeout(c.timer); this.reset(c); }
     this.status('Stopped');
   }
-  async start(cameras, defaults) {
+  async start(cameras, defaults, {diagnosticOnly=false}={}) {
     this.stop(); const generation = this.generation; this.controller = new AbortController();
-    await this.post('/cctv_invalidate_votes', {}, this.controller.signal);
+    this.diagnosticOnly=diagnosticOnly;
+    if(!diagnosticOnly)await this.post('/cctv_invalidate_votes', {}, this.controller.signal);
     if (generation !== this.generation) return;
     const host = document.getElementById('threeCameraCards'); host.replaceChildren(); this.contexts.clear(); host.style.display = this.background ? 'none' : 'grid';
     for (const [index,id] of ['CCTV_01','CCTV_02','CCTV_03'].entries()) {
@@ -822,13 +826,14 @@ class ThreeCameraDashboard {
     }
     this.running=true;this.cursor=0;
     for (const c of this.contexts.values()) this.poll(c);
-    this.schedule(); this.telemetry();
+    this.schedule(); if(!this.diagnosticOnly)this.telemetry();
   }
   async invalidate(c) {
     if (!this.running || (!c.received && !c.processed && !c.frame)) return;
     c.received=0; this.reset(c);
     // Clear all local dwell evidence as well as bridge votes after a feed gap.
     for (const other of this.contexts.values()) if(other!==c) this.reset(other);
+    if(this.diagnosticOnly){this.resetDiagnostic?.();return;}
     try { await this.post('/cctv_invalidate_votes',{},this.controller.signal); } catch (_) {}
   }
   async poll(c) {
@@ -878,6 +883,7 @@ class ThreeCameraDashboard {
     this.votes=this.votes.catch(()=>{}).then(async()=>{
       if(!Number.isFinite(detectedAt) || Date.now()/1000-detectedAt > 4 || detectedAt-Date.now()/1000 > 1 || performance.now()-queuedAt > 4000)return;
       if(!this.valid(c,epoch) || ![...this.contexts.values()].every(c=>this.healthy(c)))return;
+      if(this.diagnosticOnly){c.lastVote=`${body.shelf_id} ${body.expected_action || 'presence'} (TEST)`;this.diagnosticVote(body);return;}
       const result=await this.post('/esp32_trigger',body,this.controller.signal);
       if(!this.valid(c,epoch))return;
       c.lastVote=`${body.shelf_id} ${body.expected_action || 'presence'}`;this.event(`${c.id} vote: ${c.lastVote}`);
@@ -1475,6 +1481,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <button type="button" class="btn-action" onclick="showLocalOperations()">Refresh latest activity</button>
           <div id="confirmedActionBanner" role="status" aria-live="polite">No confirmed action received.</div>
           <div id="localOperationsStatus" style="max-height:420px;overflow:auto;"></div>
+          <div id="cctvDiagnosticActivity" style="max-height:280px;overflow:auto;" aria-live="polite">No preview gestures observed in this page session yet.</div>
           </div>
           <div class="cctv-tool-group">
             <h3>Camera calibration</h3>
@@ -1486,6 +1493,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
           <details class="cctv-tool-group">
             <summary>Advanced testing</summary>
+            <h4>Live three-camera agreement test (read-only)</h4>
+            <p>Observe all three feeds together. Tests shelf/action agreement from the two grid cameras plus side presence within four seconds. No ESP32 captures or inventory changes.</p>
+            <div class="cctv-tool-grid">
+              <button type="button" class="btn-action" onclick="startDiagnosticConsensus()"><span>Start three-camera test</span><small>Requires saved, source-bound regions for every camera. Native service must be inactive.</small></button>
+              <button type="button" class="btn-action" onclick="stopDiagnosticConsensus()"><span>Stop three-camera test</span><small>Stop these browser test feeds only.</small></button>
+            </div>
+            <div id="diagnosticConsensusStatus" role="status" aria-live="polite">Three-camera test has not started.</div>
             <div class="cctv-tool-grid"><button type="button" class="btn-action" onclick="exportEdgePoseFixture()"><span>Export pose test from photo</span><small>Choose a saved CCTV photo and download browser model output for a separate native comparison.</small></button></div>
             <p>This export does not start live tracking, confirm an action or change inventory.</p>
           </details>
@@ -5116,6 +5130,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         dwellThreshold:1.2,dropGracePeriod:.3,trajectoryHistory:[],triggerFired:false,
         lastConfirmedAction:'BORROW',lastConfirmedConf:0,cooldownUntil:0}),
       consume: result => consumeCctvTrigger({...result,source:'CCTV'}),
+      diagnosticVote:body=>recordDiagnosticConsensusVote(body),
+      resetDiagnostic:()=>{diagnosticConsensusVotes={};diagnosticLastMatch=null;},
       event: message => { const el=document.getElementById('threeCameraEvents'); el.textContent=(message+'\n'+el.textContent).slice(0,12000); },
       status: message => { document.getElementById('threeCameraStatus').textContent=message; }
     });
@@ -5145,6 +5161,90 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       } catch(error) { if (!cancelled()) { threeCameraDashboard.stop(); showToast(error.message,'error'); } }
     }
 
+    let diagnosticConsensusVotes={},diagnosticLastMatch=null,diagnosticConsensusTimer=null,diagnosticConsensusStartup=0;
+    function roiPolygonsOverlap(a,b){
+      for(const polygon of [a,b])for(let i=0;i<polygon.length;i++){
+        const p=polygon[i],q=polygon[(i+1)%polygon.length],axis=[p[1]-q[1],q[0]-p[0]];
+        const project=points=>points.map(v=>v[0]*axis[0]+v[1]*axis[1]);
+        const pa=project(a),pb=project(b);
+        if(Math.max(...pa)<=Math.min(...pb)+1e-9 || Math.max(...pb)<=Math.min(...pa)+1e-9)return false;
+      }
+      return true;
+    }
+    function evaluateDiagnosticConsensus(votes,now){
+      const fresh=Object.fromEntries(Object.entries(votes).filter(([id,v])=>['CCTV_01','CCTV_02','CCTV_03'].includes(id) && v.camera_id===id && v.camera_role===(id==='CCTV_03'?'SIDE_PRESENCE':'GRID_6_ROI') && Number.isFinite(v.dwell_duration_seconds) && v.dwell_duration_seconds>=1.2 && Number.isFinite(v.oks_confidence) && v.oks_confidence>=0 && v.oks_confidence<=1 && Number.isFinite(v.detected_at) && now-v.detected_at<=4 && v.detected_at-now<=1));
+      const a=fresh.CCTV_01,b=fresh.CCTV_02,side=fresh.CCTV_03;
+      const matched=!!(a && b && side && /^SHELF_R1_C[1-6]$/.test(a.shelf_id) && a.shelf_id===b.shelf_id && ['BORROW','RETURN'].includes(a.expected_action) && a.expected_action===b.expected_action && side.shelf_id==='ANY_SHELF');
+      return {fresh,matched};
+    }
+    function recordDiagnosticConsensusVote(body){
+      if(!threeCameraDashboard.running || !threeCameraDashboard.diagnosticOnly)return;
+      if(!Number.isFinite(body.dwell_duration_seconds) || body.dwell_duration_seconds<1.2)return;
+      diagnosticConsensusVotes[body.camera_id]={...body};
+      renderDiagnosticConsensus();
+    }
+    function renderDiagnosticConsensus(){
+      const host=document.getElementById('diagnosticConsensusStatus');host.replaceChildren();
+      const add=(tag,text)=>{const node=document.createElement(tag);node.textContent=text;host.appendChild(node);};
+      if(!threeCameraDashboard.running || !threeCameraDashboard.diagnosticOnly){add('p','Three-camera test stopped. No live test agreement is being evaluated.');return;}
+      const now=Date.now()/1000,{fresh,matched}=evaluateDiagnosticConsensus(diagnosticConsensusVotes,now);
+      const healthy=[...threeCameraDashboard.contexts.values()].length===3 && [...threeCameraDashboard.contexts.values()].every(c=>threeCameraDashboard.healthy(c));
+      if(!healthy){diagnosticConsensusVotes={};diagnosticLastMatch=null;add('strong','Waiting for fresh inference from all three cameras.');}
+      else{
+        if(matched && (!diagnosticLastMatch || now-diagnosticLastMatch.at>=4)){
+          const view=localIntentPresentation(fresh.CCTV_01);
+          diagnosticLastMatch={at:now,location:view.location,action:view.action};
+          showToast(`TEST ONLY: All 3 matched · ${view.location} · ${view.action}`,'success');
+          diagnosticConsensusVotes={};
+        }
+        add('strong',matched?'TEST ONLY: All 3 cameras matched':`Waiting for agreement: ${Object.keys(fresh).length}/3 fresh observations`);
+        if(fresh.CCTV_01 && fresh.CCTV_02 && (fresh.CCTV_01.shelf_id!==fresh.CCTV_02.shelf_id || fresh.CCTV_01.expected_action!==fresh.CCTV_02.expected_action))add('p','Grid cameras disagree on compartment or action. Check calibration and the observed movement.');
+      }
+      for(const id of ['CCTV_01','CCTV_02','CCTV_03']){
+        const c=threeCameraDashboard.contexts.get(id),vote=healthy?fresh[id]:null;
+        add('p',`${id}: ${c && threeCameraDashboard.healthy(c)?c.detectionStatus:'Waiting for fresh detection'} · ${vote?`${vote.shelf_id} / ${vote.expected_action || 'presence'} (${Math.max(0,now-vote.detected_at).toFixed(1)}s ago)`:'No fresh vote (expires after 4s)'}`);
+      }
+      if(diagnosticLastMatch)add('p',`Last TEST match: ${diagnosticLastMatch.location} · ${diagnosticLastMatch.action} · ALL 3 MATCHED · ${new Date(diagnosticLastMatch.at*1000).toLocaleTimeString()}`);
+      add('p','Diagnostic agreement only. No authoritative intent, ESP32 capture or inventory update was created.');
+    }
+    function stopDiagnosticConsensus(){
+      diagnosticConsensusStartup++;
+      clearInterval(diagnosticConsensusTimer);diagnosticConsensusTimer=null;
+      if(threeCameraDashboard.diagnosticOnly)threeCameraDashboard.stop();
+      renderDiagnosticConsensus();
+    }
+    async function startDiagnosticConsensus(){
+      const host=document.getElementById('diagnosticConsensusStatus');
+      if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native'){host.textContent='Connect the bridge with native service inactive before starting this read-only test.';return;}
+      stopDiagnosticConsensus();stopMediaPipeTracker();
+      const startup=diagnosticConsensusStartup;
+      try{
+        host.textContent='Loading calibrated camera test...';
+        if(!cctvConfigLoaded)await loadCctvCameras();
+        if(startup!==diagnosticConsensusStartup)return;
+        const sources=new Set();
+        for(const id of ['CCTV_01','CCTV_02','CCTV_03']){
+          const cam=cctvCamerasList.find(c=>c.cctv_id===id),role=id==='CCTV_03'?'SIDE_PRESENCE':'GRID_6_ROI';
+          if(!cam || cam.is_active===false || cameraRole(cam)!==role)throw Error(`Configure ${id} with role ${role}`);
+          const source=validateCctvBinding(id,cam.rtsp_url,cam.ip_address);
+          if(sources.has(source))throw Error('Each camera must have a different source');sources.add(source);
+          const key=`smart_storage_cctv_rois_${id}`,binding=JSON.parse(localStorage.getItem(key+'_binding') || 'null'),rois=JSON.parse(localStorage.getItem(key) || 'null');
+          const ids=id==='CCTV_03'?['RACK_ENTRY_ZONE']:ALL_SHELF_IDS;
+          if(!binding || binding.source!==source || binding.camera_role!==role || !rois || ids.some(s=>!validQuad(roiVertices(rois[s])) || roiVertices(rois[s]).some(p=>p.some(v=>v<0 || v>1))))throw Error(`Calibrate and save current regions for ${id} first`);
+          for(let i=0;i<ids.length;i++)for(let j=i+1;j<ids.length;j++)if(roiPolygonsOverlap(roiVertices(rois[ids[i]]),roiVertices(rois[ids[j]])))throw Error(`${id}: overlapping regions`);
+        }
+        await getYoloPoseSession();
+        if(startup!==diagnosticConsensusStartup)return;
+        if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native')throw Error('Processor changed; test cancelled');
+        threeCameraDashboard.setBackground(false);
+        await threeCameraDashboard.start(cctvCamerasList,DEFAULT_COMPARTMENT_ROIS,{diagnosticOnly:true});
+        document.getElementById('threeCameraStatus').hidden=false;
+        renderDiagnosticConsensus();diagnosticConsensusTimer=setInterval(()=>{
+          if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native'){stopDiagnosticConsensus();return;}
+          renderDiagnosticConsensus();
+        },500);
+      }catch(error){if(startup!==diagnosticConsensusStartup)return;stopDiagnosticConsensus();host.textContent='Test could not start: '+error.message;}
+    }
     let roiDraft = [];
     let roiPointerEdit = null;
     function resetRoiEditor() { roiDraft = []; roiPointerEdit = null; isDraggingRoi = false; calibDragStart = null; calibDragCurrent = null; }
@@ -5630,6 +5730,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     async function syncCctvAlignmentConfig() {
+      if(window.inventoryMode==='runtime')return; // Native owns live configuration; read-only tests use local calibration.
       const response = await fetch(`${getBridgeUrl()}/cctv_alignment_config`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cameras: cctvCamerasList.map(cam => ({
@@ -5958,6 +6059,23 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
+    const diagnosticWristGestures=[];
+    function recordDiagnosticWristGesture(shelfId,action,dwellDuration,cameraId){
+      diagnosticWristGestures.unshift({shelf_id:shelfId,action,timestamp:Date.now()/1000,camera_id:cameraId,duration:dwellDuration});
+      diagnosticWristGestures.splice(5);
+      const host=document.getElementById('cctvDiagnosticActivity');if(!host)return;
+      host.replaceChildren();
+      const add=(parent,tag,text)=>{const node=document.createElement(tag);node.textContent=text;parent.appendChild(node);return node;};
+      add(host,'h4','Latest preview gestures — not confirmed actions');
+      add(host,'p','Single-camera browser observations only. No vote sent, ESP32 capture requested or inventory changed. Authoritative picking intents require the approved native service.');
+      for(const gesture of diagnosticWristGestures){
+        const view=localIntentPresentation(gesture),card=add(host,'article','');
+        card.style.cssText='padding:10px;margin:6px 0;border:1px dashed var(--border);border-radius:8px;';
+        add(card,'strong',`Wrist/presence dwell observed · ${gesture.camera_id}`);
+        add(card,'div',view.location);
+        add(card,'div',`${view.time} · ${Number(gesture.duration).toFixed(1)}s · ${gesture.shelf_id==='ANY_SHELF'?'Presence only; compartment/action not identified':view.action+' candidate (unverified)'}`);
+      }
+    }
     async function dispatchDwellTrigger(shelfId, action, dwellDuration, conf) {
       const triggerEl = document.getElementById('cctvLastTriggerText');
       const cameraId = activeCctvId;
@@ -5975,6 +6093,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           if(triggerEl)triggerEl.textContent=result.consensus_met ? `${result.shelf_id}: ALL 3 AGREE (TEST)` : `${shelfId}: Test vote (${result.confirmed_count || 0}/3)`;
           showCctvConsensusResult(result);
           return result;
+        }
+        if(window.inventoryMode==='runtime'){
+          recordDiagnosticWristGesture(shelfId,action,dwellDuration,cameraId);
+          if(triggerEl)triggerEl.textContent=`${shelfId}: Preview gesture observed — no vote sent (native service required)`;
+          return {status:'diagnostic_only',consensus_met:false,authorizes_write:false};
         }
         await syncCctvAlignmentConfig();
         const response = await fetch(`${getBridgeUrl()}/esp32_trigger`, {
@@ -5999,7 +6122,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         }
         return result;
       } catch (error) {
-        if (triggerEl) triggerEl.textContent = `${shelfId}: Vote failed`;
+        if (triggerEl) triggerEl.textContent = `${shelfId}: Vote rejected — ${error.message}`;
         showToast('CCTV consensus vote failed: ' + error.message, 'error');
         return null;
       }
