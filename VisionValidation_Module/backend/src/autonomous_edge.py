@@ -31,7 +31,7 @@ UNACCEPTED_DEV_FLAG='SMART_STORAGE_SERVICE_UNACCEPTED_DEV'
 
 
 def unaccepted_dev_enabled():
-    """Owner-enabled local development run without field acceptance; never implies acceptance."""
+    """Host-configured shared development run; never implies field acceptance."""
     return os.getenv(UNACCEPTED_DEV_FLAG,'').strip()=='1'
 
 
@@ -164,7 +164,7 @@ def load_service_config(config_path, manifest_path, acceptance_path, code_paths,
     if len(calibration.get('cameras',[]))!=3:raise ValueError('Exactly three camera calibrations required')
     if config.get('version')!=1 or calibration.get('version')!=1:raise ValueError('SERVICE_CUTOVER_BLOCKED: acceptance missing, expired or mismatched')
     if acceptance_path is None:
-        # Explicit owner opt-in only: skips field acceptance/parity, keeps every calibration/source check.
+        # Explicit deployment opt-in: skips field acceptance/parity, keeps calibration/source checks.
         if not unaccepted_dev_enabled():raise ValueError('SERVICE_CUTOVER_BLOCKED: acceptance missing, expired or mismatched')
         reports=[]
     else:
@@ -252,7 +252,7 @@ class AutonomousProcessor:
         self.request=request;self.capture=capture;self.shelves=shelves;self.pending=pending
         self.invalidate=invalidate;self.log=log;self.stop=threading.Event();self.threads=[]
         self.state='Starting';self.last_frames={};self.health={};self.retry_at={};self.metrics={}
-        self.acceptance='ACCEPTED'  # Set to UNACCEPTED_DEVELOPMENT by the bridge for owner dev runs.
+        self.acceptance='ACCEPTED'  # Set to UNACCEPTED_DEVELOPMENT for shared development runs.
         self.runtime: RuntimeInventory | None=None
         self.panel_observations=NativeObservations()
 

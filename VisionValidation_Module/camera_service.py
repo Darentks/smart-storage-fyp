@@ -82,6 +82,7 @@ from src.preview_panel import diagnostic_preview
 from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence
 RUNTIME_INVENTORY = None
 from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
+from src.bridge_access import BridgeAccessError, require_application_user
 LOCAL_INTENTS = None
 LOCAL_ROIS = None
 EDGE_SHADOW = None
@@ -1164,7 +1165,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def _install_local_rois(self, body):
         """Install dashboard calibrations through the local ROI CLI, then re-verify the native processor."""
         if self.client_address[0] not in ('127.0.0.1','::1','::ffff:127.0.0.1'):
-            self._send_json(403,{'error':'ROI install is only accepted from the bridge host'});return
+            try:
+                require_application_user(getattr(self,'headers',{}).get('Authorization'))
+            except BridgeAccessError as exc:
+                self._send_json(exc.status,{'error':str(exc)});return
         roi_store=LOCAL_ROIS
         if roi_store is None:
             self._send_json(409,{'error':'Local ROI store not initialized'});return

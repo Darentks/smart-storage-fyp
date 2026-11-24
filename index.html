@@ -1471,7 +1471,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div class="cctv-tool-status">
             <h3>Processor &amp; live activity</h3>
             <div id="edgeProcessorStatus" role="status">Checking local processor...</div>
-            <p>Native processing starts with the local bridge after setup and acceptance. Dashboard controls do not start or stop that service.</p>
+            <p>All application users share the running bridge processor. Signed-in users can configure cameras and install calibration without an owner/admin role. On other computers, use this bridge host's shared URL instead of localhost. Dashboard controls do not start or stop the host service.</p>
             <button type="button" class="btn-action" onclick="showLocalOperations()">Refresh latest activity</button>
           <div id="confirmedActionBanner" role="status" aria-live="polite">No confirmed action received.</div>
           <div id="localOperationsStatus" style="max-height:420px;overflow:auto;"></div>
@@ -2135,7 +2135,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       installingEdgeCalibrations=true;
       try {
         const payload=edgeCalibrationPayload();
-        const response=await fetch(`${getBridgeUrl()}/local_rois`,{method:'POST',headers:{'Content-Type':'application/json'},
+        const headers={'Content-Type':'application/json'};
+        const token=window.smartStorageDeviceAdminSession?.access_token;
+        if(token)headers.Authorization=`Bearer ${token}`;
+        const response=await fetch(`${getBridgeUrl()}/local_rois`,{method:'POST',headers,
           body:JSON.stringify(payload),cache:'no-store',signal:AbortSignal.timeout(45000)});
         const result=await response.json().catch(()=>({}));
         if(!response.ok)throw Error(result.output?`${result.error}: ${result.output.split('\n').filter(Boolean).pop()}`:(result.error||`Bridge rejected install (HTTP ${response.status})`));
