@@ -86,6 +86,7 @@ LOCAL_INTENTS = None
 LOCAL_ROIS = None
 EDGE_SHADOW = None
 AUTONOMOUS = None
+NATIVE_CALIBRATION_RELOAD = None  # Set in service mode: re-validates installed ROIs and schedules fresh baselines.
 PROCESSOR_AUTHORITY = 'browser'
 _PROCESSOR_CAPABILITY = object()
 from src.validation_diagnostics import failure_code
@@ -1157,6 +1158,38 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _install_local_rois(self, body):
+        """Install dashboard calibrations through the local ROI CLI, then re-verify the native processor."""
+        if self.client_address[0] not in ('127.0.0.1','::1','::ffff:127.0.0.1'):
+            self._send_json(403,{'error':'ROI install is only accepted from the bridge host'});return
+        roi_store=LOCAL_ROIS
+        if roi_store is None:
+            self._send_json(409,{'error':'Local ROI store not initialized'});return
+        if not isinstance(body,dict) or not body.get('cameras'):
+            self._send_json(400,{'error':'Expected calibration JSON with three cameras'});return
+        script=Path(__file__).resolve().parent.parent/'deploy'/'local_roi.py'
+        descriptor,temp=tempfile.mkstemp(prefix='roi-upload-',suffix='.json')
+        try:
+            with os.fdopen(descriptor,'w',encoding='utf8') as stream:json.dump(body,stream)
+            # Always the bridge's own store directory, so the CLI and service read the same file.
+            result=subprocess.run([sys.executable,'-B',str(script),'import','--file',temp,'--directory',str(roi_store.path.parent)],
+                capture_output=True,text=True,timeout=30)
+        finally:
+            if os.path.exists(temp):os.unlink(temp)
+        output=(result.stdout+result.stderr).strip()[-2000:]
+        if result.returncode!=0:
+            self._send_json(422,{'status':'failed','error':'ROI import rejected','output':output});return
+        reload=NATIVE_CALIBRATION_RELOAD
+        if reload is None:
+            verification={'status':'not_running','message':'No native service in this mode; browser/shadow use the installed file after restart.'}
+        else:
+            try:
+                reload()
+                verification={'status':'verifying','message':'Calibration reloaded; all shelves re-baseline after the quiet window and three paired ESP32 captures.'}
+            except Exception as exc:
+                verification={'status':'blocked','message':str(exc)[:300]+' — restart (and re-accept, if accepted mode) to use the new calibration.'}
+        self._send_json(200,{'status':'installed','output':output,'native':verification,'run_id':READINESS.run_id})
+
     def do_OPTIONS(self):
         self.send_response(204)
         self._send_cors_headers()
@@ -1624,10 +1657,14 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
+        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns processing; normal dashboard operations are monitoring-only'})
             return
         body = self._read_json_body()
+
+        if path == '/local_rois':
+            self._install_local_rois(body)
+            return
 
         if path == "/cctv_replay":
             try:
@@ -2653,7 +2690,8 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
 
 
 def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
-    global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY, LOCAL_INTENTS, LOCAL_ROIS, RUNTIME_INVENTORY, READINESS
+    global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY, LOCAL_INTENTS, LOCAL_ROIS, RUNTIME_INVENTORY, READINESS, NATIVE_CALIBRATION_RELOAD
+    NATIVE_CALIBRATION_RELOAD=None
     runtime=os.path.join(os.path.dirname(__file__),'..','.runtime')
     from src.config_loader import find_and_load_env
     find_and_load_env()  # Protected local .env supplies processor/source settings; shell values still win.
@@ -2727,6 +2765,15 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                     cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event)
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
                 if acceptance_path is None:AUTONOMOUS.acceptance='UNACCEPTED_DEVELOPMENT'
+                processor,roi_path,authority=AUTONOMOUS,LOCAL_ROIS.path,RUNTIME_INVENTORY
+                def reload_native_calibration():
+                    # Same gate as startup: an accepted record pins the calibration hash, so a changed file is rejected.
+                    fresh,_=load_service_config(os.environ['SMART_STORAGE_EDGE_CONFIG'],manifest,acceptance_path,code_paths,roi_path)
+                    invalidate('Calibration changed')
+                    if authority is not None:authority.clear_baselines()
+                    processor.reload_calibration(fresh)
+                    event(READINESS.run_id,'native_calibration_reloaded')
+                NATIVE_CALIBRATION_RELOAD=reload_native_calibration
                 configure_cctv_alignment([{'cctv_id':c['id'],'camera_role':c['role'],'is_active':True} for c in cameras])
                 PROCESSOR_AUTHORITY='service'
             EDGE_SHADOW = EdgeShadow(Path(__file__).resolve().parent.parent, READINESS.run_id,

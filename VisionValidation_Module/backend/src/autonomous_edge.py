@@ -273,6 +273,13 @@ class AutonomousProcessor:
             metrics=dict(self.metrics),restart_count=self.native.failures,authorizes_write=False,
             acceptance=self.acceptance,release_blockers=[] if self.acceptance=='ACCEPTED' else ['REAL_CAMERA_ACCEPTANCE'])
 
+    def reload_calibration(self,cameras):
+        """Swap in newly validated camera ROIs; caller has already invalidated runtime evidence."""
+        for camera in cameras:camera['tracker'].reset()
+        self.cameras=cameras;self.last_frames.clear();self.health.clear()
+        self.panel_observations.clear()
+        self.retry_at.clear()  # Scheduler re-verifies every Offline shelf on its next pass.
+
     def cameras_ready(self):
         return all(self.health.get(c['id'],{}).get('state')=='Online' and
             0<=time.time()-self.health[c['id']]['at']<1.5 for c in self.cameras)

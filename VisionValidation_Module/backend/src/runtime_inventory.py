@@ -51,6 +51,12 @@ class RuntimeInventory:
                     # Retain last accepted baseline in RAM as diagnostic history only;
                     # state/ready_at prevent it from authorizing further actions.
 
+    def clear_baselines(self):
+        """Drop RAM baselines/observations after calibration change; each shelf must rebaseline fresh."""
+        with self.guard:
+            for row in self.shelves.values():
+                with row['lock']:row.update(baseline=None,observation=None)
+
     def hold(self,shelf,event_id=None):
         if event_id is not None and (not isinstance(event_id,str) or not event_id):event_id=None
         with self.guard:

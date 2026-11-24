@@ -1485,9 +1485,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
           <div class="cctv-tool-group">
             <h3>Camera calibration</h3>
-            <p>Calibrate and save each camera's regions first. Export prepares a file for the bridge; loading reads calibrations already installed there.</p>
+            <p>Calibrate and save each camera's regions first. Export prepares a file for the bridge; Install uploads it directly; loading reads calibrations already installed there.</p>
             <div class="cctv-tool-grid">
               <button type="button" class="btn-action" onclick="exportEdgeCalibrations()"><span>Export calibration file</span><small>Download saved browser regions for all three cameras.</small></button>
+              <button type="button" class="btn-action" onclick="installEdgeCalibrations()"><span>Install to Bridge</span><small>Upload saved regions to the bridge and re-verify every shelf.</small></button>
               <button type="button" class="btn-action" onclick="importLocalRois()"><span>Load bridge calibrations</span><small>Copy installed bridge regions into this browser. This does not upload a file.</small></button>
             </div>
           </div>
@@ -2118,21 +2119,41 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     function exportEdgeCalibrations() {
       try {
-        const cameras=['CCTV_01','CCTV_02','CCTV_03'].map((id,index)=>{
-          const config=cctvCamerasList.find(x=>x.cctv_id===id),key=`smart_storage_cctv_rois_${id}`;
-          if(!config||config.is_active===false)throw Error(`Configure and enable ${id} before exporting`);
-          const binding=JSON.parse(localStorage.getItem(key+'_binding')||'null');
-          const rois=JSON.parse(localStorage.getItem(key)||'null');
-          const role=index===2?'SIDE_PRESENCE':'GRID_6_ROI';
-          if(cameraRole(config)!==role||!binding||binding.camera_role!==role||binding.source!==cctvSourceBinding(config.rtsp_url)||!rois)
-            throw Error(`${id}: calibrate the current camera and role before exporting`);
-          const required=index===2?['RACK_ENTRY_ZONE']:ALL_SHELF_IDS;
-          if(required.some(s=>!rois[s]))throw Error(`${id}: save every required ROI before exporting`);
-          return {cctv_id:id,camera_role:role,binding,rois};
-        });
-        edgeDownload('edge-camera-calibrations.json',{version:1,created_at:new Date().toISOString(),cameras});
+        edgeDownload('edge-camera-calibrations.json',edgeCalibrationPayload());
         showToast('Calibrations exported. Service cutover still requires parity and hardware acceptance.','success');
       }catch(error){showToast(error.message,'error');}
+    }
+    function edgeCalibrationPayload() {
+      const cameras=['CCTV_01','CCTV_02','CCTV_03'].map((id,index)=>{
+        const config=cctvCamerasList.find(x=>x.cctv_id===id),key=`smart_storage_cctv_rois_${id}`;
+        if(!config||config.is_active===false)throw Error(`Configure and enable ${id} before exporting`);
+        const binding=JSON.parse(localStorage.getItem(key+'_binding')||'null');
+        const rois=JSON.parse(localStorage.getItem(key)||'null');
+        const role=index===2?'SIDE_PRESENCE':'GRID_6_ROI';
+        if(cameraRole(config)!==role||!binding||binding.camera_role!==role||binding.source!==cctvSourceBinding(config.rtsp_url)||!rois)
+          throw Error(`${id}: calibrate the current camera and role before exporting`);
+        const required=index===2?['RACK_ENTRY_ZONE']:ALL_SHELF_IDS;
+        if(required.some(s=>!rois[s]))throw Error(`${id}: save every required ROI before exporting`);
+        return {cctv_id:id,camera_role:role,binding,rois};
+      });
+      return {version:1,created_at:new Date().toISOString(),cameras};
+    }
+    let installingEdgeCalibrations=false;
+    async function installEdgeCalibrations() {
+      if(installingEdgeCalibrations)return;
+      installingEdgeCalibrations=true;
+      try {
+        const payload=edgeCalibrationPayload();
+        const response=await fetch(`${getBridgeUrl()}/local_rois`,{method:'POST',headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(payload),cache:'no-store',signal:AbortSignal.timeout(45000)});
+        const result=await response.json().catch(()=>({}));
+        if(!response.ok)throw Error(result.output?`${result.error}: ${result.output.split('\n').filter(Boolean).pop()}`:(result.error||`Bridge rejected install (HTTP ${response.status})`));
+        const native=result.native||{};
+        if(native.status==='verifying')showToast('Calibrations installed. Keep hands clear of the rack while Panel 1 completes automatic baseline re-verification.','success');
+        else if(native.status==='blocked')showToast(`Calibrations installed, but the native processor kept its previous calibration: ${native.message}`,'error');
+        else showToast('Calibrations installed on the bridge. Restart the bridge in service mode to use them for native processing.','success');
+      }catch(error){showToast(error.name==='TimeoutError'?'Bridge did not respond to the calibration install':error.message,'error');}
+      finally{installingEdgeCalibrations=false;}
     }
     async function importLocalRois() {
       try {
