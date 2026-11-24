@@ -15,9 +15,6 @@ const SHELF_OPTIONS = [
   'SHELF_R1_C1',
   'SHELF_R1_C2',
   'SHELF_R1_C3',
-  'SHELF_R1_C4',
-  'SHELF_R1_C5',
-  'SHELF_R1_C6',
 ];
 
 const SCENARIO_LABELS = Object.fromEntries(Array.from({ length: 6 }, (_, n) => [n, `${n}/5 Boxes Present`]));
@@ -473,7 +470,7 @@ export default function Esp32CameraManager({ bridgeUrl, onNotify }) {
         <div>
           <h2 className="panel-title">📡 ESP32-CAM Hardware Node CRUD, NVS Provisioning &amp; Wireless OTA Manager (12 Nodes)</h2>
           <p className="panel-desc">
-            Manage up to 12 ESP32-CAM compartment nodes (Angle 1 Back &amp; Angle 2 Front per shelf), push NVS identity over Wi-Fi, and upload <code>.bin</code> firmware via Wireless OTA.
+            Manage up to 6 ESP32-CAM compartment nodes (Angle 1 Back &amp; Angle 2 Front per shelf), push NVS identity over Wi-Fi, and upload <code>.bin</code> firmware via Wireless OTA.
           </p>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>

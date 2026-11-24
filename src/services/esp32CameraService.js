@@ -22,12 +22,6 @@ const DEFAULT_12_ESP32_CAMERAS = [
   { id: 'cam-204', device_id: 'ESP32_R1_C2_CAM2', camera_name: 'R1-C2 Front Angle (CAM 4)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C2', angle_index: 2, ip_address: '192.168.0.204', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
   { id: 'cam-205', device_id: 'ESP32_R1_C3_CAM1', camera_name: 'R1-C3 Back Angle (CAM 5)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 1, ip_address: '192.168.0.205', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
   { id: 'cam-206', device_id: 'ESP32_R1_C3_CAM2', camera_name: 'R1-C3 Front Angle (CAM 6)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C3', angle_index: 2, ip_address: '192.168.0.206', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-207', device_id: 'ESP32_R1_C4_CAM1', camera_name: 'R1-C4 Back Angle (CAM 7)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 1, ip_address: '192.168.0.207', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-208', device_id: 'ESP32_R1_C4_CAM2', camera_name: 'R1-C4 Front Angle (CAM 8)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C4', angle_index: 2, ip_address: '192.168.0.208', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-209', device_id: 'ESP32_R1_C5_CAM1', camera_name: 'R1-C5 Back Angle (CAM 9)',  rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 1, ip_address: '192.168.0.209', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-210', device_id: 'ESP32_R1_C5_CAM2', camera_name: 'R1-C5 Front Angle (CAM 10)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C5', angle_index: 2, ip_address: '192.168.0.210', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-211', device_id: 'ESP32_R1_C6_CAM1', camera_name: 'R1-C6 Back Angle (CAM 11)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 1, ip_address: '192.168.0.211', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
-  { id: 'cam-212', device_id: 'ESP32_R1_C6_CAM2', camera_name: 'R1-C6 Front Angle (CAM 12)', rack_id: 'RACK_01', shelf_id: 'SHELF_R1_C6', angle_index: 2, ip_address: '192.168.0.212', status: 'OFFLINE', rssi_dbm: null, last_seen: null },
 ];
 
 function cleanIpAddress(ip) {

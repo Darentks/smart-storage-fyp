@@ -10,6 +10,7 @@ import time
 
 from .autonomous_edge import polygon, source_binding
 from .validation_diagnostics import FAILURE_CODES
+from .shelves import SHELF_IDS, SHELF_SET
 
 
 def atomic_json(path, value):
@@ -43,7 +44,7 @@ class LatestIntents:
         if not isinstance(result.get('id'),str) or not re.fullmatch(r'[A-Za-z0-9_.-]{1,160}',result['id']):raise ValueError('Invalid intent identity')
         if type(result.get('timestamp')) not in (int,float) or not math.isfinite(result['timestamp']):raise ValueError('Invalid intent timestamp')
         if result.get('camera_id') not in (None,'CCTV_01','CCTV_02','CCTV_03'):raise ValueError('Invalid camera identity')
-        if result.get('shelf_id') not in (None,'ANY_SHELF',*[f'SHELF_R1_C{i}' for i in range(1,7)]):raise ValueError('Invalid shelf identity')
+        if result.get('shelf_id') not in (None,'ANY_SHELF',*SHELF_IDS):raise ValueError('Invalid shelf identity')
         if result.get('action') not in (None,'BORROW','RETURN','RECHECK'):raise ValueError('Invalid candidate action')
         if result.get('status') not in ('PENDING','CONSENSUS','HELD','ACCEPTED','RECONCILED'):raise ValueError('Invalid intent status')
         # Reasons are codes only, never arbitrary client text/PII/URLs.
@@ -88,7 +89,7 @@ def validate_rois(value):
         raw=source[7:] if source.startswith('device:') else source
         if source_binding(raw)!=source or '@' in source or binding.get('camera_role')!=role or source in sources:raise ValueError('Invalid or shared source binding')
         sources.add(source)
-        required=['RACK_ENTRY_ZONE'] if role=='SIDE_PRESENCE' else [f'SHELF_R1_C{i}' for i in range(1,7)]
+        required=['RACK_ENTRY_ZONE'] if role=='SIDE_PRESENCE' else list(SHELF_IDS)
         rois={s:{'vertices':polygon(row['rois'][s]),'coordinate_space':'normalized'} for s in required}
         polygons=[r['vertices'] for r in rois.values()]
         if any(overlaps(a,b) for i,a in enumerate(polygons) for b in polygons[i+1:]):raise ValueError('Overlapping shelf ROIs')
@@ -128,14 +129,14 @@ class LocalFailures:
     def __init__(self,path):
         self.path=Path(path);self.lock=threading.RLock()
         self.values=json.loads(self.path.read_text()) if self.path.exists() else {}
-        if not isinstance(self.values,dict) or len(self.values)>6:raise ValueError('Invalid local failure state')
+        if not isinstance(self.values,dict) or len(self.values)>len(SHELF_IDS):raise ValueError('Invalid local failure state')
         for shelf,row in self.values.items():
-            if (shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)} or not isinstance(row,dict)
+            if (shelf not in SHELF_SET or not isinstance(row,dict)
                 or set(row)!={'state','code','at'} or row['state'] not in {'Held','Offline','Needs Reconciliation'}
                 or row['code'] not in FAILURE_CODES | {None} or type(row['at']) not in (int,float) or not math.isfinite(row['at'])):
                 raise ValueError('Local failures may contain only bounded technical metadata')
     def set(self,shelf,state,code):
-        if shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)}:return
+        if shelf not in SHELF_SET:return
         if code is not None and code not in FAILURE_CODES:code='VALIDATION_REJECTED'
         with self.lock:
             if state=='Ready':self.values.pop(shelf,None)

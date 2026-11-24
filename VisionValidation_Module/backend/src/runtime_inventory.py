@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 from .dual_cam_inventory import decode_observation, prove_unit_action, validate_confidences, validate_capture
+from .shelves import SHELF_IDS, SHELF_SET
 
 
 def runtime_enabled():
@@ -23,7 +24,7 @@ class RuntimeInventory:
         self.shelves={};self.cameras={};self.models_ready=False;self.last_interaction=monotonic()
 
     def _state(self,shelf):
-        if shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)}:raise ValueError('Unknown shelf')
+        if shelf not in SHELF_SET:raise ValueError('Unknown shelf')
         if shelf not in self.shelves:
             self.shelves[shelf]=dict(lock=threading.RLock(),version=0,state='Starting',baseline=None,observation=None,
                 born_at=self.clock(),ready_at=None,events=OrderedDict())

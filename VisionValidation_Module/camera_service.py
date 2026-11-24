@@ -94,6 +94,7 @@ from src.shelf_readiness import ShelfReadiness
 READINESS = ShelfReadiness()
 
 from src.dual_cam_inventory import validate_evidence, validate_transition, decode_observation
+from src.shelves import SHELF_SET  # type: ignore
 from src.inventory_persistence import (load_inventory_state, commit_inventory_state,
                                        restore_inventory_cache, operator_rpc)
 
@@ -196,7 +197,7 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
     seen_ids = CCTV_SEEN_TRIGGER_IDS if consensus_context is None else consensus_context["seen_ids"]
     last_triggers = LAST_SHELF_TRIGGER_TS if consensus_context is None else consensus_context["last_triggers"]
     pending = PENDING_CCTV_TRIGGERS if consensus_context is None else consensus_context["events"]
-    shelves = {f"SHELF_R1_C{i}" for i in range(1, 7)}
+    shelves = set(SHELF_SET)
     if action not in {"BORROW", "RETURN"} and camera_config.get(camera_id, {}).get("camera_role") != "SIDE_PRESENCE":
         raise ValueError("expected_action must be BORROW or RETURN")
     if not math.isfinite(confidence) or not 0 <= confidence <= 1:
@@ -383,6 +384,8 @@ def get_merged_compartments_and_nodes():
 
     for comp in local_comps:
         shelf_id = comp["shelf_id"]
+        if shelf_id not in SHELF_SET:
+            continue  # Retired columns stay hidden even if legacy local config lists them.
         seen_shelf_ids.add(shelf_id)
         mqtt_id = comp.get("mqtt_client_id") or shelf_id.replace("SHELF_", "ESP32_")
         seen_mqtt_ids.add(mqtt_id)
@@ -2000,7 +2003,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 if not consensus["consensus_met"]:
                     self._send_json(200, consensus)
                     return
-                if (consensus.get("shelf_id") not in {f"SHELF_R1_C{i}" for i in range(1, 7)}
+                if (consensus.get("shelf_id") not in SHELF_SET
                         or consensus.get("expected_action") not in {"BORROW", "RETURN"}
                         or not isinstance(consensus.get("confidence"), (int, float))
                         or not math.isfinite(consensus["confidence"]) or not 0 <= consensus["confidence"] <= 1

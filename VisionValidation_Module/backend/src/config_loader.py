@@ -16,6 +16,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
+from .shelves import SHELF_IDS, SHELF_SET
 try:
     from dotenv import load_dotenv
 except ImportError:
@@ -361,7 +362,7 @@ def device_shelves(devices) -> List[Dict[str, Any]]:
     grouped = {}
     for camera in devices if isinstance(devices,list) else []:
         sid=camera.get('shelf_id')
-        if sid not in {f'SHELF_R1_C{i}' for i in range(1,7)}:continue
+        if sid not in SHELF_SET:continue
         row=grouped.setdefault(sid,dict(shelf_id=sid,rack_id=camera.get('rack_id'),max_capacity=5,current_quantity=None))
         angle=str(camera.get('angle_index'))
         if angle=='1':row.update(ip_address=_clean_host(camera.get('ip_address')),mqtt_client_id=camera.get('device_id'),camera_name=camera.get('camera_name'))

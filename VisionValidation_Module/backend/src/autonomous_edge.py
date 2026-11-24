@@ -17,6 +17,7 @@ from .edge_shadow import EdgeShadow
 from .runtime_inventory import RuntimeInventory, runtime_enabled
 from .preview_panel import NativeObservations
 from .validation_diagnostics import failure_code
+from .shelves import SHELF_IDS, SHELF_SET
 
 
 CHECKS = ('same_frame_tm', 'same_frame_pose', 'action_consensus_parity',
@@ -175,7 +176,7 @@ def load_service_config(config_path, manifest_path, acceptance_path, code_paths,
         cam=rows[0];role='SIDE_PRESENCE' if i==2 else 'GRID_6_ROI';source=os.environ[config['source_environment'][cid]]
         if cam['camera_role']!=role or cam['binding']!={'source':source_binding(source),'camera_role':role}:
             raise ValueError('Camera source/role binding changed')
-        shelves=['RACK_ENTRY_ZONE'] if i==2 else [f'SHELF_R1_C{j}' for j in range(1,7)]
+        shelves=['RACK_ENTRY_ZONE'] if i==2 else list(SHELF_IDS)
         tracker=ActionTracker(role,{s:cam['rois'][s] for s in shelves})
         cameras.append(dict(id=cid,role=role,source=source,tracker=tracker))
     if len({source_binding(c['source']) for c in cameras})!=3:raise ValueError('Camera sources must be distinct')

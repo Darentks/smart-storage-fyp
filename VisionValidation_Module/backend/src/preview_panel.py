@@ -3,11 +3,12 @@ import copy
 import ipaddress
 import threading
 import time
+from .shelves import SHELF_IDS, SHELF_SET
 
 class NativeObservations:
     def __init__(self):self.lock=threading.Lock();self.rows={}
     def put(self,shelf,preview,candidate):
-        if shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)}:return
+        if shelf not in SHELF_SET:return
         row=dict(shelf_id=shelf,timestamp=time.time(),image=preview.get('image'),image_back=preview.get('image_back'),image_front=preview.get('image_front'),candidate=copy.deepcopy(candidate),authorizes_write=False)
         with self.lock:self.rows[shelf]=row
     def get(self,shelf):
@@ -23,7 +24,7 @@ def diagnostic_preview(query,manager,coordinator,native):
     if native is not None:return 409,{'error':'Native service owns cameras; consume native observations'}
     try:
         shelf=query.get('shelf_id',[''])[0]
-        if shelf not in {f'SHELF_R1_C{i}' for i in range(1,7)}:raise ValueError('Invalid shelf')
+        if shelf not in SHELF_SET:raise ValueError('Invalid shelf')
         ips=[str(ipaddress.IPv4Address(query.get(key,[''])[0])) for key in ('ip','ip2')]
         if ips[0]==ips[1]:raise ValueError('Two different camera IPs required')
         if not all(ipaddress.ip_address(ip).is_private for ip in ips):raise ValueError('Private camera addresses required')

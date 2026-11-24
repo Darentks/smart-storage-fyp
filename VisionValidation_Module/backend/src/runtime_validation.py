@@ -6,6 +6,7 @@ consensus selection and readiness responses. It never performs inventory I/O.
 from .runtime_inventory import RuntimeInventory
 from .validation_diagnostics import failure_code
 from .dual_cam_inventory import VERSION
+from .shelves import SHELF_IDS, SHELF_SET
 from typing import Callable, TYPE_CHECKING
 if TYPE_CHECKING:
     from .local_operations import LatestIntents
@@ -86,7 +87,7 @@ def validate_runtime_request(
             return (200, result)
         except (ValueError, TypeError, KeyError) as exc:
             reason = str(exc)
-            if sid in {f'SHELF_R1_C{i}' for i in range(1, 7)} and (not any((k in reason for k in ('Stale run', 'Duplicate/invalid', 'inventory version')))):
+            if sid in SHELF_SET and (not any((k in reason for k in ('Stale run', 'Duplicate/invalid', 'inventory version')))):
                 identity=body.get('trigger_id') if body.get('source')=='CCTV' else body.get('runtime_event_id')
                 authority.hold(sid,identity)
                 readiness.set(sid, 'Offline' if 'unavailable' in reason else 'Held', reason)

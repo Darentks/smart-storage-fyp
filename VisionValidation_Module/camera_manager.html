@@ -1088,9 +1088,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
                 <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
                 <option value="SHELF_R1_C3">SHELF_R1_C3 (ESP32 Node R1-C3)</option>
-                <option value="SHELF_R1_C4">SHELF_R1_C4 (ESP32 Node R1-C4)</option>
-                <option value="SHELF_R1_C5">SHELF_R1_C5 (ESP32 Node R1-C5)</option>
-                <option value="SHELF_R1_C6">SHELF_R1_C6 (ESP32 Node R1-C6)</option>
               </select>
             </div>
 
@@ -1412,9 +1409,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <option value="SHELF_R1_C1" selected>SHELF_R1_C1</option>
                 <option value="SHELF_R1_C2">SHELF_R1_C2</option>
                 <option value="SHELF_R1_C3">SHELF_R1_C3</option>
-                <option value="SHELF_R1_C4">SHELF_R1_C4</option>
-                <option value="SHELF_R1_C5">SHELF_R1_C5</option>
-                <option value="SHELF_R1_C6">SHELF_R1_C6</option>
                 <option value="RACK_ENTRY_ZONE">RACK_ENTRY_ZONE (Side Presence)</option>
               </select>
               <select id="cctvRoiTool" class="form-control" style="font-size:11px; width:150px; height:28px;" onchange="resetRoiEditor()">
@@ -1549,7 +1543,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <div>
           <h2 class="panel-title">&#128225; Panel 4 &bull; ESP32-CAM Hardware Node CRUD, NVS Reassignment &amp; Wireless
             OTA Manager (12 Nodes)</h2>
-          <p class="panel-desc">Manage up to 12 ESP32-CAM compartment nodes (Angle 1 Back &amp; Angle 2 Front per shelf)
+          <p class="panel-desc">Manage up to 6 ESP32-CAM compartment nodes (Angle 1 Back &amp; Angle 2 Front per shelf)
             in <code>public.esp32_cameras</code>, push wireless NVS config, and upload <code>.bin</code> firmware via
             OTA.</p>
         </div>
@@ -1591,7 +1585,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       <div id="esp32CameraManagerGrid"
         style="display: grid; grid-template-columns: repeat(auto-fit, minmax(440px, 1fr)); gap: 16px;">
         <div style="grid-column: 1 / -1; text-align: center; padding: 32px; color: var(--text-muted);">
-          Loading 12 ESP32-CAM hardware nodes...
+          Loading 6 ESP32-CAM hardware nodes...
         </div>
       </div>
     </section>
@@ -1627,9 +1621,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <option value="SHELF_R1_C1">SHELF_R1_C1</option>
             <option value="SHELF_R1_C2">SHELF_R1_C2</option>
             <option value="SHELF_R1_C3">SHELF_R1_C3</option>
-            <option value="SHELF_R1_C4">SHELF_R1_C4</option>
-            <option value="SHELF_R1_C5">SHELF_R1_C5</option>
-            <option value="SHELF_R1_C6">SHELF_R1_C6</option>
           </select>
         </div>
         <div class="form-group">
@@ -1682,7 +1673,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // =========================================================================
     // SUPABASE CLIENT & CONFIGURATION
     // =========================================================================
-    const ALL_SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
+    const ALL_SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3'];
     const SUPABASE_URL = 'https://tosvjwxvcuxvgtcmakta.supabase.co';
     const SUPABASE_ANON_KEY = 'sb_publishable_N7bQW1bkTZq6TPVPYlqVag_C7vXKF9l';
 
@@ -2173,7 +2164,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     let localIntentSeen=new Map(),localIntentRun=null,localOperationsBusy=false;
     function localIntentPresentation(record){
-      const shelf=record.shelf_id,match=/^SHELF_R(\d+)_C([1-6])$/.exec(shelf || '');
+      const shelf=record.shelf_id,match=/^SHELF_R(\d+)_C([1-3])$/.exec(shelf || '');
       const configured=compartmentsData.find(c=>c.shelf_id===shelf);
       const rack=configured?.rack_id || (match?`RACK_${match[1].padStart(2,'0')}`:null);
       const location=match?`Rack ${rack} · Compartment ${match[2]} (${shelf})`:'Compartment not identified (entry-zone observation)';
@@ -2496,9 +2487,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         'SHELF_R1_C1': { ip1: '192.168.0.201', ip2: '192.168.0.202' },
         'SHELF_R1_C2': { ip1: '192.168.0.203', ip2: '192.168.0.204' },
         'SHELF_R1_C3': { ip1: '192.168.0.205', ip2: '192.168.0.206' },
-        'SHELF_R1_C4': { ip1: '192.168.0.207', ip2: '192.168.0.208' },
-        'SHELF_R1_C5': { ip1: '192.168.0.209', ip2: '192.168.0.210' },
-        'SHELF_R1_C6': { ip1: '192.168.0.211', ip2: '192.168.0.212' },
       }[selShelf] || { ip1: '192.168.0.201', ip2: '192.168.0.202' };
 
       const activeEl = document.activeElement;
@@ -4347,7 +4335,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const gridEl = document.getElementById('esp32CameraManagerGrid');
       if (!gridEl) return;
 
-      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
+      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3'];
       const grouped = {};
       SHELF_IDS.forEach((s) => { grouped[s] = []; });
       esp32CameraNodesList.forEach((cam) => {
@@ -4746,7 +4734,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function onModalShelfOrAngleChange() {
       const shelfId = document.getElementById('provShelfSelect').value || 'SHELF_R1_C1';
       const angleIndex = Number(document.getElementById('provAngleSelect').value) || 1;
-      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3', 'SHELF_R1_C4', 'SHELF_R1_C5', 'SHELF_R1_C6'];
+      const SHELF_IDS = ['SHELF_R1_C1', 'SHELF_R1_C2', 'SHELF_R1_C3'];
       const shelfIdx = Math.max(0, SHELF_IDS.indexOf(shelfId));
       const suggestedOctet = 201 + shelfIdx * 2 + (angleIndex === 2 ? 1 : 0);
       const shortShelf = shelfId.replace('SHELF_', '');
@@ -4915,9 +4903,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       'SHELF_R1_C1': { x_min: 0.60, y_min: 0.19, x_max: 0.81, y_max: 0.42 }, // mirrors 385, 93, 516, 201 on 640x480
       'SHELF_R1_C2': { x_min: 0.38, y_min: 0.19, x_max: 0.58, y_max: 0.42 },
       'SHELF_R1_C3': { x_min: 0.16, y_min: 0.19, x_max: 0.36, y_max: 0.42 },
-      'SHELF_R1_C4': { x_min: 0.60, y_min: 0.55, x_max: 0.81, y_max: 0.85 },
-      'SHELF_R1_C5': { x_min: 0.38, y_min: 0.55, x_max: 0.58, y_max: 0.85 },
-      'SHELF_R1_C6': { x_min: 0.16, y_min: 0.55, x_max: 0.36, y_max: 0.85 },
       'RACK_ENTRY_ZONE': { x_min: 0.35, y_min: 0.12, x_max: 0.68, y_max: 0.88 }
     };
 
@@ -5195,7 +5180,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function evaluateDiagnosticConsensus(votes,now){
       const fresh=Object.fromEntries(Object.entries(votes).filter(([id,v])=>['CCTV_01','CCTV_02','CCTV_03'].includes(id) && v.camera_id===id && v.camera_role===(id==='CCTV_03'?'SIDE_PRESENCE':'GRID_6_ROI') && Number.isFinite(v.dwell_duration_seconds) && v.dwell_duration_seconds>=1.2 && Number.isFinite(v.oks_confidence) && v.oks_confidence>=0 && v.oks_confidence<=1 && Number.isFinite(v.detected_at) && now-v.detected_at<=4 && v.detected_at-now<=1));
       const a=fresh.CCTV_01,b=fresh.CCTV_02,side=fresh.CCTV_03;
-      const matched=!!(a && b && side && /^SHELF_R1_C[1-6]$/.test(a.shelf_id) && a.shelf_id===b.shelf_id && ['BORROW','RETURN'].includes(a.expected_action) && a.expected_action===b.expected_action && side.shelf_id==='ANY_SHELF');
+      const matched=!!(a && b && side && /^SHELF_R1_C[1-3]$/.test(a.shelf_id) && a.shelf_id===b.shelf_id && ['BORROW','RETURN'].includes(a.expected_action) && a.expected_action===b.expected_action && side.shelf_id==='ANY_SHELF');
       return {fresh,matched};
     }
     function recordDiagnosticConsensusVote(body){

@@ -119,7 +119,7 @@ class SpatialMapper:
                 "y_max": 220 + ((i - 1) // 3) * 180,
                 "dwell_threshold_seconds": 1.2,
             }
-            for i in range(1, 7)
+            for i in range(1, 4)
         ]
         self.save_roi_config()
 
