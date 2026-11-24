@@ -2717,7 +2717,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
             mode=os.getenv('SMART_STORAGE_PROCESSOR_MODE','browser').strip().lower()
             if runtime_enabled():
                 if mode not in {'browser','shadow','service'}:raise ValueError('Invalid processor mode')
-                RUNTIME_INVENTORY=RuntimeInventory(READINESS.run_id,float(os.getenv('SMART_STORAGE_QUIET_SECONDS','2')))
+                RUNTIME_INVENTORY=RuntimeInventory(READINESS.run_id,int(os.getenv('SMART_STORAGE_QUIET_SECONDS','2')))
                 CONFIRMED_OCCUPANCY.clear();SUPABASE_COMPARTMENTS_CACHE.update(data=[],fetched_at=0)
                 mqtt_bridge.sync_supabase=False
             if mode=='service':
