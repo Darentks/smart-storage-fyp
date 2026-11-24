@@ -1113,6 +1113,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 id="diagnosticPreviewButton" disabled title="Checking bridge connection" onclick="fetchLiveAnglePreview({runMode: 'diagnostic'})">
                 &#128065; Preview Both Angles &amp; Run Teachable Machine
               </button>
+              <button type="button" id="tmPreprocessingCompareButton" class="btn-action" disabled title="Run Diagnostic Preview first" onclick="compareTMPreprocessing()">Compare TM Preprocessing (Read-Only)</button>
+              <pre id="tmPreprocessingComparison" style="display:none;white-space:pre-wrap;font-size:12px;" aria-live="polite"></pre>
               <button type="button" id="tmExportBtn" class="btn-action" style="justify-content:center;" onclick="downloadTMTrainingSnapshots()">Download TM Training Snapshots</button>
               <button type="button" class="btn-action" onclick="exportEdgeTMFixture()">Download Service Comparison (Uploaded Photos)</button>
               <label style="color:var(--text-secondary);"><input type="checkbox" id="tmExportSweep"> Export Retry Sweep (3 lighting settings)</label>
@@ -2520,7 +2522,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     let bridgeStatus={online:false,authoritative_processor:'none',state:'Disconnected'};
     let diagnosticRunning=false,previewGeneration=0;
+    let tmComparisonRunning=false,tmComparisonFrames=null;
+    function updateTMComparisonButton(){
+      const button=document.getElementById('tmPreprocessingCompareButton');
+      const reason=!bridgeStatus.online?'Bridge unavailable':bridgeStatus.authoritative_processor==='native'?'Native processor active; browser comparison is paused':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Comparison running':!tmComparisonFrames?'Run Diagnostic Preview first':'';
+      button.disabled=!!reason;
+      button.title=reason || 'Compare the same captured images with boost off; no inventory write';
+    }
     function clearPanelFrames(){
+      tmComparisonFrames=null;
+      document.getElementById('tmPreprocessingComparison').style.display='none';
+      updateTMComparisonButton();
       for(const img of [backPreviewImg,frontPreviewImg,livePreviewImg]){img.removeAttribute('src');img.style.display='none';}
       for(const placeholder of [backPlaceholder,frontPlaceholder,previewPlaceholder])placeholder.style.display='flex';
       backPredBadge.style.display=frontPredBadge.style.display='none';
@@ -2532,13 +2544,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       bridgeStatus={...data,online,authoritative_processor:processor};
       const native=online && processor==='native';
       const button=document.getElementById('diagnosticPreviewButton');
-      button.disabled=!online || native || diagnosticRunning;
+      button.disabled=!online || native || diagnosticRunning || tmComparisonRunning;
       button.textContent=native?'Native Preview (Automatic)':'Run Diagnostic Preview (Read-Only)';
-      button.title=!online?'Bridge unavailable':native?'Native owns camera capture; results update automatically':diagnosticRunning?'Diagnostic capture running':'Read-only capture; inventory is unchanged';
+      button.title=!online?'Bridge unavailable':native?'Native owns camera capture; results update automatically':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Preprocessing comparison running':'Read-only capture; inventory is unchanged';
+      updateTMComparisonButton();
       document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active \u2014 Displaying authoritative observations.':'Native Processor Disabled \u2014 Automated validation is paused.';
       if(!native && !diagnosticRunning){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
     }
     function renderPanelObservation(row,native=false) {
+      tmComparisonFrames=!native && row.image_back && row.image_front?{back:row.image_back,front:row.image_front,shelf:refShelfSelect.value}:null;
+      document.getElementById('tmPreprocessingComparison').style.display='none';
+      updateTMComparisonButton();
       for(const [img,placeholder,url] of [[backPreviewImg,backPlaceholder,row.image_back],[frontPreviewImg,frontPlaceholder,row.image_front],[livePreviewImg,previewPlaceholder,row.image]]) {
         if(url){img.src=url;img.style.display='block';placeholder.style.display='none';}
       }
@@ -2553,7 +2569,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     async function fetchLiveAnglePreview({runMode='diagnostic'}={}) {
       if(runMode!=='diagnostic')throw Error('Browser preview requires explicit diagnostic mode');
-      if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || diagnosticRunning)return;
+      if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || diagnosticRunning || tmComparisonRunning)return;
       diagnosticRunning=true;const shelf=refShelfSelect.value;
       panelState(bridgeStatus);const owned=previewGeneration;
       previewOverlayText.textContent='Capturing diagnostic frames...';
@@ -2569,6 +2585,41 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         if(owned===previewGeneration && bridgeStatus.authoritative_processor!=='native' && bridgeStatus.online && refShelfSelect.value===shelf)renderPanelObservation({...row,candidate},false);
       } catch(error){if(owned===previewGeneration){tmLivePredictionBanner.style.display='block';tmLivePredictionBanner.textContent='Diagnostic failed: '+error.message;}}
       finally{diagnosticRunning=false;panelState(bridgeStatus,bridgeStatus.online);}
+    }
+    async function compareTMPreprocessing(){
+      const output=document.getElementById('tmPreprocessingComparison');
+      output.style.display='block';
+      if(tmComparisonRunning){return;}
+      const frames=tmComparisonFrames;
+      if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || diagnosticRunning || !frames || frames.shelf!==refShelfSelect.value){
+        output.textContent='Comparison unavailable. Use Run Diagnostic Preview for the selected shelf while the native processor is disabled.';
+        return;
+      }
+      const owned=previewGeneration;
+      tmComparisonRunning=true;panelState(bridgeStatus);
+      output.textContent='Comparing the same captured images with boost off...';
+      try {
+        if(!window.tmBackModel || !window.tmFrontModel)throw Error('Load both Teachable Machine models, then retry.');
+        const images=await Promise.all([decodeTMImage(frames.back),decodeTMImage(frames.front)]);
+        const reports=['Diagnostic Only (No Inventory Write)', 'Same captured images and loaded models. Boost OFF; no mirroring.', 'Scores are prediction confidence, not measured accuracy.'];
+        for(const [role,image,model] of [['Back',images[0],window.tmBackModel],['Front',images[1],window.tmFrontModel]]){
+          // Decode original pixels: DOM display dimensions must not determine the crop.
+          const originalScores=await model.predict(image,false);
+          const fullFrame=preprocessForTM(image,'off');
+          const appScores=await model.predict(fullFrame,false);
+          const appByClass=new Map(appScores.map(p=>[p.className,p.probability]));
+          reports.push('',`${role}: ${image.naturalWidth} x ${image.naturalHeight} source pixels`, 'Class | SDK centre crop | App full-frame resize');
+          for(const prediction of originalScores){
+            const percent=value=>Number.isFinite(value)?(value*100).toFixed(1)+'%':'missing';
+            reports.push(`${prediction.className} | ${percent(prediction.probability)} | ${percent(appByClass.get(prediction.className))}`);
+          }
+        }
+        reports.push('', 'Square source images should show little or no geometry difference. A higher score alone does not prove better accuracy.');
+        console.info('[Diagnostic] Skipping inventory write');
+        if(owned===previewGeneration && tmComparisonFrames===frames && frames.shelf===refShelfSelect.value && bridgeStatus.online && bridgeStatus.authoritative_processor!=='native')output.textContent=reports.join('\n');
+        else output.textContent='Preview changed during comparison. Run Diagnostic Preview and compare again.';
+      }catch(error){output.textContent='Comparison failed: '+error.message;}
+      finally{tmComparisonRunning=false;panelState(bridgeStatus,bridgeStatus.online);}
     }
     async function fetchLiveAnglePreviewLocked(shelfId, assignedIp1, assignedIp2, selectedBoost) {
       const ip1 = assignedIp1;
