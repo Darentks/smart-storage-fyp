@@ -1,6 +1,6 @@
 -- FRESH INSTALL ONLY -- NEVER APPLY TO AN EXISTING DB.
 -- Desired device-admin schema. No inventory, ROI, intent, receipt or audit storage.
--- Existing databases: review migrations/20261124_disable_camera_rls.sql after identity preparation.
+-- Existing databases: use migrations/20261124_consolidate_shelf_identity.sql; do not run this bootstrap.
 -- Access is controlled by the existing table grants and authenticated application
 -- sessions or a protected server service role. No RLS/claim authorization is used.
 -- No camera IPs, credentials, placeholder RTSP sources or public CRUD are seeded.
@@ -20,11 +20,11 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-CREATE TABLE public.camera_shelves (
+CREATE TABLE public.compartments (
   shelf_id varchar(50) PRIMARY KEY,
-  CONSTRAINT camera_shelves_key_valid CHECK (length(shelf_id)>0 AND shelf_id=btrim(shelf_id))
+  CONSTRAINT compartments_key_valid CHECK (length(shelf_id)>0 AND shelf_id=btrim(shelf_id))
 );
-COMMENT ON TABLE public.camera_shelves IS 'Smart Storage device shelf identity v1; no inventory';
+COMMENT ON TABLE public.compartments IS 'Smart Storage shelf identity registry; no inventory';
 CREATE TABLE public.esp32_cameras (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   device_id varchar(100) NOT NULL UNIQUE CHECK (length(btrim(device_id))>0),
@@ -34,7 +34,7 @@ CREATE TABLE public.esp32_cameras (
   angle_index smallint NOT NULL,
   ip_address inet,
   CONSTRAINT fk_esp32_camera_shelf_identity FOREIGN KEY (shelf_id)
-    REFERENCES public.camera_shelves(shelf_id) ON UPDATE CASCADE ON DELETE RESTRICT,
+    REFERENCES public.compartments(shelf_id) ON UPDATE CASCADE ON DELETE RESTRICT,
   CONSTRAINT uq_esp32_camera_shelf_angle UNIQUE (shelf_id,angle_index),
   CONSTRAINT chk_esp32_angle CHECK (angle_index IN (1,2))
 );
@@ -50,15 +50,15 @@ CREATE TABLE public.cctv_cameras (
 );
 -- PK/UNIQUE indexes cover device-id/shelf/angle/CCTV-id queries. No redundant
 -- small-table boolean/rack indexes. Shelf identity is configuration, not stock.
-INSERT INTO public.camera_shelves(shelf_id) VALUES
+INSERT INTO public.compartments(shelf_id) VALUES
   ('SHELF_R1_C1'),('SHELF_R1_C2'),('SHELF_R1_C3'),
   ('SHELF_R1_C4'),('SHELF_R1_C5'),('SHELF_R1_C6');
-ALTER TABLE public.camera_shelves DISABLE ROW LEVEL SECURITY;
+ALTER TABLE public.compartments DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.esp32_cameras DISABLE ROW LEVEL SECURITY;
 ALTER TABLE public.cctv_cameras DISABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.camera_shelves,public.esp32_cameras,public.cctv_cameras FROM PUBLIC,anon,authenticated;
+REVOKE ALL ON public.compartments,public.esp32_cameras,public.cctv_cameras FROM PUBLIC,anon,authenticated;
 GRANT USAGE ON SCHEMA public TO authenticated,service_role;
-GRANT SELECT ON public.camera_shelves TO authenticated;
+GRANT SELECT ON public.compartments TO authenticated;
 GRANT SELECT,INSERT,UPDATE,DELETE ON public.esp32_cameras,public.cctv_cameras TO authenticated;
-GRANT SELECT,INSERT,UPDATE,DELETE ON public.camera_shelves,public.esp32_cameras,public.cctv_cameras TO service_role;
+GRANT SELECT,INSERT,UPDATE,DELETE ON public.compartments,public.esp32_cameras,public.cctv_cameras TO service_role;
 COMMIT;

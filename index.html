@@ -172,6 +172,16 @@
       transition: all 0.15s;
     }
 
+    .cctv-tools {display:grid;gap:16px;margin:18px 0;}
+    .cctv-tool-status {padding:16px;border:1px solid var(--border);border-radius:12px;background:rgba(56,189,248,.06);}
+    .cctv-tool-status h3,.cctv-tool-group h3 {font-size:15px;margin:0 0 8px;}
+    .cctv-tool-status p,.cctv-tool-group p {font-size:12px;color:var(--text-secondary);line-height:1.5;margin:6px 0 12px;}
+    .cctv-tool-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px;}
+    .cctv-tool-grid .btn-action {white-space:normal;text-align:left;align-items:flex-start;justify-content:flex-start;padding:14px;min-height:84px;display:flex;flex-direction:column;gap:6px;border-radius:10px;}
+    .cctv-tool-grid .btn-action small {font-weight:400;color:var(--text-secondary);font-size:12px;line-height:1.5;}
+    .cctv-tools .btn-action:focus-visible,.cctv-tools summary:focus-visible {outline:2px solid var(--primary);outline-offset:3px;}
+    .cctv-tools summary {cursor:pointer;padding:12px 0;font-weight:600;}
+    #confirmedActionBanner {padding:12px;border-left:3px solid var(--primary);border-radius:6px;background:rgba(56,189,248,.06);line-height:1.5;margin:12px 0;}
     .btn-action:hover {
       background: var(--surface-card-hover);
       border-color: var(--primary);
@@ -1450,17 +1460,29 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
           </div>
 
-          <section>
-          <button class="btn-action" id="threeCameraBackgroundBtn" onclick="toggleThreeCameraBackground()" title="Keep detection running but hide previews and skip drawing to save CPU/RAM">Hide Previews (Background Mode)</button>
-          <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
-          <button class="btn-action" onclick="exportEdgeCalibrations()">Export Camera Calibrations</button>
-          <button class="btn-action" onclick="importLocalRois()">Load Local Service Calibrations</button>
-          <button class="btn-action" onclick="showLocalOperations()">Latest Five Intents &amp; Diagnostics</button>
+          <section class="cctv-tools" aria-label="CCTV monitoring and setup">
+          <div class="cctv-tool-status">
+            <h3>Processor &amp; live activity</h3>
+            <div id="edgeProcessorStatus" role="status">Checking local processor...</div>
+            <p>Native processing starts with the local bridge after setup and acceptance. Dashboard controls do not start or stop that service.</p>
+            <button type="button" class="btn-action" onclick="showLocalOperations()">Refresh latest activity</button>
           <div id="confirmedActionBanner" role="status" aria-live="polite">No confirmed action received.</div>
           <div id="localOperationsStatus" style="max-height:420px;overflow:auto;"></div>
-          <button class="btn-action" onclick="exportEdgePoseFixture()">Compare Service Pose (Saved Photo)</button>
-          <div id="edgeProcessorStatus" role="status">Processor: browser</div>
-          <div id="threeCameraStatus" role="status">Stopped</div>
+          </div>
+          <div class="cctv-tool-group">
+            <h3>Camera calibration</h3>
+            <p>Calibrate and save each camera's regions first. Export prepares a file for the bridge; loading reads calibrations already installed there.</p>
+            <div class="cctv-tool-grid">
+              <button type="button" class="btn-action" onclick="exportEdgeCalibrations()"><span>Export calibration file</span><small>Download saved browser regions for all three cameras.</small></button>
+              <button type="button" class="btn-action" onclick="importLocalRois()"><span>Load bridge calibrations</span><small>Copy installed bridge regions into this browser. This does not upload a file.</small></button>
+            </div>
+          </div>
+          <details class="cctv-tool-group">
+            <summary>Advanced testing</summary>
+            <div class="cctv-tool-grid"><button type="button" class="btn-action" onclick="exportEdgePoseFixture()"><span>Export pose test from photo</span><small>Choose a saved CCTV photo and download browser model output for a separate native comparison.</small></button></div>
+            <p>This export does not start live tracking, confirm an action or change inventory.</p>
+          </details>
+          <div id="threeCameraStatus" hidden>Legacy browser tracker inactive</div>
           <div id="threeCameraCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px"></div>
           <pre id="threeCameraEvents" aria-live="polite" style="max-height:220px;max-width:100%;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word"></pre></section>
           <!-- Canvas & Video Viewport (Single Full-Box Canvas — No Split Screen) -->
@@ -2060,7 +2082,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       try {
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
         if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);
-        if(label)label.textContent=`Processor: ${bridgeStatus.authoritative_processor}; ${data.state}`;
+        if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?`Native service · ${data.state}`:data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
         if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
         if(bridgeStatus.authoritative_processor==='native') {
           const shelf=refShelfSelect.value,epoch=previewGeneration;
