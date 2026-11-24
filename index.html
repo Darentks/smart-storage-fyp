@@ -2149,7 +2149,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     async function importLocalRois() {
       try {
         const response=await fetch(`${getBridgeUrl()}/local_rois`,{cache:'no-store'});
-        if(!response.ok)throw Error('Import calibrations on the bridge host using deploy/local_roi.py first');
+        if(!response.ok)throw Error('No valid bridge calibration is available. Correct any Install to Bridge error, then install your saved regions before loading them.');
         const value=await response.json();if(value.version!==1||value.cameras?.length!==3)throw Error('Invalid local calibration');
         for(const cam of value.cameras) {
           const current=cctvCamerasList.find(c=>c.cctv_id===cam.cctv_id);

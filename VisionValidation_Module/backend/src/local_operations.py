@@ -92,7 +92,10 @@ def validate_rois(value):
         required=['RACK_ENTRY_ZONE'] if role=='SIDE_PRESENCE' else list(SHELF_IDS)
         rois={s:{'vertices':polygon(row['rois'][s]),'coordinate_space':'normalized'} for s in required}
         polygons=[r['vertices'] for r in rois.values()]
-        if any(overlaps(a,b) for i,a in enumerate(polygons) for b in polygons[i+1:]):raise ValueError('Overlapping shelf ROIs')
+        for i,a in enumerate(polygons):
+            for j in range(i+1,len(polygons)):
+                if overlaps(a,polygons[j]):
+                    raise ValueError(f'Overlapping shelf ROIs: {cid}: {required[i]} overlaps {required[j]}; redraw these regions without shared area')
         cameras[cid]=dict(cctv_id=cid,camera_role=role,binding=dict(source=source,camera_role=role),rois=rois)
     return dict(version=1,cameras=[cameras[k] for k in sorted(cameras)])
 
