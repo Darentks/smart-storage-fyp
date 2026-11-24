@@ -1450,13 +1450,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
           </div>
 
-          <section><button class="btn-action" onclick="startThreeCameras()">Start All Cameras</button>
+          <section>
           <button class="btn-action" id="threeCameraBackgroundBtn" onclick="toggleThreeCameraBackground()" title="Keep detection running but hide previews and skip drawing to save CPU/RAM">Hide Previews (Background Mode)</button>
           <button class="btn-action" onclick="threeCameraDashboard.stop()">Stop All Cameras</button>
           <button class="btn-action" onclick="exportEdgeCalibrations()">Export Camera Calibrations</button>
           <button class="btn-action" onclick="importLocalRois()">Load Local Service Calibrations</button>
           <button class="btn-action" onclick="showLocalOperations()">Latest Five Intents &amp; Diagnostics</button>
-          <pre id="localOperationsStatus" style="max-height:240px;overflow:auto;white-space:pre-wrap"></pre>
+          <div id="confirmedActionBanner" role="status" aria-live="polite">No confirmed action received.</div>
+          <div id="localOperationsStatus" style="max-height:420px;overflow:auto;"></div>
           <button class="btn-action" onclick="exportEdgePoseFixture()">Compare Service Pose (Saved Photo)</button>
           <div id="edgeProcessorStatus" role="status">Processor: browser</div>
           <div id="threeCameraStatus" role="status">Stopped</div>
@@ -2060,6 +2061,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
         if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);
         if(label)label.textContent=`Processor: ${bridgeStatus.authoritative_processor}; ${data.state}`;
+        if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
         if(bridgeStatus.authoritative_processor==='native') {
           const shelf=refShelfSelect.value,epoch=previewGeneration;
           const result=await fetch(`${getBridgeUrl()}/native_observation?shelf_id=${encodeURIComponent(shelf)}`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
@@ -2068,7 +2070,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           if(payload.observation)renderPanelObservation(payload.observation,true);
           else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='Waiting for fresh native observation';}
         }
-      }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);if(label)label.textContent='Bridge Disconnected';}
+      }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
     }
     function exportEdgeCalibrations() {
       try {
@@ -2104,12 +2106,54 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         showToast('Local calibrations loaded. Stop/restart camera tracking to use the updated geometry.','success');
       }catch(error){showToast(error.message,'error');}
     }
-    async function showLocalOperations() {
-      const host=document.getElementById('localOperationsStatus');
-      try {const response=await fetch(`${getBridgeUrl()}/local_operations`,{cache:'no-store'});
-        if(!response.ok)throw Error('Local diagnostics unavailable');host.textContent=JSON.stringify({...await response.json(),browser_device_rest:{...cloudRequestMetrics},browser_metrics_scope:'This window only; decoded response bytes, not wire egress; Supabase SDK removed'},null,2);
-      }catch(error){host.textContent=error.message;}
+    let localIntentSeen=new Map(),localIntentRun=null,localOperationsBusy=false;
+    function localIntentPresentation(record){
+      const shelf=record.shelf_id,match=/^SHELF_R(\d+)_C([1-6])$/.exec(shelf || '');
+      const configured=compartmentsData.find(c=>c.shelf_id===shelf);
+      const rack=configured?.rack_id || (match?`RACK_${match[1].padStart(2,'0')}`:null);
+      const location=match?`Rack ${rack} · Compartment ${match[2]} (${shelf})`:'Compartment not identified (entry-zone observation)';
+      const action={BORROW:'Borrow',RETURN:'Return',RECHECK:'Shelf recheck'}[record.action] || 'Interaction';
+      const status={PENDING:'Waiting for camera agreement',CONSENSUS:'Camera agreement confirmed',HELD:'Validation on hold',ACCEPTED:`${action} confirmed`,RECONCILED:'Shelf verification completed'}[record.status] || 'Unknown status';
+      const reason={MISSING_CCTV_CONSENSUS:'Waiting for the required cameras to agree.',LOW_CONFIDENCE:'Camera prediction confidence is too low.',MISSING_CAMERA:'A required camera is unavailable.',MQTT_UNAVAILABLE:'The MQTT connection is unavailable.',M2_CONFLICT:'The cameras disagree about the shared slot.',UNKNOWN_B1:'The back bottom slot is hidden; an exact count cannot be confirmed.',STALE_CAPTURE:'Fresh camera pictures are required.',OCCUPANCY_CHANGED:'The box arrangement changed during verification.',MODEL_FAILURE:'A prediction model could not complete verification.',VALIDATION_TIMEOUT:'Verification took too long.',LEASE_EXPIRED:'The validation session expired.',DATABASE_FAILURE:'A required data operation failed.',VISIBLE_CHANGE_NET_UNPROVEN:'A visible change was detected, but the quantity change is unproven.',VALIDATION_REJECTED:'The validation checks did not pass.'}[record.reason];
+      const explanation=record.status==='CONSENSUS'?'Required cameras agreed. ESP32 inventory verification is still pending.':record.status==='ACCEPTED'?'The guarded inventory validation passed.':record.status==='RECONCILED'?'Shelf verification completed; this does not imply a borrow or return.':reason || (record.status==='PENDING'?'Waiting for more evidence.':'Inventory change has not been confirmed.');
+      return {location,action,status,explanation,time:Number.isFinite(record.timestamp)?new Date(record.timestamp*1000).toLocaleString():'Time unavailable'};
     }
+    function renderLocalOperations(data,{notify=false}={}){
+      const host=document.getElementById('localOperationsStatus');host.replaceChildren();
+      const add=(parent,tag,text)=>{const node=document.createElement(tag);node.textContent=text;parent.appendChild(node);return node;};
+      const records=[...(data.intents || [])].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
+      const sameRun=localIntentRun===data.run_id;
+      add(host,'p',`Processor: ${bridgeStatus.authoritative_processor==='native'?'Native active':bridgeStatus.mode==='shadow'?'Shadow testing — no automated inventory changes':'Disabled — automated validation paused'}. Updated ${new Date().toLocaleTimeString()}.`);
+      if(!records.length)add(host,'p','No interactions recorded yet. In shadow mode, predictions do not create authoritative action confirmations.');
+      for(const record of records){
+        const view=localIntentPresentation(record),card=add(host,'article','');
+        card.style.cssText='padding:12px;margin:8px 0;border:1px solid var(--border);border-radius:8px;';
+        add(card,'strong',view.status);add(card,'div',view.location);
+        add(card,'div',`${view.action} · ${view.time}${record.camera_id?' · '+record.camera_id:''}`);
+        add(card,'p',view.explanation);
+        if(notify && sameRun && localIntentSeen.get(record.id)!==record.status && ['CONSENSUS','ACCEPTED'].includes(record.status))showToast(`${view.status}: ${view.location}`,record.status==='ACCEPTED'?'success':'info');
+      }
+      localIntentRun=data.run_id;localIntentSeen=new Map(records.map(r=>[r.id,r.status]));
+      const latest=records[0],banner=document.getElementById('confirmedActionBanner');
+      if(latest){const view=localIntentPresentation(latest);banner.textContent=`${view.status} — ${view.location} — ${view.time}. ${view.explanation}`;}
+      else banner.textContent='No confirmed action received.';
+      const blockers=data.release_blockers || [];
+      if(blockers.length)add(host,'p',`Setup required: ${blockers.map(x=>x==='REAL_CAMERA_ACCEPTANCE'?'Real-camera acceptance testing is incomplete':String(x).replace(/_/g,' ').toLowerCase()).join('; ')}.`);
+      if(Object.keys(data.unresolved_failures || {}).length)add(host,'p','Unresolved checks remain. See technical details below.');
+      const details=add(host,'details','');add(details,'summary','Technical diagnostics');
+      const pre=add(details,'pre',JSON.stringify({...data,browser_device_rest:{...cloudRequestMetrics}},null,2));pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;';
+    }
+    async function refreshLocalOperations({notify=false}={}){
+      if(localOperationsBusy)return;
+      localOperationsBusy=true;const epoch=previewGeneration,url=getBridgeUrl();
+      try{
+        const response=await fetch(`${url}/local_operations`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
+        if(!response.ok)throw Error('Local diagnostics unavailable');const data=await response.json();
+        if(epoch===previewGeneration && url===getBridgeUrl())renderLocalOperations(data,{notify});
+      }catch(error){document.getElementById('localOperationsStatus').textContent='Could not refresh diagnostics. Check the local bridge connection.';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+      finally{localOperationsBusy=false;}
+    }
+    async function showLocalOperations(){await refreshLocalOperations();}
     function exportEdgePoseFixture() {
       const picker=document.createElement('input');picker.type='file';picker.accept='image/jpeg,image/png';
       picker.onchange=async()=>{
