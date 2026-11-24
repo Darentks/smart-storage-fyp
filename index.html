@@ -172,15 +172,22 @@
       transition: all 0.15s;
     }
 
-    .cctv-tools {display:grid;gap:16px;margin:18px 0;}
-    .cctv-tool-status {padding:16px;border:1px solid var(--border);border-radius:12px;background:rgba(56,189,248,.06);}
-    .cctv-tool-status h3,.cctv-tool-group h3 {font-size:15px;margin:0 0 8px;}
+    .cctv-tools {display:grid;gap:12px;margin:12px 0;}
+    .cctv-tool-status,.cctv-tool-group {padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(15,23,42,.55);}
+    .cctv-tool-status {border-left:3px solid var(--primary);background:linear-gradient(135deg,rgba(56,189,248,.08),rgba(15,23,42,.6));}
+    .cctv-tool-status h3,.cctv-tool-group h3 {font-size:14px;font-weight:600;letter-spacing:.01em;margin:0 0 8px;color:var(--text-primary);}
     .cctv-tool-status p,.cctv-tool-group p {font-size:12px;color:var(--text-secondary);line-height:1.5;margin:6px 0 12px;}
+    #edgeProcessorStatus {display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:999px;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.25);font-size:12px;font-weight:600;color:var(--primary);margin-bottom:4px;}
+    #confirmedActionBanner {margin-top:10px;padding:10px 12px;border-radius:8px;background:rgba(0,0,0,.28);border:1px solid var(--border);font-size:12px;color:var(--text-primary);}
+    #localOperationsStatus {margin-top:8px;font-size:12px;color:var(--text-secondary);line-height:1.5;}
     .cctv-tool-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px;}
-    .cctv-tool-grid .btn-action {white-space:normal;text-align:left;align-items:flex-start;justify-content:flex-start;padding:14px;min-height:84px;display:flex;flex-direction:column;gap:6px;border-radius:10px;}
-    .cctv-tool-grid .btn-action small {font-weight:400;color:var(--text-secondary);font-size:12px;line-height:1.5;}
+    .cctv-tool-grid .btn-action {white-space:normal;text-align:left;align-items:flex-start;justify-content:flex-start;padding:12px 14px;min-height:78px;display:flex;flex-direction:column;gap:5px;border-radius:10px;background:rgba(15,23,42,.7);transition:border-color .15s ease,background .15s ease,transform .15s ease;}
+    .cctv-tool-grid .btn-action:hover {border-color:var(--primary);background:rgba(56,189,248,.08);transform:translateY(-1px);}
+    .cctv-tool-grid .btn-action span {font-weight:600;font-size:13px;color:var(--text-primary);}
+    .cctv-tool-grid .btn-action small {font-weight:400;color:var(--text-secondary);font-size:11.5px;line-height:1.45;}
     .cctv-tools .btn-action:focus-visible,.cctv-tools summary:focus-visible {outline:2px solid var(--primary);outline-offset:3px;}
-    .cctv-tools summary {cursor:pointer;padding:12px 0;font-weight:600;}
+    .cctv-tools summary {cursor:pointer;padding:2px 0;font-weight:600;font-size:13px;color:var(--text-primary);}
+    #threeCameraEvents {padding:10px 12px;border-radius:8px;background:rgba(7,11,20,.75);border:1px solid var(--border);font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);}
     #confirmedActionBanner {padding:12px;border-left:3px solid var(--primary);border-radius:6px;background:rgba(56,189,248,.06);line-height:1.5;margin:12px 0;}
     .btn-action:hover {
       background: var(--surface-card-hover);
