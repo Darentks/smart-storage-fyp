@@ -1433,7 +1433,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <button type="button" class="btn-action"
                 style="font-size: 10px; padding: 3px 8px; border-color: var(--success); color: var(--success);"
                 onclick="saveCalibratedRois()">
-                &#128190; Save ROIs
+                &#128190; Save ROIs &amp; Finish Calibration
               </button>
               <button type="button" class="btn-action" style="font-size: 10px; padding: 3px 8px;"
                 onclick="resetDefaultRois()">
@@ -1513,6 +1513,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div>Wrists: <span id="cctvWristsText" style="color: var(--text-primary);">None</span></div>
             <div>Dwell: <span id="cctvDwellStatusText" style="color: var(--text-primary);">Idle (0.0s)</span></div>
             <div>Last Event: <span id="cctvLastTriggerText" style="color: var(--warning);">None</span></div>
+            <p id="cctvTrackingHelp" role="status" style="width:100%;line-height:1.5;">Save camera regions and exit calibration before testing wrist dwell.</p>
           </div>
         </div>
       </div>
@@ -5254,7 +5255,15 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       get: (_, key) => key === 'createLinearGradient' ? () => ({ addColorStop() {} }) : () => {},
       set: () => true
     });
+    function updateCctvTrackingHelp(){
+      const help=document.getElementById('cctvTrackingHelp');if(!help)return;
+      help.textContent=isCalibratingRoi?'Calibration active: wrist dwell and events are paused. Save ROIs to finish, or click Exit Calibration.':
+        !isPoseRunning?'Pose tracking is stopped. Select the camera preview to test detection.':
+        bridgeStatus.authoritative_processor==='native'?'Browser overlay is a separate preview. Authoritative three-camera actions are shown in live activity.':
+        'Diagnostic preview only: amber means dwelling, green means this camera observed 1.2 seconds of dwell. Shadow/disabled processing does not confirm inventory actions; native service is required.';
+    }
     function onPoseResults(results, cameraContext = null) {
+      if(!cameraContext)updateCctvTrackingHelp();
       const activeCameraRole = cameraContext?.role ?? windowUnusedRole();
       const activeCctvRois = cameraContext?.rois ?? windowUnusedRois();
       const compartmentTrackers = cameraContext?.trackers ?? windowUnusedTrackers();
@@ -5490,7 +5499,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const dwellStatusEl = document.getElementById('cctvDwellStatusText');
         const dwellMeterEl = document.getElementById('cctvPoseDwellMeter');
         if (dwellStatusEl) {
-          if (maxDwellShelf && activeDwellState !== 'IDLE') {
+          if (isCalibratingRoi) {
+            dwellStatusEl.textContent='Paused: calibration active';
+            dwellStatusEl.style.color='var(--warning)';
+          } else if (maxDwellShelf && activeDwellState !== 'IDLE') {
             dwellStatusEl.textContent = `${maxDwellShelf}: ${activeDwellState} (${maxDwellTime.toFixed(1)}s)`;
             dwellStatusEl.style.color = activeDwellState === 'INTENT_CONFIRMED' ? 'var(--success)' : 'var(--warning)';
           } else {
@@ -6344,7 +6356,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const t0 = performance.now();
         try {
           const resp = await fetch(`${getBridgeUrl()}/test_feed?source=${encodeURIComponent(source)}&cctv_id=${encodeURIComponent(cameraId)}`, { cache: 'no-store' });
-          const data = resp.ok ? await resp.json() : null;
+          if(!resp.ok)throw Error(`Camera feed returned HTTP ${resp.status}`);
+          const data = await resp.json();
+          if(!data?.image)throw Error('Camera feed contains no image');
           if (data && data.image && (data.seq === undefined || data.seq !== lastSeq)) {
             if (data.seq !== undefined) lastSeq = data.seq;
             await new Promise((resolve) => {
@@ -6363,7 +6377,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               lastFreshFrameAt = performance.now();
             }
           }
-        } catch (_) { }
+        } catch (error) {
+          if(isPoseRunning && generation===trackingGeneration){
+            initCompartmentTrackers();
+            document.getElementById('cctvDwellStatusText').textContent='Tracking interrupted: '+(error.message || 'frame or inference failed');
+          }
+        }
         if (performance.now() - lastFreshFrameAt > 300) initCompartmentTrackers();
         if (isPoseRunning && generation === trackingGeneration) {
           const elapsed = performance.now() - t0;
@@ -6392,6 +6411,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         updateCalibCoordsText();
         showToast('ROI Calibration mode active. Drag on canvas to set box.', 'info');
       }
+      updateCctvTrackingHelp();
     }
 
     function onCalibShelfChanged() {
@@ -6430,6 +6450,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         }
         localStorage.setItem(roiStorageKey(), JSON.stringify(activeCctvRois));
         localStorage.setItem(`${roiStorageKey()}_binding`, JSON.stringify({ source: binding, camera_role: activeCameraRole }));
+        toggleRoiCalibrationMode(false);
         showToast(`Saved ROIs for ${activeCctvId} (${activeCameraRole}) to this browser.`, 'success');
       } catch (err) {
         showToast(`Failed to save ROIs: ${err.message}`, 'error');
