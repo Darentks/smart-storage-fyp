@@ -18,7 +18,7 @@ import uuid
 
 from .edge_shadow import EdgeShadow
 from .runtime_inventory import RuntimeInventory, runtime_enabled
-from .preview_panel import NativeObservations
+from .preview_panel import NativeObservations, LIVE_CAPTURE_BOOST, LIVE_CAPTURE_DUTY
 from .validation_diagnostics import failure_code
 from .shelves import SHELF_IDS, SHELF_SET
 from .dual_cam_inventory import REQUIRED_MATCHING_PAIRS, MAX_PAIRS_PER_ATTEMPT
@@ -31,9 +31,9 @@ CHECKS = ('same_frame_tm', 'same_frame_pose', 'action_consensus_parity',
           'bridge_crash_mid_action','roi_source_swap','range_2_3_and_3_4','stale_duplicate_events','runtime_exact_baseline')
 
 
-# Fixed capture settings; no automatic lighting sweep. Same live setting the periodic recheck uses.
-CAPTURE_BOOST='off'
-CAPTURE_DUTY=90
+# One bright fixed capture setting (flash on, duty 140, raw image) shared with the quick diagnostic preview; no lighting sweep.
+CAPTURE_BOOST=LIVE_CAPTURE_BOOST
+CAPTURE_DUTY=LIVE_CAPTURE_DUTY
 MAX_SCAN_ATTEMPTS=3                # automatic count attempts per shelf before "Retry scan" is required
 SCAN_BACKOFF_SECONDS=(5,15,30)     # wait before the next automatic attempt
 SCAN_DEADLINE_SECONDS=90
@@ -543,9 +543,11 @@ class AutonomousProcessor:
                     if status['state'] in ('Starting','Offline','Held') or ready:
                         if sid in self.exhausted or now<self.retry_at.get(sid,0):continue
                         scans.append((shelf,None))
-                for shelf,trigger in (actions+scans)[:1]:self._attempt(shelf,trigger)
-            except Exception:self.log(self.run_id,'native_scheduler_error',code='VALIDATION_PENDING')
-            self.stop.wait(1)
+                work=(actions+scans)[:1]
+                for shelf,trigger in work:self._attempt(shelf,trigger)
+            except Exception:
+                work=[];self.log(self.run_id,'native_scheduler_error',code='VALIDATION_PENDING')
+            self.stop.wait(.2 if work else 1)  # next shelf starts right after one finishes; idle polling stays at 1 s
 
     def close(self):
         if self.runtime is not None:self.runtime.models_ready=False;self.runtime.invalidate()

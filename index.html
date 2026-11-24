@@ -2106,7 +2106,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);renderLiveActivity(data);
         if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?nativeProcessorLabel(data):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
         if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
-        if(bridgeStatus.authoritative_processor==='native') {
+        if(bridgeStatus.authoritative_processor==='native' && !(typeof lastManualPreviewAt!=='undefined' && Date.now()-lastManualPreviewAt<60000)) {
           const shelf=refShelfSelect.value,epoch=previewGeneration;
           const result=await fetch(`${getBridgeUrl()}/native_observation?shelf_id=${encodeURIComponent(shelf)}`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
           if(!result.ok)throw Error('Native observations unavailable');const payload=await result.json();
@@ -2701,9 +2701,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       bridgeStatus={...data,online,authoritative_processor:processor};
       const native=online && processor==='native';
       const button=document.getElementById('diagnosticPreviewButton');
-      button.disabled=!online || native || diagnosticRunning || tmComparisonRunning;
-      button.textContent=native?'Native Preview (Automatic)':'Run Diagnostic Preview (Read-Only)';
-      button.title=!online?'Bridge unavailable':native?'Native owns camera capture; results update automatically':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Preprocessing comparison running':'Read-only capture; inventory is unchanged';
+      button.disabled=!online || diagnosticRunning || tmComparisonRunning;
+      button.textContent='Run Diagnostic Preview (Read-Only)';
+      button.title=!online?'Bridge unavailable':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Preprocessing comparison running':native?'Quick bright capture + Teachable Machine in this browser. Diagnostic only; the native processor keeps counting.':'Read-only capture; inventory is unchanged';
       updateTMComparisonButton();
       document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active \u2014 Displaying authoritative observations.':'Native Processor Disabled \u2014 Automated validation is paused.';
       const batchButton=document.getElementById('tmBatchButton');
@@ -2727,22 +2727,23 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       tmLivePredictionBanner.style.display='block';
       tmLivePredictionBanner.textContent=native?'Native observation; inventory acceptance is shown separately in shelf status.':`Diagnostic Only (No Inventory Write): ${candidate.scenarioLabel || candidate.hold || 'Prediction complete'}`;
     }
+    let lastManualPreviewAt=0;  // a fresh manual preview is not overwritten by the automatic native observation poll
     async function fetchLiveAnglePreview({runMode='diagnostic'}={}) {
       if(runMode!=='diagnostic')throw Error('Browser preview requires explicit diagnostic mode');
-      if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || diagnosticRunning || tmComparisonRunning)return;
-      diagnosticRunning=true;const shelf=refShelfSelect.value;
+      if(!bridgeStatus.online || diagnosticRunning || tmComparisonRunning)return;
+      diagnosticRunning=true;lastManualPreviewAt=Date.now();const shelf=refShelfSelect.value;
       panelState(bridgeStatus);const owned=previewGeneration;
       previewOverlayText.textContent='Capturing diagnostic frames...';
       try {
         const query=new URLSearchParams({run_mode:runMode,shelf_id:shelf,ip:refEspIpInput.value.trim(),ip2:refEspIp2Input.value.trim()});
         const response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',signal:AbortSignal.timeout(10000)});
         const row=await response.json();if(!response.ok)throw Error(row.error || 'Diagnostic capture failed');
-        if(owned!==previewGeneration || !bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || refShelfSelect.value!==shelf)return;
+        if(owned!==previewGeneration || !bridgeStatus.online || refShelfSelect.value!==shelf)return;
         const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
-        if(owned!==previewGeneration || !bridgeStatus.online || bridgeStatus.authoritative_processor==='native')return;
+        if(owned!==previewGeneration || !bridgeStatus.online)return;
         const candidate=await predictDualCamerasWithTM(images[0],images[1],document.getElementById('visionBoostSelect')?.value || 'off');
         console.info('[Diagnostic] Skipping inventory write');
-        if(owned===previewGeneration && bridgeStatus.authoritative_processor!=='native' && bridgeStatus.online && refShelfSelect.value===shelf)renderPanelObservation({...row,candidate},false);
+        if(owned===previewGeneration && bridgeStatus.online && refShelfSelect.value===shelf){lastManualPreviewAt=Date.now();renderPanelObservation({...row,candidate},false);}
       } catch(error){if(owned===previewGeneration){tmLivePredictionBanner.style.display='block';tmLivePredictionBanner.textContent='Diagnostic failed: '+error.message;}}
       finally{diagnosticRunning=false;panelState(bridgeStatus,bridgeStatus.online);}
     }

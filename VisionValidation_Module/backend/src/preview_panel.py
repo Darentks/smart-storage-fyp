@@ -1,9 +1,21 @@
 """Read-only panel data. No leases, inventory receipts, MQTT or cloud writes."""
 import copy
 import ipaddress
+import os
 import threading
 import time
 from .shelves import SHELF_IDS, SHELF_SET
+
+# One bright capture setting shared by the native scanner and the quick diagnostic preview: ESP32 flash on,
+# LED duty 140, raw image (no brightness boost). This is the dashboard's original first capture round and the
+# first setting of the Teachable Machine training capture. SMART_STORAGE_CAPTURE_DUTY (0-255) overrides the duty.
+def _capture_duty():
+    try:return max(0,min(255,int(os.getenv('SMART_STORAGE_CAPTURE_DUTY','140'))))
+    except ValueError:return 140
+
+LIVE_CAPTURE_BOOST='off'
+LIVE_CAPTURE_DUTY=_capture_duty()
+
 
 class NativeObservations:
     def __init__(self):self.lock=threading.Lock();self.rows={}
@@ -21,7 +33,7 @@ class NativeObservations:
 
 def diagnostic_preview(query,manager,coordinator,native):
     if query.get('run_mode',[''])[0]!='diagnostic':return 400,{'error':'Explicit diagnostic mode required'}
-    if native is not None:return 409,{'error':'Native service owns cameras; consume native observations'}
+    # Allowed beside the native processor: read-only, and refused only for a shelf it is scanning right now.
     try:
         shelf=query.get('shelf_id',[''])[0]
         if shelf not in SHELF_SET:raise ValueError('Invalid shelf')
@@ -29,8 +41,8 @@ def diagnostic_preview(query,manager,coordinator,native):
         if ips[0]==ips[1]:raise ValueError('Two different camera IPs required')
         if not all(ipaddress.ip_address(ip).is_private for ip in ips):raise ValueError('Private camera addresses required')
         with coordinator.global_lock:
-            if coordinator.busy():return 409,{'error':'Validation owns cameras; retry after validation'}
-            _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=140,boost_mode='off')
+            if coordinator.busy(shelf):return 409,{'error':'This shelf is being scanned right now; try again in a few seconds'}
+            _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=LIVE_CAPTURE_DUTY,boost_mode=LIVE_CAPTURE_BOOST)
         if not back or not front:return 502,{'error':'Both camera frames required'}
         return 200,dict(status='success',run_mode='diagnostic',authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
     except (ValueError,OSError):return 502,{'error':'Diagnostic capture failed; verify camera addresses/connectivity'}
