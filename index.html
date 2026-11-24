@@ -2104,7 +2104,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       try {
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
         if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);
-        if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?`Native service · ${data.state}`:data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
+        if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?(data.acceptance==='UNACCEPTED_DEVELOPMENT'?`Native service · UNACCEPTED (development) · ${data.state}`:`Native service · ${data.state}`):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
         if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
         if(bridgeStatus.authoritative_processor==='native') {
           const shelf=refShelfSelect.value,epoch=previewGeneration;

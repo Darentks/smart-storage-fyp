@@ -26,6 +26,14 @@ CHECKS = ('same_frame_tm', 'same_frame_pose', 'action_consensus_parity',
           'bridge_crash_mid_action','roi_source_swap','range_2_3_and_3_4','stale_duplicate_events','runtime_exact_baseline')
 
 
+UNACCEPTED_DEV_FLAG='SMART_STORAGE_SERVICE_UNACCEPTED_DEV'
+
+
+def unaccepted_dev_enabled():
+    """Owner-enabled local development run without field acceptance; never implies acceptance."""
+    return os.getenv(UNACCEPTED_DEV_FLAG,'').strip()=='1'
+
+
 def digest(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -153,10 +161,32 @@ def load_service_config(config_path, manifest_path, acceptance_path, code_paths,
     from .local_operations import validate_rois
     calibration=validate_rois(calibration)
     if len(calibration.get('cameras',[]))!=3:raise ValueError('Exactly three camera calibrations required')
+    if config.get('version')!=1 or calibration.get('version')!=1:raise ValueError('SERVICE_CUTOVER_BLOCKED: acceptance missing, expired or mismatched')
+    if acceptance_path is None:
+        # Explicit owner opt-in only: skips field acceptance/parity, keeps every calibration/source check.
+        if not unaccepted_dev_enabled():raise ValueError('SERVICE_CUTOVER_BLOCKED: acceptance missing, expired or mismatched')
+        reports=[]
+    else:
+        reports=_accepted_reports(acceptance_path,manifest_path,calibration_path,code_paths)
+    cameras=[]
+    for i,cid in enumerate(('CCTV_01','CCTV_02','CCTV_03')):
+        rows=[c for c in calibration['cameras'] if c['cctv_id']==cid]
+        if len(rows)!=1:raise ValueError('Three unique camera calibrations required')
+        cam=rows[0];role='SIDE_PRESENCE' if i==2 else 'GRID_6_ROI';source=os.environ[config['source_environment'][cid]]
+        if cam['camera_role']!=role or cam['binding']!={'source':source_binding(source),'camera_role':role}:
+            raise ValueError('Camera source/role binding changed')
+        shelves=['RACK_ENTRY_ZONE'] if i==2 else [f'SHELF_R1_C{j}' for j in range(1,7)]
+        tracker=ActionTracker(role,{s:cam['rois'][s] for s in shelves})
+        cameras.append(dict(id=cid,role=role,source=source,tracker=tracker))
+    if len({source_binding(c['source']) for c in cameras})!=3:raise ValueError('Camera sources must be distinct')
+    return cameras,reports
+
+
+def _accepted_reports(acceptance_path,manifest_path,calibration_path,code_paths):
     acceptance=json.loads(Path(acceptance_path).read_text())
     if acceptance.get('inventory_contract')!='runtime-v1':raise ValueError('Runtime contract needs separate explicit acceptance')
     code_hash=hashlib.sha256(b''.join(Path(p).read_bytes() for p in code_paths)).hexdigest()
-    if (config.get('version')!=1 or calibration.get('version')!=1 or acceptance.get('version')!=1
+    if (acceptance.get('version')!=1
         or acceptance.get('operator_accepted') is not True or not acceptance.get('operator')
         or acceptance.get('code_sha256')!=code_hash or acceptance.get('manifest_sha256')!=digest(manifest_path)
         or acceptance.get('calibration_sha256')!=digest(calibration_path)
@@ -174,18 +204,7 @@ def load_service_config(config_path, manifest_path, acceptance_path, code_paths,
         raise ValueError('Both TM and pose parity reports required')
     if not {'Front','Back','pose'} <= {role for report in reports for role in report.get('models',{})}:
         raise ValueError('Parity reports must bind all three loaded models')
-    cameras=[]
-    for i,cid in enumerate(('CCTV_01','CCTV_02','CCTV_03')):
-        rows=[c for c in calibration['cameras'] if c['cctv_id']==cid]
-        if len(rows)!=1:raise ValueError('Three unique camera calibrations required')
-        cam=rows[0];role='SIDE_PRESENCE' if i==2 else 'GRID_6_ROI';source=os.environ[config['source_environment'][cid]]
-        if cam['camera_role']!=role or cam['binding']!={'source':source_binding(source),'camera_role':role}:
-            raise ValueError('Camera source/role binding changed')
-        shelves=['RACK_ENTRY_ZONE'] if i==2 else [f'SHELF_R1_C{j}' for j in range(1,7)]
-        tracker=ActionTracker(role,{s:cam['rois'][s] for s in shelves})
-        cameras.append(dict(id=cid,role=role,source=source,tracker=tracker))
-    if len({source_binding(c['source']) for c in cameras})!=3:raise ValueError('Camera sources must be distinct')
-    return cameras,reports
+    return reports
 
 
 class NativeClient:
@@ -232,6 +251,7 @@ class AutonomousProcessor:
         self.request=request;self.capture=capture;self.shelves=shelves;self.pending=pending
         self.invalidate=invalidate;self.log=log;self.stop=threading.Event();self.threads=[]
         self.state='Starting';self.last_frames={};self.health={};self.retry_at={};self.metrics={}
+        self.acceptance='ACCEPTED'  # Set to UNACCEPTED_DEVELOPMENT by the bridge for owner dev runs.
         self.runtime: RuntimeInventory | None=None
         self.panel_observations=NativeObservations()
 
@@ -250,7 +270,8 @@ class AutonomousProcessor:
         return dict(mode='service',authoritative_processor='service',service_cutover_available=True,
             inventory_mode='runtime' if self.runtime is not None else 'persistent',
             startup_id=self.run_id,state=self.state,cameras=dict(self.health),model_versions=self.native.versions,
-            metrics=dict(self.metrics),restart_count=self.native.failures,authorizes_write=False)
+            metrics=dict(self.metrics),restart_count=self.native.failures,authorizes_write=False,
+            acceptance=self.acceptance,release_blockers=[] if self.acceptance=='ACCEPTED' else ['REAL_CAMERA_ACCEPTANCE'])
 
     def cameras_ready(self):
         return all(self.health.get(c['id'],{}).get('state')=='Online' and

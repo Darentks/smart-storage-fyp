@@ -2655,6 +2655,8 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
 def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
     global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY, LOCAL_INTENTS, LOCAL_ROIS, RUNTIME_INVENTORY, READINESS
     runtime=os.path.join(os.path.dirname(__file__),'..','.runtime')
+    from src.config_loader import find_and_load_env
+    find_and_load_env()  # Protected local .env supplies processor/source settings; shell values still win.
     with InstanceLock(os.path.join(runtime,'bridge.lock')):
         import signal
         def stop_signal(*_): raise KeyboardInterrupt()
@@ -2685,8 +2687,13 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 root=Path(__file__).resolve().parent.parent
                 manifest=os.getenv('SMART_STORAGE_EDGE_MANIFEST') or str(root/'.runtime/edge-models/manifest.json')
                 code_paths=acceptance_code_paths(root)
+                acceptance_path=os.getenv('SMART_STORAGE_EDGE_ACCEPTANCE') or None
                 cameras,reports=load_service_config(os.environ['SMART_STORAGE_EDGE_CONFIG'],manifest,
-                    os.environ['SMART_STORAGE_EDGE_ACCEPTANCE'],code_paths,LOCAL_ROIS.path)
+                    acceptance_path,code_paths,LOCAL_ROIS.path)
+                if acceptance_path is None:
+                    event(READINESS.run_id,'service_unaccepted_dev')
+                    print('[CameraService] WARNING: native service running UNACCEPTED (development). '
+                          'REAL_CAMERA_ACCEPTANCE is still outstanding; results are not field-accepted.')
                 def local_request(path,body):
                     handler=object.__new__(CameraServiceRequestHandler)
                     handler.path=path;handler.headers=HTTPMessage();handler.client_address=('127.0.0.1',0)
@@ -2719,6 +2726,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                     NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),
                     cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event)
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
+                if acceptance_path is None:AUTONOMOUS.acceptance='UNACCEPTED_DEVELOPMENT'
                 configure_cctv_alignment([{'cctv_id':c['id'],'camera_role':c['role'],'is_active':True} for c in cameras])
                 PROCESSOR_AUTHORITY='service'
             EDGE_SHADOW = EdgeShadow(Path(__file__).resolve().parent.parent, READINESS.run_id,
