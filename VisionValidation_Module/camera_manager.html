@@ -1119,7 +1119,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <label>Verified back label: <select id="tmBatchBack"><option value="">Choose physical scenario</option><option>Back_11X</option><option>Back_X01</option><option>Back_100</option><option>Back_000</option></select></label>
               <label>Verified front label: <select id="tmBatchFront"><option value="">Choose physical scenario</option><option>Front_111</option><option>Front_110</option><option>Front_100</option><option>Front_011</option><option>Front_010</option><option>Front_000</option></select></label>
               <small>8 pairs = 16 training pictures. Keep the arrangement unchanged. Raw lighting, boost OFF, full-frame 224 x 224; no inventory write.</small>
-              <button type="button" id="tmBatchButton" class="btn-action" disabled title="Checking bridge" onclick="captureTMTrainingBatch()">Capture Training Batch (ZIP)</button>
+              <button type="button" id="tmBatchButton" class="btn-action" disabled title="Checking bridge" onclick="captureTMTrainingBatch()">Capture Training Batch (Back + Front ZIPs)</button>
               <button type="button" id="tmBatchCancel" class="btn-action" disabled onclick="cancelTMTrainingBatch()">Cancel Batch</button>
               <div id="tmBatchStatus" aria-live="polite"></div>
               <div id="tmBatchDownload"></div>
@@ -2530,7 +2530,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     let bridgeStatus={online:false,authoritative_processor:'none',state:'Disconnected'};
     let diagnosticRunning=false,previewGeneration=0;
-    let tmBatchRunning=false,tmBatchCancelled=false,tmBatchController=null,tmBatchUrl=null;
+    let tmBatchRunning=false,tmBatchCancelled=false,tmBatchController=null,tmBatchUrls=[];
     let tmComparisonRunning=false,tmComparisonFrames=null;
     function updateTMComparisonButton(){
       const button=document.getElementById('tmPreprocessingCompareButton');
@@ -2630,8 +2630,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       tmBatchRunning=diagnosticRunning=true;tmBatchCancelled=false;panelState(bridgeStatus);
       document.getElementById('tmBatchCancel').disabled=false;
       const host=document.getElementById('tmBatchDownload');host.replaceChildren();
-      if(tmBatchUrl){URL.revokeObjectURL(tmBatchUrl);tmBatchUrl=null;}
-      const session=new Date().toISOString().replace(/[:.]/g,'-'),files=[],manifest={version:1,shelf,session,ip_back:ip,ip_front:ip2,back_label:backLabel,front_label:frontLabel,labels_source:'user-verified',preprocessing:'full-frame-224x224',boost:'off',mirrored:false,authorizes_write:false,captures:[]};
+      tmBatchUrls.forEach(url=>URL.revokeObjectURL(url));tmBatchUrls=[];
+      const session=new Date().toISOString().replace(/[:.]/g,'-'),files={Back:[],Front:[]};
       try{
         for(let i=1;i<=count;i++){
           check();status.textContent=`Capturing pair ${i}/${count} (read-only)...`;
@@ -2646,20 +2646,18 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           check();
           const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
           for(const [role,image,label] of [['Back',images[0],backLabel],['Front',images[1],frontLabel]]){
-            const name=`training/${role}/${label}/${shelf}_${session}_${String(i).padStart(2,'0')}.png`;
-            files.push({name,blob:await tmCanvasPNG(preprocessForTM(image,'off'))});
-            // Retain full-resolution evidence for later preprocessing comparisons.
-            const original=document.createElement('canvas');original.width=image.naturalWidth;original.height=image.naturalHeight;original.getContext('2d').drawImage(image,0,0);
-            files.push({name:name.replace('training/','originals/'),blob:await tmCanvasPNG(original)});
-            manifest.captures.push({pair:i,role,label,file:name,timestamp:row.timestamp,width:image.naturalWidth,height:image.naturalHeight});
+            const name=`${label}_${shelf}_${session}_${String(i).padStart(2,'0')}.png`;
+            files[role].push({name,blob:await tmCanvasPNG(preprocessForTM(image,'off'))});
           }
           if(i<count)await new Promise(resolve=>setTimeout(resolve,2000));
         }
-        check();files.push({name:'manifest.json',blob:new Blob([JSON.stringify(manifest,null,2)],{type:'application/json'})});
-        const zip=await buildTMTrainingZip(files);check();
-        tmBatchUrl=URL.createObjectURL(zip);
-        const link=document.createElement('a');link.href=tmBatchUrl;link.download=`TM_${shelf}_${session}.zip`;link.textContent='Download training batch ZIP';host.appendChild(link);link.click();
-        status.textContent=`Complete: ${count*2} training PNGs plus originals and manifest. Extract ZIP and upload training images into their matching TM classes. No inventory write.`;
+        check();const archives=await Promise.all(['Back','Front'].map(role=>buildTMTrainingZip(files[role])));check();
+        try{for(const zip of archives)tmBatchUrls.push(URL.createObjectURL(zip));}
+        catch(error){tmBatchUrls.forEach(url=>URL.revokeObjectURL(url));tmBatchUrls=[];throw error;}
+        for(const [i,role,label] of [[0,'Back',backLabel],[1,'Front',frontLabel]]){
+          const link=document.createElement('a');link.href=tmBatchUrls[i];link.download=`TM_${role}_${label}_${shelf}_${session}.zip`;link.textContent=`Download ${role} ZIP (${count} training images for ${label})`;link.style.display='block';host.appendChild(link);link.click();
+        }
+        status.textContent=`Complete: Back ZIP and Front ZIP, ${count} training PNGs each. Extract each ZIP and upload its images to the named TM class. If a download is blocked, use the links below. No inventory write.`;
         console.info('[Diagnostic] Skipping inventory write');
       }catch(error){status.textContent=tmBatchCancelled?'Batch cancelled; incomplete batch discarded.':'Batch failed: '+error.message;}
       finally{tmBatchRunning=diagnosticRunning=false;tmBatchController=null;document.getElementById('tmBatchCancel').disabled=true;panelState(bridgeStatus,bridgeStatus.online);}
