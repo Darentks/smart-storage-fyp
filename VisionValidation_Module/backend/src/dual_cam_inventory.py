@@ -44,6 +44,13 @@ def decode_pair(front, back) -> tuple[int, int, int, int, int]:
     return (int(f1), int(m1), int(m2), int(b1), int(b2))
 
 
+# One sample contract for every layer (coordinator, RAM authority, legacy validator).
+# A scan/confirmation attempt takes at most MAX_PAIRS_PER_ATTEMPT paired captures and
+# succeeds when REQUIRED_MATCHING_PAIRS consecutive pairs agree on the same occupancy.
+REQUIRED_MATCHING_PAIRS = 2
+MAX_PAIRS_PER_ATTEMPT = 3
+
+
 class CaptureTiming(NamedTuple):
     capture_id: str
     completed_at: float
@@ -85,12 +92,12 @@ def validate_capture(sample, now, captures, shelf_id, validation_token, seen,
 
 
 def validate_evidence(evidence, count, now, captures, shelf_id, validation_token=None, not_before=None) -> tuple[tuple[int, int, int, int, int], set[str]]:
-    """Require three distinct recent server-issued captures with identical occupancy."""
+    """Require consecutive distinct recent server-issued captures with identical occupancy."""
     if not isinstance(evidence, dict) or evidence.get("version") != VERSION:
         raise ValueError("Live visibility-aware evidence is required; reload the updated dashboard")
     samples = evidence.get("samples")
-    if not isinstance(samples, list) or not 3 <= len(samples) <= 5:
-        raise ValueError("Three consistent live captures are required")
+    if not isinstance(samples, list) or not REQUIRED_MATCHING_PAIRS <= len(samples) <= MAX_PAIRS_PER_ATTEMPT:
+        raise ValueError(f"{REQUIRED_MATCHING_PAIRS} consistent live captures are required")
     if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= 5:
         raise ValueError("Inventory count must be an integer from 0 to 5")
     previous = None

@@ -57,14 +57,15 @@ def validate_runtime_request(
         if not coordinator.owns(sid, token):
             return (409, {'status': 'VALIDATION_PENDING', 'error': 'Validation lease expired'})
         try:
-            if not mqtt.is_connected:
+            source = body.get('source')
+            # Initial counts use the ESP32 HTTP pair only; actions also need the MQTT action transport.
+            if source != 'STARTUP' and not mqtt.is_connected:
                 raise ValueError('MQTT unavailable')
             if not body.get('image_back') or not body.get('image_front'):
                 raise ValueError('Both camera images required')
             mappings = [row for row in load_mappings() if row.get('shelf_id') == sid]
             if len(mappings) != 1 or not body.get('ip') or (not body.get('ip2')) or (body['ip'] == body['ip2']) or ((body['ip'], body['ip2']) != (mappings[0].get('ip_address'), mappings[0].get('secondary_ip_address'))):
                 raise ValueError('Configured paired cameras required')
-            source = body.get('source')
             event = None
             if source == 'CCTV':
                 with consensus_lock:
@@ -81,7 +82,7 @@ def validate_runtime_request(
                     receipt = captures.get(sample.get('capture', {}).get('id'), {})
                     if (receipt.get('ip1'), receipt.get('ip2')) != (body.get('ip'), body.get('ip2')):
                         raise ValueError('Camera mapping mismatch')
-                result = authority.accept(sid, run_id=body.get('run_id'), expected_version=body.get('expected_version'), event_id=body.get('trigger_id') if event else body.get('runtime_event_id'), source=source, samples=samples, captures=captures, lease=token, event=event)
+                result = authority.accept(sid, run_id=body.get('run_id'), expected_version=body.get('expected_version'), event_id=body.get('trigger_id') if event else body.get('runtime_event_id'), source=source, samples=samples, captures=captures, lease=token, event=event, transport_ok=bool(mqtt.is_connected))
             readiness.set(sid, 'Ready', 'Fresh runtime ' + result['precision'] + ' observation; no persisted inventory', result['version'])
             if source=='CCTV' and intents is not None:intents.update(body['trigger_id'],'ACCEPTED')
             return (200, result)

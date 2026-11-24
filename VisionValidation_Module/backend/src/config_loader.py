@@ -329,6 +329,22 @@ def get_active_camera_record() -> Optional[Dict[str, Any]]:
     return None
 
 
+def get_cctv_sources() -> Dict[str, str]:
+    """Saved camera sources for the shared native processor: {cctv_id: source}.
+
+    Device administration read only (cctv_cameras). Values may contain camera credentials,
+    so callers must never log, expose or persist them; ROI bindings use the credential-free form.
+    """
+    rows = _supabase_rest(method="GET", table="cctv_cameras",
+                          query="?select=cctv_id,rtsp_url,is_active&is_active=eq.true&order=cctv_id.asc")
+    sources: Dict[str, str] = {}
+    for row in rows if isinstance(rows, list) else []:
+        cid, source = row.get("cctv_id"), str(row.get("rtsp_url") or "").strip()
+        if cid in ("CCTV_01", "CCTV_02", "CCTV_03") and source and cid not in sources:
+            sources[cid] = source
+    return sources
+
+
 def get_active_rtsp_url(default_source: Union[int, str] = 0) -> Union[int, str]:
     """Retrieves the RTSP URL of the active CCTV camera from Supabase."""
     print("[ConfigLoader] Ingestion: Resolving active camera feed configuration...")

@@ -189,6 +189,17 @@ def configure_cctv_alignment(cameras):
     return {"status": "success", "required_cameras": sum(c["is_active"] for c in config.values())}
 
 
+def consensus_view():
+    """Read-only live agreement state for the dashboard: current votes and any consensus awaiting box-count confirmation."""
+    now = time.time()
+    with CCTV_CONSENSUS_LOCK:
+        votes = {cid: dict(shelf_id=v["shelf_id"], action=v["action"], role=v["camera_role"], age=round(now - v["ts"], 1))
+                 for cid, v in CCTV_ALIGN_STATE.items() if 0 <= now - v["ts"] <= CONSENSUS_WINDOW_SEC}
+        pending = [dict(shelf_id=t["shelf_id"], action=t.get("expected_action"), claimed=bool(t.get("claimed")), age=round(now - t["timestamp"], 1))
+                   for t in PENDING_CCTV_TRIGGERS if 0 <= now - t.get("timestamp", 0) < 60][-3:]
+    return dict(window_seconds=CONSENSUS_WINDOW_SEC, votes=votes, pending=pending)
+
+
 def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=None,
                           trigger_id=None, dwell_duration_seconds=1.2, consensus_context=None, detected_at=None):
     """Atomically align distinct enabled cameras and queue one claimable validation."""
@@ -1188,14 +1199,46 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             self._send_json(422,{'status':'failed','error':'ROI import rejected','output':output});return
         reload=NATIVE_CALIBRATION_RELOAD
         if reload is None:
-            verification={'status':'not_running','message':'No native service in this mode; browser/shadow use the installed file after restart.'}
+            verification={'status':'not_running','message':'The native processor is not running in this mode; the installed file is used after a normal restart.'}
         else:
             try:
                 reload()
-                verification={'status':'verifying','message':'Calibration reloaded; all shelves re-baseline after the quiet window and three paired ESP32 captures.'}
+                verification={'status':'verifying','message':'Calibration reloaded; every shelf is recounted after the quiet window from two matching paired ESP32 pictures.'}
             except Exception as exc:
-                verification={'status':'blocked','message':str(exc)[:300]+' — restart (and re-accept, if accepted mode) to use the new calibration.'}
+                verification={'status':'blocked','message':str(exc)[:300]+' — counts continue, but actions stay paused until this is fixed and installed again.'}
         self._send_json(200,{'status':'installed','output':output,'native':verification,'run_id':READINESS.run_id})
+
+    def _request_scan(self, body):
+        """Retry scan: ask the shared native scanner to recount. The browser never captures or writes inventory."""
+        if self.client_address[0] not in ('127.0.0.1','::1','::ffff:127.0.0.1'):
+            try:
+                require_application_user(getattr(self,'headers',{}).get('Authorization'))
+            except BridgeAccessError as exc:
+                self._send_json(exc.status,{'error':str(exc)});return
+        processor, authority = AUTONOMOUS, globals().get('RUNTIME_INVENTORY')
+        if processor is None or authority is None:
+            self._send_json(409,{'error':'The native processor is not running on this bridge'});return
+        shelf = body.get('shelf_id') if isinstance(body, dict) else None
+        if shelf not in (None, '') and shelf not in SHELF_SET:
+            self._send_json(400,{'error':'Unknown shelf'});return
+        scheduled, busy = [], []
+        with RECHECKS.global_lock:
+            for sid in ([shelf] if shelf else sorted(SHELF_SET)):
+                snapshot = authority.snapshot(sid)
+                if RECHECKS.busy(sid):
+                    busy.append(sid);continue  # a scan or action is already in flight for this shelf
+                if not shelf and snapshot['state'] == 'Ready' and snapshot['action_capable']:
+                    continue  # "scan all" never discards a healthy action-ready count
+                authority.reset_shelf(sid)
+                READINESS.set(sid,'Starting','Fresh count requested')
+                with CCTV_CONSENSUS_LOCK:
+                    PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if t.get('shelf_id') != sid]
+                with DUAL_CAM_CAPTURE_LOCK:
+                    for key in list(DUAL_CAM_CAPTURES):
+                        if DUAL_CAM_CAPTURES[key].get('shelf_id') == sid:DUAL_CAM_CAPTURES.pop(key,None)
+                processor.reset_scan_budget(sid)
+                scheduled.append(sid)
+        self._send_json(200,{'status':'scheduled','shelves':scheduled,'busy':busy,'run_id':READINESS.run_id})
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -1285,9 +1328,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             self._send_json(403,{'error':'Service owns live captures; dashboard is monitoring-only'})
             return
         if path == '/edge_status':
-            self._send_json(200, AUTONOMOUS.snapshot() if AUTONOMOUS else EDGE_SHADOW.snapshot() if EDGE_SHADOW else {
+            status = AUTONOMOUS.snapshot() if AUTONOMOUS else EDGE_SHADOW.snapshot() if EDGE_SHADOW else {
                 'mode':'browser','authoritative_processor':'none','service_cutover_available':False,
-                'state':'Disabled','startup_id':READINESS.run_id,'authorizes_write':False})
+                'state':'Disabled','startup_id':READINESS.run_id,'authorizes_write':False}
+            self._send_json(200, dict(status, consensus=consensus_view()) if AUTONOMOUS else status)
             return
         if path == "/validation_diagnostics":
             shelf = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query).get('shelf_id',[None])[0]
@@ -1299,7 +1343,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         if path == "/shelf_readiness":
             shelves = [r['shelf_id'] for r in get_cached_compartments() if r.get('shelf_id')]
             for shelf in shelves:
-                if not mqtt_bridge.is_connected:
+                if not mqtt_bridge.is_connected and PROCESSOR_AUTHORITY != 'service':
+                    # Service mode counts over ESP32 HTTP; MQTT loss only pauses actions (see native.actions_paused_reason).
                     READINESS.set(shelf,'Offline','MQTT unavailable')
                     continue
                 old=READINESS.get(shelf)
@@ -1318,10 +1363,20 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                                 if DUAL_CAM_CAPTURES[key].get('shelf_id')==shelf:DUAL_CAM_CAPTURES.pop(key,None)
                     READINESS.set(shelf,'Held','Verification interrupted or lease expired; retry verification')
                 # Monitoring is local; validation/recovery always reads fresh state.
+            authority, processor = globals().get('RUNTIME_INVENTORY'), globals().get('AUTONOMOUS')
+            shelf_views = {}
+            for key in shelves:
+                row = READINESS.get(key)
+                if authority is not None:
+                    snapshot = authority.snapshot(key)
+                    row = dict(row, runtime=snapshot)
+                    if processor is not None:
+                        row['native'] = processor.shelf_status(key, snapshot)
+                shelf_views[key] = row
             self._send_json(200, {"run_id": READINESS.run_id, "processor_mode": PROCESSOR_AUTHORITY,
                 'mqtt_connected':mqtt_bridge.is_connected,
                 'inventory_mode':'runtime' if globals().get('RUNTIME_INVENTORY') else 'persistent',
-                "shelves": {key: dict(READINESS.get(key),runtime=authority.snapshot(key)) if (authority:=globals().get('RUNTIME_INVENTORY')) is not None else READINESS.get(key) for key in shelves}})
+                "shelves": shelf_views})
             return
 
         query = urllib.parse.parse_qs(parsed.query)
@@ -1664,13 +1719,17 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
+        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns processing; normal dashboard operations are monitoring-only'})
             return
         body = self._read_json_body()
 
         if path == '/local_rois':
             self._install_local_rois(body)
+            return
+
+        if path == '/scan_request':
+            self._request_scan(body)
             return
 
         if path == "/cctv_replay":
@@ -2721,24 +2780,40 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
             LOCAL_INTENTS=LatestIntents(data_dir/'latest-intents.json')
             LOCAL_ROIS=RoiStore(data_dir/'camera-rois.json')
             READINESS.failures=LocalFailures(data_dir/'unresolved-failures.json')
-            mode=os.getenv('SMART_STORAGE_PROCESSOR_MODE','browser').strip().lower()
+            # One normal workflow: the shared native processor. browser/shadow remain explicit read-only diagnostics.
+            mode=os.getenv('SMART_STORAGE_PROCESSOR_MODE','service').strip().lower()
             if runtime_enabled():
                 if mode not in {'browser','shadow','service'}:raise ValueError('Invalid processor mode')
                 RUNTIME_INVENTORY=RuntimeInventory(READINESS.run_id,int(os.getenv('SMART_STORAGE_QUIET_SECONDS','2')))
                 CONFIRMED_OCCUPANCY.clear();SUPABASE_COMPARTMENTS_CACHE.update(data=[],fetched_at=0)
                 mqtt_bridge.sync_supabase=False
             if mode=='service':
-                from src.autonomous_edge import load_service_config, NativeClient, AutonomousProcessor, acceptance_code_paths
+                from src.autonomous_edge import (load_cameras, load_service_config, _accepted_reports, NativeClient,
+                    AutonomousProcessor, acceptance_code_paths)
+                from src.config_loader import get_cctv_sources
                 root=Path(__file__).resolve().parent.parent
                 manifest=os.getenv('SMART_STORAGE_EDGE_MANIFEST') or str(root/'.runtime/edge-models/manifest.json')
                 code_paths=acceptance_code_paths(root)
                 acceptance_path=os.getenv('SMART_STORAGE_EDGE_ACCEPTANCE') or None
-                cameras,reports=load_service_config(os.environ['SMART_STORAGE_EDGE_CONFIG'],manifest,
-                    acceptance_path,code_paths,LOCAL_ROIS.path)
-                if acceptance_path is None:
-                    event(READINESS.run_id,'service_unaccepted_dev')
-                    print('[CameraService] WARNING: native service running UNACCEPTED (development). '
-                          'REAL_CAMERA_ACCEPTANCE is still outstanding; results are not field-accepted.')
+                config_path=os.getenv('SMART_STORAGE_EDGE_CONFIG') or None
+                roi_path=LOCAL_ROIS.path
+                def resolve_service_cameras():
+                    """Installed ROIs + real sources. Sources: EDGE_CCTV_0x_SOURCE override, else the saved camera records."""
+                    if config_path:  # explicit legacy config file
+                        return load_service_config(config_path,manifest,None,code_paths,roi_path)[0]
+                    try:saved=get_cctv_sources()
+                    except Exception:saved={}
+                    return load_cameras(roi_path,lambda cid:os.getenv('EDGE_'+cid+'_SOURCE') or saved.get(cid),roi_path)
+                accepted=False;reports=[]
+                if acceptance_path:
+                    # Optional record: it can only upgrade the label; a missing/expired one never blocks normal startup.
+                    try:reports=_accepted_reports(acceptance_path,manifest,roi_path,code_paths);accepted=True
+                    except Exception as exc:print('[CameraService] Acceptance record not applied ('+str(exc)[:120]+'); running NOT_FIELD_ACCEPTED.')
+                setup_issue=None
+                try:cameras=resolve_service_cameras()
+                except (ValueError,OSError,KeyError,TypeError) as exc:cameras=[];setup_issue=str(exc)[:300]
+                print('[CameraService] Native processor starting'+('' if accepted else ' (NOT field-accepted: counts and actions are unverified on real hardware)')+'.')
+                if setup_issue:print('[CameraService] Setup needed: '+setup_issue)
                 def local_request(path,body):
                     handler=object.__new__(CameraServiceRequestHandler)
                     handler.path=path;handler.headers=HTTPMessage();handler.client_address=('127.0.0.1',0)
@@ -2765,23 +2840,28 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                     esp32_ref_manager.baseline_freeze_until.clear()
                     if AUTONOMOUS is not None:
                         AUTONOMOUS.panel_observations.clear()
+                        AUTONOMOUS.reset_scan_budget()  # new evidence boundary: counts may be retried
                         for camera in AUTONOMOUS.cameras:camera['tracker'].reset()
                 mqtt_bridge.on_connection_lost=lambda:invalidate('MQTT unavailable')
                 AUTONOMOUS=AutonomousProcessor(READINESS.run_id,
                     NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),
                     cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event)
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
-                if acceptance_path is None:AUTONOMOUS.acceptance='UNACCEPTED_DEVELOPMENT'
-                processor,roi_path,authority=AUTONOMOUS,LOCAL_ROIS.path,RUNTIME_INVENTORY
+                AUTONOMOUS.acceptance='ACCEPTED' if accepted else 'NOT_FIELD_ACCEPTED'
+                if setup_issue:AUTONOMOUS.calibration_issue=setup_issue
+                processor,authority=AUTONOMOUS,RUNTIME_INVENTORY
                 def reload_native_calibration():
-                    # Same gate as startup: an accepted record pins the calibration hash, so a changed file is rejected.
-                    fresh,_=load_service_config(os.environ['SMART_STORAGE_EDGE_CONFIG'],manifest,acceptance_path,code_paths,roi_path)
+                    """Install to Bridge: re-validate the installed file, drop old evidence, recount every shelf."""
+                    try:fresh=resolve_service_cameras()
+                    except (ValueError,OSError,KeyError,TypeError) as exc:
+                        invalidate('Calibration changed');processor.set_calibration_issue(str(exc)[:300]);raise
                     invalidate('Calibration changed')
                     if authority is not None:authority.clear_baselines()
                     processor.reload_calibration(fresh)
                     event(READINESS.run_id,'native_calibration_reloaded')
                 NATIVE_CALIBRATION_RELOAD=reload_native_calibration
-                configure_cctv_alignment([{'cctv_id':c['id'],'camera_role':c['role'],'is_active':True} for c in cameras])
+                configure_cctv_alignment([{'cctv_id':cid,'camera_role':'SIDE_PRESENCE' if cid=='CCTV_03' else 'GRID_6_ROI','is_active':True}
+                    for cid in ('CCTV_01','CCTV_02','CCTV_03')])
                 PROCESSOR_AUTHORITY='service'
             EDGE_SHADOW = EdgeShadow(Path(__file__).resolve().parent.parent, READINESS.run_id,
                 mode='browser' if mode=='service' else mode,

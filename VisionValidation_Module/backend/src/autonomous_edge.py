@@ -1,7 +1,10 @@
 """Browser-independent orchestration; all inventory writes still use bridge guards.
 
-Activation requires explicit local configuration, parity reports and operator
-acceptance. No credentials or acquisition URLs are passed to the Node worker.
+One shared native coordinator counts every shelf from fresh ESP32 pairs, watches the
+three CCTVs and confirms actions with fresh pairs. Normal startup needs only the saved
+device records, installed ROIs and staged models; a field-acceptance record is optional
+and, when supplied, is fully verified. Normal operation is labelled NOT_FIELD_ACCEPTED.
+No credentials or acquisition URLs are passed to the Node worker.
 """
 import hashlib
 import json
@@ -18,6 +21,7 @@ from .runtime_inventory import RuntimeInventory, runtime_enabled
 from .preview_panel import NativeObservations
 from .validation_diagnostics import failure_code
 from .shelves import SHELF_IDS, SHELF_SET
+from .dual_cam_inventory import REQUIRED_MATCHING_PAIRS, MAX_PAIRS_PER_ATTEMPT
 
 
 CHECKS = ('same_frame_tm', 'same_frame_pose', 'action_consensus_parity',
@@ -27,12 +31,45 @@ CHECKS = ('same_frame_tm', 'same_frame_pose', 'action_consensus_parity',
           'bridge_crash_mid_action','roi_source_swap','range_2_3_and_3_4','stale_duplicate_events','runtime_exact_baseline')
 
 
-UNACCEPTED_DEV_FLAG='SMART_STORAGE_SERVICE_UNACCEPTED_DEV'
+# Fixed capture settings; no automatic lighting sweep. Same live setting the periodic recheck uses.
+CAPTURE_BOOST='off'
+CAPTURE_DUTY=90
+MAX_SCAN_ATTEMPTS=3                # automatic count attempts per shelf before "Retry scan" is required
+SCAN_BACKOFF_SECONDS=(5,15,30)     # wait before the next automatic attempt
+SCAN_DEADLINE_SECONDS=90
+
+SCAN_MESSAGES={
+    'BACK_CAMERA_OFFLINE':'Count unavailable — back camera offline.',
+    'FRONT_CAMERA_OFFLINE':'Count unavailable — front camera offline.',
+    'BACK_CAMERA_NOT_CONFIGURED':'Count unavailable — back camera is not assigned to this shelf.',
+    'FRONT_CAMERA_NOT_CONFIGURED':'Count unavailable — front camera is not assigned to this shelf.',
+    'CAPTURE_FAILED':'Count unavailable — could not take the camera pictures; check the ESP32 connection.',
+    'MISSING_CAMERA':'Count unavailable — a shelf camera did not respond.',
+    'LOW_CONFIDENCE':'Low confidence — the cameras could not read the boxes clearly.',
+    'M2_CONFLICT':'Count unavailable — front and back cameras disagree about the shared slot.',
+    'OCCUPANCY_CHANGED':'The boxes changed between pictures — keep hands clear.',
+    'STALE_CAPTURE':'Camera pictures were too slow or out of date.',
+    'QUIET_WINDOW':'Waiting for the rack to be clear — keep hands away.',
+    'MODEL_FAILURE':'Count unavailable — the box-reading models are not responding.',
+    'VALIDATION_TIMEOUT':'The scan took too long.',
+    'LEASE_EXPIRED':'The scan was interrupted.',
+    'MQTT_UNAVAILABLE':'MQTT is unavailable.',
+}
 
 
-def unaccepted_dev_enabled():
-    """Host-configured shared development run; never implies field acceptance."""
-    return os.getenv(UNACCEPTED_DEV_FLAG,'').strip()=='1'
+def scan_message(code):
+    return SCAN_MESSAGES.get(code) or 'Count unavailable — the pictures did not pass the safety checks.'
+
+
+class ScanFailure(ValueError):
+    """A scan/confirmation attempt that stopped for a specific, user-explainable reason."""
+    def __init__(self, code, detail=''):
+        super().__init__(detail or scan_message(code))
+        self.code=code
+
+
+def reason_code(exc):
+    return getattr(exc,'code',None) or failure_code(exc)
 
 
 def digest(path):
@@ -152,34 +189,37 @@ class ActionTracker:
         return votes
 
 
-def load_service_config(config_path, manifest_path, acceptance_path, code_paths,roi_path=None):
-    """Local-only activation gate, bound to code, models, calibrations and reports."""
-    runtime_enabled()  # Legacy release selection cannot restore cloud inventory authority.
-    config_path=Path(config_path).resolve();base=config_path.parent
-    config=json.loads(config_path.read_text());calibration_path=(base/config['calibration_file']).resolve()
+def load_cameras(calibration_path, source_for, roi_path=None):
+    """Validate the installed ROIs against the real camera sources; errors name the affected camera."""
+    calibration_path=Path(calibration_path).resolve()
     if roi_path is not None and calibration_path!=Path(roi_path).resolve():raise ValueError('Native calibration must use the deployed local ROI store')
-    calibration=json.loads(calibration_path.read_text())
+    try:raw=json.loads(calibration_path.read_text(encoding='utf8'))
+    except FileNotFoundError:raise ValueError('No camera calibration is installed yet; calibrate the cameras and use Install to Bridge') from None
     from .local_operations import validate_rois
-    calibration=validate_rois(calibration)
-    if len(calibration.get('cameras',[]))!=3:raise ValueError('Exactly three camera calibrations required')
-    if config.get('version')!=1 or calibration.get('version')!=1:raise ValueError('SERVICE_CUTOVER_BLOCKED: acceptance missing, expired or mismatched')
-    if acceptance_path is None:
-        # Explicit deployment opt-in: skips field acceptance/parity, keeps calibration/source checks.
-        if not unaccepted_dev_enabled():raise ValueError('SERVICE_CUTOVER_BLOCKED: acceptance missing, expired or mismatched')
-        reports=[]
-    else:
-        reports=_accepted_reports(acceptance_path,manifest_path,calibration_path,code_paths)
+    calibration=validate_rois(raw)
+    if len(calibration.get('cameras',[]))!=3 or calibration.get('version')!=1:raise ValueError('Exactly three camera calibrations required')
     cameras=[]
     for i,cid in enumerate(('CCTV_01','CCTV_02','CCTV_03')):
         rows=[c for c in calibration['cameras'] if c['cctv_id']==cid]
         if len(rows)!=1:raise ValueError('Three unique camera calibrations required')
-        cam=rows[0];role='SIDE_PRESENCE' if i==2 else 'GRID_6_ROI';source=os.environ[config['source_environment'][cid]]
+        cam=rows[0];role='SIDE_PRESENCE' if i==2 else 'GRID_6_ROI';source=source_for(cid)
+        if not source:raise ValueError(f'{cid}: no saved camera source; add it under camera administration')
         if cam['camera_role']!=role or cam['binding']!={'source':source_binding(source),'camera_role':role}:
-            raise ValueError('Camera source/role binding changed')
+            raise ValueError(f'{cid}: Camera source/role binding changed since calibration; recalibrate and use Install to Bridge')
         shelves=['RACK_ENTRY_ZONE'] if i==2 else list(SHELF_IDS)
-        tracker=ActionTracker(role,{s:cam['rois'][s] for s in shelves})
-        cameras.append(dict(id=cid,role=role,source=source,tracker=tracker))
+        cameras.append(dict(id=cid,role=role,source=source,tracker=ActionTracker(role,{s:cam['rois'][s] for s in shelves})))
     if len({source_binding(c['source']) for c in cameras})!=3:raise ValueError('Camera sources must be distinct')
+    return cameras
+
+
+def load_service_config(config_path, manifest_path, acceptance_path, code_paths,roi_path=None):
+    """Explicit-config loader. A supplied acceptance record is fully verified; none is required for normal operation."""
+    runtime_enabled()  # Legacy release selection cannot restore cloud inventory authority.
+    config_path=Path(config_path).resolve();base=config_path.parent
+    config=json.loads(config_path.read_text());calibration_path=(base/config['calibration_file']).resolve()
+    if config.get('version')!=1:raise ValueError('Unsupported service configuration version')
+    cameras=load_cameras(calibration_path,lambda cid:os.environ.get(config['source_environment'][cid]),roi_path)
+    reports=_accepted_reports(acceptance_path,manifest_path,calibration_path,code_paths) if acceptance_path is not None else []
     return cameras,reports
 
 
@@ -229,7 +269,7 @@ class NativeClient:
                 if not ready.get('ready'):raise RuntimeError('Native models unavailable')
                 self.versions=ready['versions']
                 if self.accepted_versions is not None and self.versions!=self.accepted_versions:
-                    raise ValueError('Model/runtime changed after worker restart; new acceptance required')
+                    raise ValueError('Model/runtime changed after worker restart; restart the bridge to load the new models')
             if time.monotonic()-started>=ttl:raise TimeoutError('Late inference input')
             request=dict(job,id=str(uuid.uuid4()),startup_id=self.owner.startup_id,expires_at=time.time()+ttl-(time.monotonic()-started))
             self.owner.proc.stdin.write(json.dumps(request)+'\n');self.owner.proc.stdin.flush()
@@ -247,47 +287,110 @@ class NativeClient:
 
 
 class AutonomousProcessor:
+    """One shared native coordinator: counts each shelf, watches the three CCTVs, confirms actions with fresh ESP32 pairs."""
+
     def __init__(self, run_id, native, cameras, reports, request, capture, shelves, pending, invalidate, log):
         self.run_id=run_id;self.native=native;self.cameras=cameras;self.reports=reports
         self.request=request;self.capture=capture;self.shelves=shelves;self.pending=pending
         self.invalidate=invalidate;self.log=log;self.stop=threading.Event();self.threads=[]
         self.state='Starting';self.last_frames={};self.health={};self.retry_at={};self.metrics={}
-        self.acceptance='ACCEPTED'  # Set to UNACCEPTED_DEVELOPMENT for shared development runs.
+        # Honest label: normal operation is not field-accepted unless a verified acceptance record was supplied.
+        self.acceptance='NOT_FIELD_ACCEPTED'
         self.runtime: RuntimeInventory | None=None
         self.panel_observations=NativeObservations()
+        self.models_loaded=False;self.model_issue=None;self.calibration_issue=None
+        self.mqtt_ok=True
+        self.scan={};self.attempts={};self.exhausted=set();self.scan_lock=threading.Lock()
+
+    # ---- setup / lifecycle -------------------------------------------------
+    @property
+    def setup_issue(self):
+        return self.model_issue or self.calibration_issue
 
     def start(self):
-        # Warm up and verify parity was produced by these exact loaded model weights.
-        self.native.warm()
-        for report in self.reports:
-            for role,version in report['models'].items():
-                if role in ('Front','Back','pose') and version!=self.native.versions[role]:raise ValueError('Loaded model differs from accepted parity report')
-        self.native.accepted_versions=json.loads(json.dumps(self.native.versions))
-        if self.runtime is not None:self.runtime.models_ready=True
-        for target in (self._poses,self._validations):
+        """Never raises for setup problems: they are reported through status while counting stays available."""
+        for target in (self._boot,self._poses,self._validations):
             thread=threading.Thread(target=target,daemon=True,name='AutonomousEdge');self.threads.append(thread);thread.start()
 
-    def snapshot(self):
-        return dict(mode='service',authoritative_processor='service',service_cutover_available=True,
-            inventory_mode='runtime' if self.runtime is not None else 'persistent',
-            startup_id=self.run_id,state=self.state,cameras=dict(self.health),model_versions=self.native.versions,
-            metrics=dict(self.metrics),restart_count=self.native.failures,authorizes_write=False,
-            acceptance=self.acceptance,release_blockers=[] if self.acceptance=='ACCEPTED' else ['REAL_CAMERA_ACCEPTANCE'])
+    def _boot(self):
+        while not self.stop.is_set():
+            try:
+                self.native.warm()
+                for report in self.reports:
+                    for role,version in report['models'].items():
+                        if role in ('Front','Back','pose') and version!=self.native.versions[role]:raise ValueError('Loaded model differs from accepted parity report')
+                self.native.accepted_versions=json.loads(json.dumps(self.native.versions))
+                self.model_issue=None;self.models_loaded=True
+                if self.runtime is not None:self.runtime.models_ready=True
+                return
+            except Exception as exc:
+                try:self.native.owner._stop_child()  # never leave a half-started worker behind between retries
+                except Exception:pass
+                self.model_issue='Box-reading models unavailable: '+(str(exc)[:160] or 'check the staged model files')
+                self.log(self.run_id,'native_models_unavailable',code='MODEL_FAILURE')
+                if self.stop.wait(10):return
+
+    def set_calibration_issue(self,message):
+        self.calibration_issue=message;self.cameras=[];self.last_frames.clear();self.health.clear()
 
     def reload_calibration(self,cameras):
         """Swap in newly validated camera ROIs; caller has already invalidated runtime evidence."""
         for camera in cameras:camera['tracker'].reset()
-        self.cameras=cameras;self.last_frames.clear();self.health.clear()
+        self.cameras=cameras;self.last_frames.clear();self.health.clear();self.calibration_issue=None
         self.panel_observations.clear()
-        self.retry_at.clear()  # Scheduler re-verifies every Offline shelf on its next pass.
+        self.reset_scan_budget()
 
+    # ---- status ------------------------------------------------------------
     def cameras_ready(self):
-        return all(self.health.get(c['id'],{}).get('state')=='Online' and
+        return bool(self.cameras) and all(self.health.get(c['id'],{}).get('state')=='Online' and
             0<=time.time()-self.health[c['id']]['at']<1.5 for c in self.cameras)
 
+    def actions_blocker(self):
+        """Why BORROW/RETURN confirmation is paused right now, or None. Counting is independent of this."""
+        if self.model_issue:return self.model_issue
+        if not self.models_loaded:return 'Loading box-reading models'
+        if self.calibration_issue:return self.calibration_issue
+        if not self.cameras:return 'Install camera calibration'
+        if not self.mqtt_ok:return 'MQTT unavailable'
+        down=[c['id'] for c in self.cameras if not (self.health.get(c['id'],{}).get('state')=='Online' and 0<=time.time()-self.health[c['id']]['at']<1.5)]
+        return ('Waiting for live video from '+', '.join(down)) if down else None
+
+    def shelf_status(self,sid,runtime=None):
+        """Per-shelf view: count scan progress and, separately, whether actions can be confirmed."""
+        with self.scan_lock:scan=dict(self.scan.get(sid) or dict(state='Waiting',message='Waiting to scan this shelf',reason=None,attempt=0))
+        paused=self.actions_blocker()
+        if paused is None and runtime is not None and not runtime.get('action_capable'):
+            paused='Waiting for a fresh count with all cameras live' if runtime.get('state')!='Ready' else 'Recounting now that all cameras are live'
+        return dict(scan=scan,actions_ready=paused is None,actions_paused_reason=paused,max_attempts=MAX_SCAN_ATTEMPTS)
+
+    def snapshot(self):
+        blocker=self.actions_blocker()
+        state='Setup needed' if self.model_issue else 'Starting' if not self.models_loaded else 'Running' if blocker is None else 'Counting; actions paused'
+        if self.state!='Stopped':self.state=state
+        return dict(mode='service',authoritative_processor='service',service_cutover_available=True,
+            inventory_mode='runtime' if self.runtime is not None else 'persistent',
+            startup_id=self.run_id,state=self.state,setup_issue=self.setup_issue,actions_paused_reason=blocker,
+            cameras=dict(self.health),camera_ids=[c['id'] for c in self.cameras],model_versions=self.native.versions,
+            metrics=dict(self.metrics),restart_count=self.native.failures,authorizes_write=False,
+            acceptance=self.acceptance,release_blockers=[] if self.acceptance=='ACCEPTED' else ['REAL_CAMERA_ACCEPTANCE'])
+
+    def _set_scan(self,sid,state,code=None,message=None,attempt=None):
+        with self.scan_lock:
+            previous=self.scan.get(sid,{})
+            self.scan[sid]=dict(state=state,reason=code,attempt=previous.get('attempt',0) if attempt is None else attempt,
+                message=message or scan_message(code) if code else (message or ''),updated=time.time())
+
+    def reset_scan_budget(self,sid=None):
+        """Fresh evidence boundary (retry request, camera/MQTT/calibration change): count scans may try again."""
+        for shelf in ([sid] if sid else list(SHELF_IDS)):
+            self.attempts.pop(shelf,None);self.exhausted.discard(shelf);self.retry_at.pop(shelf,None)
+            with self.scan_lock:
+                if self.scan.get(shelf,{}).get('state') in ('Needs retry','Retrying'):self.scan.pop(shelf,None)
+
+    # ---- CCTV tracking -----------------------------------------------------
     def _poses(self):
         while not self.stop.is_set():
-            for cam in self.cameras:
+            for cam in list(self.cameras):
                 if self.stop.is_set():return
                 try:
                     frame=self.capture(cam['source']);now=time.time()
@@ -319,56 +422,66 @@ class AutonomousProcessor:
                     self.health[cam['id']]={'state':'Offline','at':time.time()}
             self.stop.wait(.1)
 
+    # ---- one scan / confirmation attempt ----------------------------------
     def validate(self, shelf, trigger=None):
+        """Take at most MAX_PAIRS_PER_ATTEMPT fresh pairs; submit once REQUIRED_MATCHING_PAIRS consecutive pairs agree."""
         sid=shelf['shelf_id'];source=trigger.get('source','CCTV') if trigger else 'STARTUP'
         action=trigger['expected_action'] if trigger else 'RECHECK';request_id=str(uuid.uuid4());token=None
+        if not shelf.get('ip_address'):raise ScanFailure('BACK_CAMERA_NOT_CONFIGURED')
+        if not shelf.get('secondary_ip_address'):raise ScanFailure('FRONT_CAMERA_NOT_CONFIGURED')
         try:
             token=self.request('/validation_begin',dict(shelf_id=sid,source=source,request_id=request_id))['token']
             if not token:raise ValueError('Lease unavailable')
             if trigger and not self.request('/cctv_trigger_claim',dict(shelf_id=sid,trigger_id=trigger['trigger_id'],validation_token=token))['claimed']:
                 raise ValueError('Trigger not claimable')
-            deadline=time.monotonic()+90;accepted=None;last_failure='VALIDATION_REJECTED'
+            deadline=time.monotonic()+SCAN_DEADLINE_SECONDS
             runtime=self.runtime
             runtime_version=runtime.snapshot(sid)['version'] if runtime is not None else None
             if runtime is not None:
                 while True:
-                    try:runtime.environment_ready();break
+                    try:runtime.environment_ready(require_cameras=trigger is not None);break
                     except ValueError:
-                        if self.stop.is_set() or time.monotonic()>=deadline:raise TimeoutError('Quiet/healthy baseline window unavailable')
+                        if self.stop.is_set() or time.monotonic()>=deadline:
+                            if trigger is None:raise ScanFailure('QUIET_WINDOW') from None
+                            raise TimeoutError('Quiet/healthy baseline window unavailable') from None
                         self.stop.wait(.2)
-            for boost,duty in (('off',90),('auto',135),('high',185)):
-                samples=[];slots=None
-                for number in range(3):
-                    if self.stop.is_set() or time.monotonic()>deadline:raise TimeoutError('Validation time limit')
-                    if not self.request('/validation_renew',dict(shelf_id=sid,token=token))['renewed']:raise ValueError('Lease expired')
-                    self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,stage='Native paired capture',capture_number=number+1,boost=boost,duty=duty))
-                    query=urllib.parse.urlencode(dict(tm_raw=1,ip=shelf['ip_address'],ip2=shelf['secondary_ip_address'],shelf_id=sid,boost=boost,duty=duty))
-                    preview=self.request('/esp32_preview?'+query,None)
-                    result=self.native.infer(dict(kind='pair',image_back=preview['image_back'],image_front=preview['image_front'],boost=boost))
+            trail=[];failure='VALIDATION_REJECTED';last=None
+            for number in range(MAX_PAIRS_PER_ATTEMPT):
+                if self.stop.is_set() or time.monotonic()>deadline:raise TimeoutError('Validation time limit')
+                if not self.request('/validation_renew',dict(shelf_id=sid,token=token))['renewed']:raise ValueError('Lease expired')
+                self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,stage='Native paired capture',capture_number=number+1,boost=CAPTURE_BOOST,duty=CAPTURE_DUTY))
+                if trigger is None:self._set_scan(sid,'Scanning',message=f'Taking picture pair {number+1} of up to {MAX_PAIRS_PER_ATTEMPT}')
+                query=urllib.parse.urlencode(dict(tm_raw=1,ip=shelf['ip_address'],ip2=shelf['secondary_ip_address'],shelf_id=sid,boost=CAPTURE_BOOST,duty=CAPTURE_DUTY))
+                try:preview=self.request('/esp32_preview?'+query,None)
+                except ValueError:preview=None;failure='CAPTURE_FAILED';trail=[]
+                if preview is not None and not preview.get('image_back'):failure='BACK_CAMERA_OFFLINE';trail=[];preview=None
+                elif preview is not None and not preview.get('image_front'):failure='FRONT_CAMERA_OFFLINE';trail=[];preview=None
+                if preview is not None:
+                    result=self.native.infer(dict(kind='pair',image_back=preview['image_back'],image_front=preview['image_front'],boost=CAPTURE_BOOST))
                     self.metrics['pair']=result['metrics'];candidate=result['candidate']
                     self.panel_observations.put(sid,preview,candidate)
                     if runtime is not None:runtime.observe(sid,candidate,preview['capture'])
                     valid_range=runtime is not None and candidate.get('hold')=='UNKNOWN_B1'
                     if candidate.get('hold') and not valid_range:
-                        last_failure=candidate['hold'];break
-                    if preview['capture']['duration_ms']>2000:
-                        last_failure='STALE_CAPTURE';break
-                    if slots is not None and slots!=candidate['slots']:
-                        last_failure='OCCUPANCY_CHANGED';break
-                    slots=candidate['slots'];samples.append(dict(front_class=candidate['front_class'],back_class=candidate['back_class'],
-                        front_confidence=candidate['front_confidence'],back_confidence=candidate['back_confidence'],capture=preview['capture']))
-                    if number<2 and self.stop.wait(2):raise RuntimeError('Stopping')
-                if len(samples)==3:accepted=(preview,candidate,samples,boost);break
-                if self.stop.wait(2):raise RuntimeError('Stopping')
-            if accepted is None:raise ValueError(last_failure+': no three stable trusted pairs; inventory held')
-            preview,candidate,samples,boost=accepted
-            if self.stop.is_set() or not self.cameras_ready():raise ValueError('CCTV health lost before validation')
+                        failure=candidate['hold'];trail=[]
+                    elif preview['capture']['duration_ms']>2000:
+                        failure='STALE_CAPTURE';trail=[]
+                    else:
+                        sample=dict(front_class=candidate['front_class'],back_class=candidate['back_class'],
+                            front_confidence=candidate['front_confidence'],back_confidence=candidate['back_confidence'],capture=preview['capture'])
+                        if trail and trail[-1][0]!=candidate['slots']:failure='OCCUPANCY_CHANGED';trail=[]
+                        trail.append((candidate['slots'],sample,preview,candidate))
+                        if len(trail)>=REQUIRED_MATCHING_PAIRS:break
+                if number<MAX_PAIRS_PER_ATTEMPT-1 and self.stop.wait(2):raise RuntimeError('Stopping')
+            if len(trail)<REQUIRED_MATCHING_PAIRS:raise ScanFailure(failure)
+            samples=[row[1] for row in trail[-REQUIRED_MATCHING_PAIRS:]];preview,candidate=trail[-1][2],trail[-1][3]
+            if self.stop.is_set() or (trigger is not None and not self.cameras_ready()):raise ValueError('CCTV health lost before validation')
             return self.request('/esp32_validate',dict(shelf_id=sid,validation_token=token,source=source,
                 trigger_id=trigger['trigger_id'] if trigger else None,expected_action=action,ip=shelf['ip_address'],ip2=shelf['secondary_ip_address'],
                 image=preview['image'],image_back=preview['image_back'],image_front=preview['image_front'],
                 predicted_box_count=candidate.get('total'),dual_cam_evidence={'version':'stacked-visibility-v4-x01','samples':samples},
                 run_id=self.run_id,expected_version=runtime_version,runtime_event_id='baseline:'+request_id,
-                tm_confidence=min(candidate['front_confidence'],candidate['back_confidence']),boost=boost))
+                tm_confidence=min(candidate['front_confidence'],candidate['back_confidence']),boost=CAPTURE_BOOST))
         except Exception as exc:
             if token:
                 try:self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,trigger_id=trigger.get('trigger_id') if trigger else None,
@@ -379,25 +492,59 @@ class AutonomousProcessor:
             if token:self.request('/validation_end',dict(shelf_id=sid,token=token,trigger_id=trigger['trigger_id'] if trigger else None))
             else:self.request('/validation_cancel',dict(request_id=request_id))
 
+    def _attempt(self,shelf,trigger):
+        sid=shelf['shelf_id']
+        if trigger is None:
+            n=self.attempts[sid]=self.attempts.get(sid,0)+1
+            self._set_scan(sid,'Scanning',message='Scanning: keep hands clear of the rack',attempt=n)
+        try:
+            self.validate(shelf,trigger)
+            self.attempts.pop(sid,None);self.exhausted.discard(sid);self.retry_at.pop(sid,None)
+            self._set_scan(sid,'Count ready',message='Count ready',attempt=0)
+        except Exception as exc:
+            code=reason_code(exc)
+            self.log(self.run_id,'native_validation_held',shelf_id=sid,code='VALIDATION_PENDING')
+            if trigger is not None:
+                # A held action is never retried as that action; the shelf is recounted through the normal scan path.
+                self.attempts.pop(sid,None);self.exhausted.discard(sid);self.retry_at.pop(sid,None)
+                self._set_scan(sid,'Waiting',code,'Action held: '+scan_message(code)+' The shelf will be recounted when the rack is quiet.',attempt=0)
+                return
+            n=self.attempts.get(sid,1)
+            if n>=MAX_SCAN_ATTEMPTS:
+                self.exhausted.add(sid)
+                self._set_scan(sid,'Needs retry',code,scan_message(code)+' Use Retry scan.',attempt=n)
+            else:
+                self.retry_at[sid]=time.monotonic()+SCAN_BACKOFF_SECONDS[min(n-1,len(SCAN_BACKOFF_SECONDS)-1)]
+                self._set_scan(sid,'Retrying',code,scan_message(code)+f' Retrying (attempt {n} of {MAX_SCAN_ATTEMPTS}).',attempt=n)
+
     def _validations(self):
         while not self.stop.is_set():
             try:
-                status_response=self.request('/shelf_readiness',None)
-                if status_response.get('mqtt_connected') is False:
-                    self.state='Held: MQTT unavailable';self.stop.wait(1);continue
-                statuses=status_response['shelves'];shelves={s['shelf_id']:s for s in self.shelves()}
-                if not self.cameras_ready():
-                    self.state='Held: waiting for all three fresh cameras'
-                    self.stop.wait(1)
-                    continue
-                candidates=[(shelves[sid],None) for sid,status in statuses.items() if sid in shelves and status['state'] in ('Starting','Offline','Held') and time.monotonic()>=self.retry_at.get(sid,0)]
-                candidates += [(shelves[t['shelf_id']],t) for t in self.pending() if t['shelf_id'] in shelves and statuses.get(t['shelf_id'],{}).get('state')=='Ready']
-                self.state='Running'
-                for shelf,trigger in candidates[:1]:
-                    sid=shelf['shelf_id'];self.retry_at[sid]=time.monotonic()+30
-                    try:self.validate(shelf,trigger)
-                    except Exception:self.log(self.run_id,'native_validation_held',shelf_id=sid,code='VALIDATION_PENDING')
-            except Exception:self.state='Held: bridge or device configuration unavailable'
+                if not self.models_loaded:
+                    self.stop.wait(1);continue
+                info=self.request('/shelf_readiness',None)
+                self.mqtt_ok=info.get('mqtt_connected') is not False
+                statuses=info['shelves'];shelves={s['shelf_id']:s for s in self.shelves()}
+                blocker=self.actions_blocker();now=time.monotonic()
+                actions=[];scans=[]
+                for sid,status in statuses.items():
+                    shelf=shelves.get(sid)
+                    if shelf is None:continue
+                    runtime=status.get('runtime') or {}
+                    ready=status['state']=='Ready'
+                    if not shelf.get('ip_address') or not shelf.get('secondary_ip_address'):
+                        missing='BACK_CAMERA_NOT_CONFIGURED' if not shelf.get('ip_address') else 'FRONT_CAMERA_NOT_CONFIGURED'
+                        self._set_scan(sid,'Unavailable',missing);continue
+                    if ready and runtime.get('action_capable'):
+                        actions+=[(shelf,t) for t in self.pending() if t['shelf_id']==sid] if blocker is None else []
+                        continue
+                    # Counts need only models and the ESP32 HTTP pair; a count taken while CCTV/MQTT was down is redone once they are live.
+                    if ready and blocker is not None:continue
+                    if status['state'] in ('Starting','Offline','Held') or ready:
+                        if sid in self.exhausted or now<self.retry_at.get(sid,0):continue
+                        scans.append((shelf,None))
+                for shelf,trigger in (actions+scans)[:1]:self._attempt(shelf,trigger)
+            except Exception:self.log(self.run_id,'native_scheduler_error',code='VALIDATION_PENDING')
             self.stop.wait(1)
 
     def close(self):

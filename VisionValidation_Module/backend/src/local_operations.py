@@ -84,13 +84,17 @@ def validate_rois(value):
     cameras={};sources=set()
     for row in value['cameras']:
         cid=row.get('cctv_id');role='SIDE_PRESENCE' if cid=='CCTV_03' else 'GRID_6_ROI'
-        if cid not in ('CCTV_01','CCTV_02','CCTV_03') or cid in cameras or row.get('camera_role')!=role:raise ValueError('Camera identity/role mismatch')
+        if cid not in ('CCTV_01','CCTV_02','CCTV_03') or cid in cameras or row.get('camera_role')!=role:raise ValueError(f'{cid}: Camera identity/role mismatch; {cid} must be the '+('side entry' if role=='SIDE_PRESENCE' else 'shelf grid')+' camera')
         binding=row['binding'];source=binding['source']
         raw=source[7:] if source.startswith('device:') else source
-        if source_binding(raw)!=source or '@' in source or binding.get('camera_role')!=role or source in sources:raise ValueError('Invalid or shared source binding')
+        if source_binding(raw)!=source or '@' in source or binding.get('camera_role')!=role or source in sources:raise ValueError(f'{cid}: Invalid or shared source binding; each camera needs its own credential-free source')
         sources.add(source)
         required=['RACK_ENTRY_ZONE'] if role=='SIDE_PRESENCE' else list(SHELF_IDS)
-        rois={s:{'vertices':polygon(row['rois'][s]),'coordinate_space':'normalized'} for s in required}
+        rois={}
+        for shelf in required:
+            try:rois[shelf]={'vertices':polygon(row['rois'][shelf]),'coordinate_space':'normalized'}
+            except (KeyError,TypeError):raise ValueError(f'{cid}: no region saved for {shelf}; draw and save it, then install again') from None
+            except ValueError as exc:raise ValueError(f'{cid}: {shelf}: {exc}') from None
         polygons=[r['vertices'] for r in rois.values()]
         for i,a in enumerate(polygons):
             for j in range(i+1,len(polygons)):

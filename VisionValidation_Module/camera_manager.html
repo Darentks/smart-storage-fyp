@@ -178,6 +178,8 @@
     .cctv-tool-status h3,.cctv-tool-group h3 {font-size:14px;font-weight:600;letter-spacing:.01em;margin:0 0 8px;color:var(--text-primary);}
     .cctv-tool-status p,.cctv-tool-group p {font-size:12px;color:var(--text-secondary);line-height:1.5;margin:6px 0 12px;}
     #edgeProcessorStatus {display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:999px;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.25);font-size:12px;font-weight:600;color:var(--primary);margin-bottom:4px;}
+    #processorSetupIssue,#cameraAgreementStatus,#liveActivityStage {margin-top:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:rgba(0,0,0,.2);font-size:12px;}
+    #processorSetupIssue {border-color:var(--warning);color:var(--warning);}
     #confirmedActionBanner {margin-top:10px;padding:10px 12px;border-radius:8px;background:rgba(0,0,0,.28);border:1px solid var(--border);font-size:12px;color:var(--text-primary);}
     #localOperationsStatus {margin-top:8px;font-size:12px;color:var(--text-secondary);line-height:1.5;}
     .cctv-tool-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px;}
@@ -1473,6 +1475,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div class="cctv-tool-status">
             <h3>Processor &amp; live activity</h3>
             <div id="edgeProcessorStatus" role="status">Checking local processor...</div>
+            <div id="processorSetupIssue" role="alert" hidden></div>
+            <div id="cameraAgreementStatus" role="status" aria-live="polite">Camera agreement is shown when the native processor is running.</div>
+            <div id="liveActivityStage" role="status" aria-live="polite"></div>
+            <button type="button" class="btn-action" onclick="requestNativeScan()"><span>Scan counts</span><small>Ask the shared processor to recount shelves that have no current count.</small></button>
             <p>All application users share the running bridge processor. Signed-in users can configure cameras and install calibration without an owner/admin role. On other computers, use this bridge host's shared URL instead of localhost. Dashboard controls do not start or stop the host service.</p>
             <button type="button" class="btn-action" onclick="showLocalOperations()">Refresh latest activity</button>
           <div id="confirmedActionBanner" role="status" aria-live="polite">No confirmed action received.</div>
@@ -2097,8 +2103,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const label=document.getElementById('edgeProcessorStatus');
       try {
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-        if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);
-        if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?(data.acceptance==='UNACCEPTED_DEVELOPMENT'?`Native service · UNACCEPTED (development) · ${data.state}`:`Native service · ${data.state}`):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
+        if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);renderLiveActivity(data);
+        if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?nativeProcessorLabel(data):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
         if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
         if(bridgeStatus.authoritative_processor==='native') {
           const shelf=refShelfSelect.value,epoch=previewGeneration;
@@ -2109,6 +2115,46 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='Waiting for fresh native observation';}
         }
       }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+    }
+    function nativeProcessorLabel(data) {
+      if(data.setup_issue)return `Native processor · setup needed: ${data.setup_issue}`;
+      return `Native processor · ${data.state}${data.acceptance==='ACCEPTED'?'':' · not field-accepted'}`;
+    }
+    function renderLiveActivity(data) {
+      const issue=document.getElementById('processorSetupIssue'),cams=document.getElementById('cameraAgreementStatus'),stage=document.getElementById('liveActivityStage');
+      if(!cams)return;
+      const native=bridgeStatus.authoritative_processor==='native';
+      if(issue){
+        issue.hidden=!(native && (data.setup_issue || data.actions_paused_reason));
+        issue.textContent=data.setup_issue?`Setup needed: ${data.setup_issue}`:data.actions_paused_reason?`Counting continues; actions paused: ${data.actions_paused_reason}.`:'';
+      }
+      if(!native){cams.textContent='Camera agreement is shown when the native processor is running.';if(stage)stage.textContent='';return;}
+      const ids=data.camera_ids?.length?data.camera_ids:['CCTV_01','CCTV_02','CCTV_03'],consensus=data.consensus || {votes:{},pending:[]};
+      const part=id=>{
+        const health=data.cameras?.[id],vote=consensus.votes?.[id],live=health?(health.state==='Online'?'live':'offline'):'starting';
+        const target=vote?` → ${vote.shelf_id==='ANY_SHELF'?'entry presence':'Compartment '+String(vote.shelf_id).slice(-1)+(vote.action?' '+String(vote.action).toLowerCase():'')}`:'';
+        return `${id} ${live}${target}`;
+      };
+      cams.textContent=ids.map(part).join(' · ');
+      const pending=consensus.pending?.[consensus.pending.length-1],grid=Object.values(consensus.votes || {}).filter(v=>v.shelf_id!=='ANY_SHELF');
+      let text='Waiting for a camera interaction.';
+      if(pending)text=`Cameras agree — RACK_01 / Compartment ${String(pending.shelf_id).slice(-1)} — checking box count`;
+      else if(grid.length>1 && new Set(grid.map(v=>v.shelf_id+v.action)).size>1)text='Cameras disagree on the shelf or action — no stock change.';
+      else if(grid.length)text='Waiting for the other grid camera and entry presence to agree.';
+      if(stage)stage.textContent=text;
+    }
+    async function requestNativeScan(shelfId) {
+      // A request to the shared native scanner; the browser never captures pictures or writes inventory.
+      try {
+        const headers={'Content-Type':'application/json'};
+        const token=window.smartStorageDeviceAdminSession?.access_token;
+        if(token)headers.Authorization=`Bearer ${token}`;
+        const response=await fetch(`${getBridgeUrl()}/scan_request`,{method:'POST',headers,body:JSON.stringify(shelfId?{shelf_id:shelfId}:{}),cache:'no-store',signal:AbortSignal.timeout(10000)});
+        const result=await response.json().catch(()=>({}));
+        if(!response.ok)throw Error(result.error || `Bridge rejected the scan request (HTTP ${response.status})`);
+        showToast(result.shelves?.length?'Scan requested. Keep hands clear of the rack.':result.busy?.length?'A scan or action is already running for that shelf.':'Nothing to rescan — counts are current.','success');
+        if(typeof pollShelfReadiness==='function')pollShelfReadiness();
+      }catch(error){showToast(error.name==='TimeoutError'?'Bridge did not respond to the scan request':error.message,'error');}
     }
     function exportEdgeCalibrations() {
       try {
@@ -2176,7 +2222,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const action={BORROW:'Borrow',RETURN:'Return',RECHECK:'Shelf recheck'}[record.action] || 'Interaction';
       const status={PENDING:'Waiting for camera agreement',CONSENSUS:'Camera agreement confirmed',HELD:'Validation on hold',ACCEPTED:`${action} confirmed`,RECONCILED:'Shelf verification completed'}[record.status] || 'Unknown status';
       const reason={MISSING_CCTV_CONSENSUS:'Waiting for the required cameras to agree.',LOW_CONFIDENCE:'Camera prediction confidence is too low.',MISSING_CAMERA:'A required camera is unavailable.',MQTT_UNAVAILABLE:'The MQTT connection is unavailable.',M2_CONFLICT:'The cameras disagree about the shared slot.',UNKNOWN_B1:'The back bottom slot is hidden; an exact count cannot be confirmed.',STALE_CAPTURE:'Fresh camera pictures are required.',OCCUPANCY_CHANGED:'The box arrangement changed during verification.',MODEL_FAILURE:'A prediction model could not complete verification.',VALIDATION_TIMEOUT:'Verification took too long.',LEASE_EXPIRED:'The validation session expired.',DATABASE_FAILURE:'A required data operation failed.',VISIBLE_CHANGE_NET_UNPROVEN:'A visible change was detected, but the quantity change is unproven.',VALIDATION_REJECTED:'The validation checks did not pass.'}[record.reason];
-      const explanation=record.status==='CONSENSUS'?'Required cameras agreed. ESP32 inventory verification is still pending.':record.status==='ACCEPTED'?'The guarded inventory validation passed.':record.status==='RECONCILED'?'Shelf verification completed; this does not imply a borrow or return.':reason || (record.status==='PENDING'?'Waiting for more evidence.':'Inventory change has not been confirmed.');
+      const explanation=record.status==='CONSENSUS'?'Cameras agree — checking the box count now. This is not a completed pick yet.':record.status==='ACCEPTED'?'The guarded inventory validation passed.':record.status==='RECONCILED'?'Shelf verification completed; this does not imply a borrow or return.':reason || (record.status==='PENDING'?'Waiting for more evidence.':'Inventory change has not been confirmed.');
       return {location,action,status,explanation,time:Number.isFinite(record.timestamp)?new Date(record.timestamp*1000).toLocaleString():'Time unavailable'};
     }
     function renderLocalOperations(data,{notify=false}={}){
@@ -3912,11 +3958,33 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const scan=typeof initialCountScans==='undefined'?null:initialCountScans.get(comp.shelf_id);
       const initial=scan && state!=='Offline' && (comp.status || '').toUpperCase()==='ONLINE' && scan.epoch===previewGeneration && scan.ip===comp.ip_address && scan.ip2===comp.secondary_ip_address && bridgeStatus.online && bridgeStatus.authoritative_processor!=='native'?scan:null;
       const slots=observation=>observation?.slots?.map((value,i)=>`${['F1','M1','M2','B1','B2'][i]}=${value===null?'unknown':value}`).join(' ') || 'None';
-      return {quantity:exact?runtime.current_quantity:null,
+      const base={quantity:exact?runtime.current_quantity:null,
         label:exact?`Exact ${runtime.current_quantity}`:range?`Estimated ${runtime.count_range.join('\u2013')}`:initial?.label || (initial?.state==='Scanning'?'Scanning...':'Scan needed'),
         state:range?'Ready Limited':!ready && initial?initial.state:state,
         reason:!ready && initial?initial.reason:null,
         details:`${!ready && initial?`${initial.reason}\n${initial.timestamp?'Picture time: '+new Date(initial.timestamp*1000).toLocaleString()+'\n':''}`:''}${range?'B1 unknown; actions require proof across all possibilities.\n':''}Last accepted baseline (history): ${slots(runtime.baseline)}\nLatest observed: ${slots(runtime.latest_observation)}\n${runtime.latest_observation?.hold_code || status?.code || ''}`};
+      return nativeShelfView(base,comp,status,runtime,exact,range);
+    }
+    function nativeShelfView(view, comp, status, runtime, exact, range) {
+      // Additive: only when the native processor supplies a per-shelf block. Browser-only scans keep the legacy view.
+      const native=status?.native;
+      if(!native)return view;
+      const max=comp.max_capacity ?? 5,scan=native.scan || {};
+      const counted=Number.isFinite(runtime.observed_at)?` · counted ${new Date(runtime.observed_at*1000).toLocaleTimeString()}`:'';
+      const counted_ready=exact||range;
+      let display;
+      if(exact)display=`${runtime.current_quantity} / ${max} boxes${counted}`;
+      else if(range)display=`${runtime.count_range.join('–')} / ${max} boxes (range)${counted}`;
+      else if(scan.state==='Scanning')display='Scanning… keep hands clear';
+      else display=scan.message || 'Waiting to scan this shelf';
+      const hist=runtime.historical,last=hist?(hist.total!==null&&hist.total!==undefined?hist.total:hist.count_range.join('–')):null;
+      const history=!counted_ready&&hist?`\nLast count (historical, not verified): ${last} / ${max}`:'';
+      return {...view,display,
+        actions:native.actions_ready?'Actions ready':`Actions paused: ${native.actions_paused_reason || 'waiting for a fresh count'}`,
+        actionsReady:!!native.actions_ready,
+        canRetry:!counted_ready && ['Needs retry','Unavailable','Waiting'].includes(scan.state || 'Waiting'),
+        reason:view.reason || (!counted_ready?scan.message:null) || null,
+        details:view.details+history};
     }
     function renderCompartments(items) {
       if (!items || items.length === 0) {
@@ -3961,7 +4029,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div class="card-stats">
               <div class="stat-item">
                 <span class="stat-lbl">Stock Quantity</span>
-                <span class="stat-val qty">${qtyText} / ${maxQty} Boxes</span><span style="white-space:pre-wrap;font-size:11px">${readinessText(view.details)}</span>
+                <span class="stat-val qty">${view.display?readinessText(view.display):`${qtyText} / ${maxQty} Boxes`}</span><span style="white-space:pre-wrap;font-size:11px">${readinessText(view.details)}</span>
                 <div class="slot-bar">${slotPillsHtml}</div>
               </div>
               <div class="stat-item">
@@ -3978,7 +4046,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 Heap: <strong>${comp.free_heap_bytes ? Math.round(comp.free_heap_bytes / 1024) + ' KB' : 'N/A'}</strong>
               </div>
               <div style="display: flex; gap: 6px;">
-                <span>Native validation: monitoring only</span>
+                <span>${view.actions?readinessText(view.actions):'Native validation: monitoring only'}</span>${view.canRetry?`<button type="button" class="btn-action" onclick="requestNativeScan('${comp.shelf_id}')">Retry scan</button>`:''}
               </div>
             </div>
           </div>

@@ -6,7 +6,7 @@ import os
 import threading
 import time
 import uuid
-from .dual_cam_inventory import decode_observation, prove_unit_action, validate_confidences, validate_capture
+from .dual_cam_inventory import decode_observation, prove_unit_action, validate_confidences, validate_capture, REQUIRED_MATCHING_PAIRS
 from .shelves import SHELF_IDS, SHELF_SET
 
 
@@ -35,7 +35,12 @@ class RuntimeInventory:
             row=self._state(shelf)
             with row['lock']:
                 baseline=copy.deepcopy(row['baseline'])
-                return dict(shelf_id=shelf,run_id=self.run_id,version=row['version'],state=row['state'],
+                # A baseline that is no longer authoritative stays visible only as a clearly historical count.
+                historical=dict(total=baseline['total'],count_range=baseline['count_range'],precision=baseline['precision'],
+                    observed_at=baseline.get('last_capture_at')) if baseline and row['state']!='Ready' else None
+                return dict(shelf_id=shelf,historical=historical,
+                    action_capable=bool(baseline and baseline.get('action_capable')) and row['state']=='Ready',
+                    observed_at=baseline.get('last_capture_at') if baseline else None,run_id=self.run_id,version=row['version'],state=row['state'],
                     ready_at=row['ready_at'],born_at=row['born_at'],baseline=baseline,latest_observation=copy.deepcopy(row['observation']),
                     authoritative=row['state']=='Ready',
                     display_state='Ready Limited' if row['state']=='Ready' and baseline and baseline['precision']=='RANGE' else row['state'],
@@ -51,6 +56,13 @@ class RuntimeInventory:
                     row.update(state=reason,ready_at=None,born_at=self.clock(),version=row['version']+1)
                     # Retain last accepted baseline in RAM as diagnostic history only;
                     # state/ready_at prevent it from authorizing further actions.
+
+    def reset_shelf(self,shelf):
+        """Operator/scheduler rescan request: this shelf alone loses authority until a fresh count is accepted."""
+        with self.guard:
+            row=self._state(shelf)
+            with row['lock']:
+                row.update(state='Starting',ready_at=None,born_at=self.clock(),version=row['version']+1)
 
     def clear_baselines(self):
         """Drop RAM baselines/observations after calibration change; each shelf must rebaseline fresh."""
@@ -81,15 +93,20 @@ class RuntimeInventory:
             if interacting:self.last_interaction=self.monotonic()
             if not valid and (previous is None or previous['healthy']):self.invalidate()
 
-    def environment_ready(self):
+    def cameras_fresh(self):
+        with self.guard:
+            return all(self.cameras.get(c,{}).get('healthy') and 0<=self.clock()-self.cameras[c]['at']<1.5
+                for c in ('CCTV_01','CCTV_02','CCTV_03'))
+
+    def environment_ready(self,require_cameras=True):
+        """Count scans need models and a quiet rack; actions additionally need all three fresh CCTV feeds."""
         with self.guard:
             if not self.models_ready:raise ValueError('Native models unavailable')
-            if any(not self.cameras.get(c,{}).get('healthy') or not 0<=self.clock()-self.cameras[c]['at']<1.5 for c in ('CCTV_01','CCTV_02','CCTV_03')):
-                raise ValueError('Fresh CCTV feeds required')
+            if require_cameras and not self.cameras_fresh():raise ValueError('Fresh CCTV feeds required')
             if self.monotonic()-self.last_interaction<self.quiet_seconds:raise ValueError('Quiet interaction window not satisfied')
             return True
 
-    def accept(self,shelf,*,run_id,event_id,expected_version,samples,captures,lease,source,event=None):
+    def accept(self,shelf,*,run_id,event_id,expected_version,samples,captures,lease,source,event=None,transport_ok=True):
         with self.guard:
             row=self._state(shelf)
             with row['lock']:
@@ -97,8 +114,9 @@ class RuntimeInventory:
                 if not isinstance(lease,str) or not lease:raise ValueError('Lease identity required')
                 if not isinstance(event_id,str) or not event_id or event_id in row['events']:raise ValueError('Duplicate/invalid event')
                 if len(row['events'])>=200:raise ValueError('In-run event limit reached; restart and reobserve')
-                self.environment_ready()
-                if not isinstance(samples,list) or len(samples)!=3:raise ValueError('Three paired captures required')
+                self.environment_ready(require_cameras=source!='STARTUP')
+                if not isinstance(samples,list) or len(samples)!=REQUIRED_MATCHING_PAIRS:
+                    raise ValueError(f'{REQUIRED_MATCHING_PAIRS} consecutive matching paired captures required')
                 seen=set();slots=None;previous=None;latest=None;first_start=None
                 for sample in samples:
                     validate_confidences(sample)
@@ -113,14 +131,17 @@ class RuntimeInventory:
                     seen.add(identity);previous=completed;latest=dict(observation)
                 latest.update(slots=list(slots),count_range=list(latest['count_range']),precision='RANGE' if latest['total'] is None else 'EXACT',
                     observation_valid=True,action_authorized=False,
-                    first_capture_at=first_start,last_capture_at=previous)
+                    first_capture_at=first_start,last_capture_at=previous,
+                    # Counted while CCTV or the action transport was down: usable as a count, never as an action baseline.
+                    action_capable=bool(transport_ok) and self.cameras_fresh())
                 row['observation']=latest
                 baseline=row['baseline']
                 if source=='STARTUP':
                     # A new camera baseline is an observation, never a historical transaction.
-                    if row['state']=='Ready':raise ValueError('Ready shelf cannot be silently rebaselined')
+                    if row['state']=='Ready' and baseline and baseline.get('action_capable'):raise ValueError('Ready shelf cannot be silently rebaselined')
                 else:
                     if row['state']!='Ready' or row['ready_at'] is None or baseline is None:raise ValueError('Shelf not Ready')
+                    if not baseline.get('action_capable'):raise ValueError('Count was taken while CCTV or MQTT was unavailable; rescan required before actions')
                     if source!='CCTV' or not event or event.get('trigger_id')!=event_id or event.get('shelf_id')!=shelf or not event.get('claimed') or not event.get('consensus_met') or event.get('validation_token')!=lease:
                         raise ValueError('Bound CCTV event required')
                     if event.get('expected_action') not in ('BORROW','RETURN'):raise ValueError('Server action required')
