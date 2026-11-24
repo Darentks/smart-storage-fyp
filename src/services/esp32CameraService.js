@@ -100,7 +100,7 @@ async function supabaseRestRequest(table, method = 'GET', query = '', body = nul
       if (parts.length !== 3) throw Error();
       const claims = JSON.parse(atob(parts[1].replace(/-/g,'+').replace(/_/g,'/')));
       if (claims.role !== 'authenticated' || !Number.isFinite(claims.exp) || claims.exp <= Date.now()/1000) throw Error();
-      bearer = token; // Server verifies signature and camera_admin app_metadata via RLS.
+      bearer = token; // Server verifies the authenticated JWT; existing table grants control database access.
     } catch (_) { throw Error('Valid unexpired authenticated device-admin session required; server secrets are forbidden'); }
   }
   const headers = {

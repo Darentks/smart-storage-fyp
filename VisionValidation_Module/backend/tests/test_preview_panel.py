@@ -12,7 +12,8 @@ class PanelTests(unittest.TestCase):
  def test_diagnostic_capture_has_no_authority_or_receipt(self):
   status,row=diagnostic_preview(self.query,self.manager,self.coordinator,None)
   self.assertEqual(status,200);self.assertFalse(row['authorizes_write']);self.assertNotIn('capture',row)
-  self.assertEqual(self.manager.method_calls[0].kwargs['flash'],0)
+  self.assertEqual(self.manager.method_calls[0].kwargs['flash'],1)
+  self.assertEqual(self.manager.method_calls[0].kwargs['duty'],140)
   self.assertEqual(len(self.manager.method_calls),1)
  def test_native_or_busy_capture_rejected_before_hardware(self):
   for native in (object(),None):
