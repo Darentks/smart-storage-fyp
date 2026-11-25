@@ -967,7 +967,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
         <a class="btn-action" href="smartstorage://start">Start local bridge</a>
         <a class="btn-action" href="smartstorage://restart">Restart local bridge</a>
-        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Back up and download both exports configured in the local staging script, then restart the bridge">Get latest TM models</a>
+        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Back up, then download the Front and Back models saved as this bridge's install sources, and restart the bridge">Get latest TM models</a>
         <span id="tmModelUpdateStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted)">Model updates run on this PC through the Windows launcher.</span>
         <span id="tmLoadedModelVersions" style="font-size:12px;color:var(--text-muted)">Loaded TM versions: waiting for bridge.</span>
         <button type="button" class="btn-action" onclick="setNativeCctv(true)">Start CCTV</button>
@@ -975,14 +975,21 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart clears counts and scans again.</span>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front model URL (6 classes):</label>
+        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front exported model URL (6 classes):</label>
         <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
-        <label for="tmBackModelUrlInput">CAM1 Back model URL (4 classes):</label>
+        <label for="tmBackModelUrlInput">CAM1 Back exported model URL (4 classes):</label>
         <input type="text" id="tmBackModelUrlInput" class="form-control" style="min-width:280px;"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
         <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302;
           Load Both TM Models</button>
+        <div id="tmSourcesPanel" style="flex-basis:100%;font-size:12px;line-height:1.6;color:var(--text-muted);">
+          <div>These two boxes are exported model links, not editable projects. <b>Load Both TM Models</b> affects this browser's preview only. For a link already installed, the preview uses the installed copy.</div>
+          <button type="button" class="btn-action" onclick="saveTmModelSources()">Save as bridge install sources</button>
+          <span>Applies to everyone using this bridge. Saving installs nothing.</span>
+          <div id="tmSourcesSaveStatus" role="status" aria-live="polite"></div>
+          <div id="tmSourcesStatus" role="status" aria-live="polite" style="white-space:pre-line;overflow-wrap:anywhere;">Bridge model sources not checked yet.</div>
+        </div>
       </div>
       <div style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
         <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);"
@@ -2186,6 +2193,39 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='Waiting for fresh native observation';}
         }
       }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+    }
+    // Bridge install sources: what is saved for the next update versus what is installed on the bridge's disk.
+    function renderTmSources(data){
+      const label=document.getElementById('tmSourcesStatus');
+      if(!label)return;
+      if(!data){label.textContent='Bridge model sources not confirmed (bridge unavailable or needs restarting).';return;}
+      const pair=value=>value?`Front ${value.Front}\nBack ${value.Back}`:'unavailable';
+      const state=data.error?data.error:data.pending_install?'Not installed yet: the saved sources differ from the installed ones.':'Saved sources match the installed ones. A newer export at the same link still needs "Get latest TM models".';
+      label.textContent=`Saved for next install (${data.configured_origin==='saved'?'saved on this bridge':'default'}):\n${pair(data.configured)}\nInstalled on bridge:\n${pair(data.installed)}\n${state}\nThe versions actually loaded are shown under "Loaded TM versions".`;
+    }
+    async function refreshTmSources(){
+      const url=getBridgeUrl();
+      try{
+        const response=await fetch(`${url}/tm_model_sources`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
+        if(!response.ok)throw Error('Unavailable');
+        const data=await response.json();
+        if(url===getBridgeUrl())renderTmSources(data);
+      }catch(_){renderTmSources(null);}
+    }
+    async function saveTmModelSources(){
+      const status=document.getElementById('tmSourcesSaveStatus');
+      const body={Front:document.getElementById('tmModelUrlInput').value.trim(),Back:document.getElementById('tmBackModelUrlInput').value.trim()};
+      status.textContent='Saving...';
+      try{
+        const headers={'Content-Type':'application/json'};
+        const token=window.smartStorageDeviceAdminSession?.access_token;
+        if(token)headers.Authorization=`Bearer ${token}`;
+        const response=await fetch(`${getBridgeUrl()}/tm_model_sources`,{method:'POST',headers,body:JSON.stringify(body),cache:'no-store',signal:AbortSignal.timeout(10000)});
+        const result=await response.json().catch(()=>({}));
+        if(!response.ok)throw Error(response.status===401?'Open the dashboard on the bridge computer (http://localhost:8008/dashboard) or sign in.':result.error || `Bridge rejected the links (HTTP ${response.status})`);
+        renderTmSources(result);
+        status.textContent='Saved on the bridge. Nothing was installed or loaded.';
+      }catch(error){status.textContent='Not saved: '+(error.name==='TimeoutError'?'the bridge did not respond.':error.message);}
     }
     function beginLocalTmUpdate(){
       document.getElementById('tmModelUpdateStatus').textContent='Windows update requested. Confirm the launcher; it shows backup/download progress and the final result. The bridge reconnects afterward.';
@@ -7227,6 +7267,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     populateAssignedIpDropdowns();
     renderTMProjects();
     loadTeachableMachineModel();
+    refreshTmSources();
+    setInterval(refreshTmSources, 15000);
     setInterval(pollShelfReadiness, 5000);
     setInterval(pollEdgeProcessor, 5000);
     pollShelfReadiness();
