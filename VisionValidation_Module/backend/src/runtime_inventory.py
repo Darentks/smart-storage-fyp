@@ -1,12 +1,12 @@
 """Camera-first inventory authority. RAM only: no file, cloud or restore path."""
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import copy
 import math
 import os
 import threading
 import time
 import uuid
-from .dual_cam_inventory import decode_observation, prove_unit_action, validate_confidences, validate_capture, REQUIRED_MATCHING_PAIRS
+from .dual_cam_inventory import decode_observation, prove_unit_action, candidate_direction, validate_confidences, validate_capture, REQUIRED_MATCHING_PAIRS
 from .shelves import SHELF_IDS, SHELF_SET
 
 
@@ -23,12 +23,14 @@ class RuntimeInventory:
         self.clock=clock;self.monotonic=monotonic;self.guard=threading.RLock()
         self.shelves={};self.cameras={};self.models_ready=False;self.last_interaction=monotonic()
         self.cctv_enabled=True
+        self.changes=deque(maxlen=5)  # Images and quantities are current-run RAM only.
+        self.movement_gaps={};self.movement_epoch=0
 
     def _state(self,shelf):
         if shelf not in SHELF_SET:raise ValueError('Unknown shelf')
         if shelf not in self.shelves:
             self.shelves[shelf]=dict(lock=threading.RLock(),version=0,state='Starting',baseline=None,observation=None,
-                born_at=self.clock(),ready_at=None,events=OrderedDict(),count_check=None)
+                born_at=self.clock(),ready_at=None,events=OrderedDict(),count_check=None,retained_history=None,side_count_deferred=False,baseline_images={})
         return self.shelves[shelf]
 
     def snapshot(self,shelf):
@@ -38,8 +40,10 @@ class RuntimeInventory:
                 baseline=copy.deepcopy(row['baseline'])
                 # A baseline that is no longer authoritative stays visible only as a clearly historical count.
                 historical=dict(total=baseline['total'],count_range=baseline['count_range'],precision=baseline['precision'],
-                    observed_at=baseline.get('last_capture_at')) if baseline and row['state']!='Ready' else None
+                    observed_at=baseline.get('last_capture_at')) if baseline and (row['state']!='Ready' or baseline.get('count_check_unverified')) else copy.deepcopy(row['retained_history'])
                 return dict(shelf_id=shelf,historical=historical,cctv_enabled=self.cctv_enabled,
+                    movement_warnings=self._movement_warnings(shelf),
+                    side_count_deferred=row['side_count_deferred'],
                     count_check=copy.deepcopy(row['count_check']),count_check_unverified=bool(baseline and baseline.get('count_check_unverified')),
                     action_capable=bool(baseline and baseline.get('action_capable')) and row['state']=='Ready',
                     observed_at=baseline.get('last_capture_at') if baseline else None,run_id=self.run_id,version=row['version'],state=row['state'],
@@ -80,12 +84,13 @@ class RuntimeInventory:
         with self.guard:
             self.cctv_enabled=enabled
             self.cameras.clear()
+            self.movement_gaps.clear();self.movement_epoch+=1
 
     def clear_baselines(self):
         """Drop RAM baselines/observations after calibration change; each shelf must rebaseline fresh."""
         with self.guard:
             for row in self.shelves.values():
-                with row['lock']:row.update(baseline=None,observation=None)
+                with row['lock']:row.update(baseline=None,observation=None,retained_history=None)
 
     def hold(self,shelf,event_id=None):
         if event_id is not None and (not isinstance(event_id,str) or not event_id):event_id=None
@@ -101,12 +106,25 @@ class RuntimeInventory:
         with self.guard:
             self._state(shelf)['observation']=dict(candidate=copy.deepcopy(candidate),capture=copy.deepcopy(capture),accepted=False)
 
+    def event_terminal(self,shelf,event_id):
+        with self.guard:return event_id in self._state(shelf)['events']
+
+    def latest_changes(self,identity=None,include_images=False):
+        with self.guard:
+            records=[copy.deepcopy(record) for record in reversed(self.changes) if identity is None or record['id']==identity]
+            if not include_images:
+                for record in records:
+                    record['has_images']=bool(record['pictures'].get('after'))
+                    record.pop('pictures')
+            return records
+
     def count_check_failed(self,shelf,code,message,expected_version):
         """A failed background check never discards a last known count or alters a newer transaction."""
         with self.guard:
             row=self._state(shelf)
             with row['lock']:
                 if row['state']!='Ready' or row['version']!=expected_version:return False
+                if code=='M2_CONFLICT':message='Unclear — recheck. Front/Back labels conflict; last count retained. Retrying on the next count check.'
                 row['count_check']=dict(status='Check deferred' if code=='COUNT_CHECK_SKIPPED' else 'Check failed',code=code,message=message,checked_at=self.clock())
                 if row['baseline'] and code!='COUNT_CHECK_SKIPPED':
                     row['baseline']['action_capable']=False;row['baseline']['count_check_unverified']=True
@@ -119,17 +137,67 @@ class RuntimeInventory:
             valid=healthy and 0<=self.clock()-observed_at<1.5
             lost_since=None if valid else (previous or {}).get('lost_since')
             if not valid and lost_since is None:lost_since=self.monotonic()
+            if not valid and previous and previous.get('healthy'):
+                self.movement_epoch+=1
+                self.movement_gaps[cid]=dict(camera_id=cid,gap_at=self.clock(),recovered_at=None,possible_missed_movement=True)
+            elif valid and previous and not previous.get('healthy') and cid in self.movement_gaps:
+                self.movement_epoch+=1
+                self.movement_gaps[cid]['recovered_at']=self.clock()
             self.cameras[cid]=dict(at=observed_at,healthy=valid,lost_since=lost_since,
                 interacting=bool(valid and interacting),
                 was_live=valid or bool(previous and previous.get('was_live')),
                 invalidated=False if valid else bool(previous and previous.get('invalidated')))
-            if interacting:self.last_interaction=self.monotonic()
+            if cid=='CCTV_03':
+                camera=self.cameras[cid]
+                camera['last_presence_at']=(previous or {}).get('last_presence_at')
+                if valid and interacting:camera['last_presence_at']=self.clock()
+                continuous=bool(previous and previous['healthy'] and not previous['interacting'] and
+                    0<=self.clock()-previous['at']<1.5 and observed_at>=previous['at'])
+                camera['clear_since']=previous.get('clear_since') if continuous else None
+                camera['clear_at']=previous.get('clear_at') if continuous else None
+                if valid and not interacting:
+                    if camera['clear_since'] is None:
+                        camera.update(clear_since=self.monotonic(),clear_at=self.clock())
+                else:camera.update(clear_since=None,clear_at=None)
+            elif valid and interacting:self.last_interaction=self.monotonic()
             # A missing startup camera never blocks counting. Brief outages preserve counts;
             # action freshness still fails immediately, independently of this grace period.
             camera=self.cameras[cid]
             if not valid and camera['was_live'] and not camera['invalidated'] and self.monotonic()-lost_since>5:
                 camera['invalidated']=True;self.invalidate();return True
             return False
+
+    def movement_generation(self):
+        with self.guard:return self.movement_epoch
+
+    def _movement_warnings(self,shelf=None):
+        """Caller holds guard. A baseline must begin after recovery to resolve a gap."""
+        warnings=[]
+        for camera,gap in self.movement_gaps.items():
+            affected=[]
+            for sid in ([shelf] if shelf else SHELF_IDS):
+                baseline=self.shelves.get(sid,{}).get('baseline')
+                if gap['recovered_at'] is None or baseline is None or baseline['first_capture_at']<gap['recovered_at']:affected.append(sid)
+            if affected:warnings.append(dict(gap,affected_shelves=affected))
+        return warnings
+
+    def movement_warnings(self):
+        with self.guard:return copy.deepcopy(self._movement_warnings())
+
+    def _action_capture_boundary(self):
+        return max((gap['recovered_at'] or gap['gap_at'] for gap in self.movement_gaps.values()),default=0)
+
+    def _side_clear_boundary(self):
+        """Caller holds guard. Missing/stale frames never establish a clear side zone."""
+        side=self.cameras.get('CCTV_03',{})
+        if (not side.get('healthy') or side.get('interacting') or
+                not 0<=self.clock()-side.get('at',0)<1.5 or side.get('clear_since') is None or
+                self.monotonic()-side['clear_since']<self.quiet_seconds):return None
+        return side['clear_at']+self.quiet_seconds
+
+    def count_recheck_ready(self,shelf):
+        with self.guard:
+            return not self.cctv_enabled or not self._state(shelf)['side_count_deferred'] or self._side_clear_boundary() is not None
 
     def cameras_fresh(self):
         with self.guard:
@@ -146,10 +214,10 @@ class RuntimeInventory:
             return 'Fresh CCTV feeds required',message
         remaining=self.quiet_seconds-(self.monotonic()-self.last_interaction)
         if remaining>0:
-            active=[cid for cid,camera in self.cameras.items() if self.cctv_enabled and camera.get('interacting') and
+            active=[cid for cid,camera in self.cameras.items() if cid in ('CCTV_01','CCTV_02') and self.cctv_enabled and camera.get('interacting') and
                 camera['healthy'] and 0<=self.clock()-camera['at']<1.5]
             if active:
-                detected='; '.join(cid+(' detects someone in the entry zone' if cid=='CCTV_03' else ' detects someone in a shelf region') for cid in active)
+                detected='; '.join(cid+' detects someone in a shelf region' for cid in active)
                 message='Waiting for the rack to clear: '+detected
             else:message=f'Waiting for the rack to stay clear for another {remaining:.1f} s'
             return 'Quiet interaction window not satisfied',message
@@ -167,7 +235,7 @@ class RuntimeInventory:
             if issue:raise ValueError(issue[0])
             return True
 
-    def accept(self,shelf,*,run_id,event_id,expected_version,samples,captures,lease,source,event=None,transport_ok=True):
+    def accept(self,shelf,*,run_id,event_id,expected_version,samples,captures,lease,source,event=None,transport_ok=True,images=None):
         with self.guard:
             row=self._state(shelf)
             with row['lock']:
@@ -196,23 +264,41 @@ class RuntimeInventory:
                     first_capture_at=first_start,last_capture_at=previous,
                     # Counted while CCTV or the action transport was down: usable as a count, never as an action baseline.
                     action_capable=bool(transport_ok) and self.cameras_fresh())
-                row['observation']=latest
                 baseline=row['baseline']
-                retained_hidden=False
+                movement_warnings=self._movement_warnings(shelf)
+                if source=='CCTV' and first_start<self._action_capture_boundary():
+                    raise ValueError('Stale capture: two fresh paired captures required after CCTV recovery')
+                visible_change=bool(baseline) and any(old is not None and new is not None and old!=new for old,new in zip(baseline['slots'],slots))
+                result_action='UNATTRIBUTED' if visible_change else None
                 if count_check:
                     if row['state']!='Ready' or baseline is None:raise ValueError('Shelf not Ready for count check')
+                if baseline is not None and source in ('STARTUP','COUNT_CHECK'):
+                    # Visibility changes alone do not prove movement. Never fill an
+                    # unknown B1 from a previous count or a side-presence assumption.
+                    visible_change=any(old is not None and new is not None and old!=new for old,new in zip(baseline['slots'],slots))
+                    side=self.cameras.get('CCTV_03',{})
+                    boundary=self._side_clear_boundary()
+                    fresh_recheck=boundary is not None and first_start>=boundary
+                    if self.cctv_enabled and not fresh_recheck and (row['side_count_deferred'] or
+                            (count_check and visible_change and side.get('last_presence_at') is not None)):
+                        row['side_count_deferred']=True
+                        row['count_check']=dict(status='Check deferred',code='SIDE_PRESENCE_DEFERRED',checked_at=self.clock(),
+                            message='Changed count deferred; waiting for fresh side-zone clearance for 2 s, then two new matching pairs. Last count retained.')
+                        for identity in seen:captures.pop(identity,None)
+                        return dict(status='deferred',code='SIDE_PRESENCE_DEFERRED',count_check=copy.deepcopy(row['count_check']))
+                if count_check:
                     visible_match=all(value is None or value==baseline['slots'][i] for i,value in enumerate(slots))
-                    retained_hidden=any(value is None for value in slots) and visible_match
-                    changed=not retained_hidden and (latest['total']!=baseline['total'] or latest['count_range']!=baseline['count_range'])
-                    row['count_check']=dict(status='Hidden box not checked' if retained_hidden else 'Count changed' if changed else 'Count unchanged',
-                        message='Visible positions match; previous count retained. Hidden B1 was not checked.' if retained_hidden else
-                            'Hidden B1 was not checked; showing the observed count range.' if latest['precision']=='RANGE' else 'Two matching Back/Front reads confirmed.',
+                    hidden=latest['precision']=='RANGE'
+                    changed=latest['slots']!=baseline['slots']
+                    row['count_check']=dict(status='B1 hidden — range' if hidden else 'Unattributed change' if visible_change else 'Count changed' if changed else 'Count unchanged',
+                        message=('Visible positions match; ' if visible_match else '')+'B1 hidden — range. Two matching reads verified the visible slots; B1 was not checked. Any earlier exact count is historical only.' if hidden else 'Two matching Back/Front reads confirmed.',
                         checked_at=self.clock(),code=None)
-                    if retained_hidden:
-                        # Keep the prior count and its timestamp as last observed, never fill an unknown slot.
-                        baseline['action_capable']=False;baseline['count_check_unverified']=True
-                    else:
-                        latest['action_capable']=latest['action_capable'] and bool(baseline.get('action_capable'))
+                    if hidden and baseline['total'] is not None:
+                        row['retained_history']=dict(total=baseline['total'],count_range=list(baseline['count_range']),precision=baseline['precision'],observed_at=baseline['last_capture_at'])
+                    elif not hidden:row['retained_history']=None
+                    # Unknown B1 alone does not remove action readiness. It remains
+                    # unknown in the fresh baseline, so every completion must pass proof.
+                    latest['action_capable']=latest['action_capable'] and bool(baseline.get('action_capable'))
                 elif source=='STARTUP':
                     # A new camera baseline is an observation, never a historical transaction.
                     if row['state']=='Ready' and baseline and baseline.get('action_capable'):raise ValueError('Ready shelf cannot be silently rebaselined')
@@ -221,21 +307,38 @@ class RuntimeInventory:
                     if not baseline.get('action_capable'):raise ValueError('Count was taken while CCTV or MQTT was unavailable; rescan required before actions')
                     if source!='CCTV' or not event or event.get('trigger_id')!=event_id or event.get('shelf_id')!=shelf or not event.get('claimed') or not event.get('consensus_met') or event.get('validation_token')!=lease:
                         raise ValueError('Bound CCTV event required')
-                    if event.get('expected_action') not in ('BORROW','RETURN'):raise ValueError('Server action required')
-                    if not row['ready_at']<=event.get('timestamp',0)<=event.get('claimed_at',0)<=first_start or not 0<=self.clock()-event['timestamp']<60:
+                    if not row['born_at']<=event.get('timestamp',0)<=event.get('claimed_at',0)<=first_start or not 0<=self.clock()-event['timestamp']<60:
                         raise ValueError('Event predates runtime readiness or capture')
-                    proof=prove_unit_action(baseline['slots'],slots,event['expected_action'])
-                    latest['possible_deltas']=list(proof.possible_deltas)
-                    if not proof.accepted:
-                        latest['hold_code']=proof.code;self.hold(shelf,event_id)
-                        raise ValueError(f'{proof.code}: single net action not proven')
-                    latest['action_authorized']=True
+                    direction=candidate_direction(baseline['slots'],slots)
+                    proof=prove_unit_action(baseline['slots'],slots,direction) if direction else None
+                    latest['candidate_direction']=direction
+                    latest['possible_deltas']=list(proof.possible_deltas) if proof else []
+                    isolated=not event.get('overlap') and event.get('evidence_started_at',event['timestamp'])>=row['ready_at'] and not self._movement_warnings(shelf)
+                    if proof and proof.accepted and isolated:
+                        latest['action_authorized']=True;result_action=direction
+                    elif not visible_change and any(value is None for value in slots):
+                        row['observation']=latest
+                        latest['hold_code']='UNKNOWN_B1';self.hold(shelf,event_id)
+                        raise ValueError('UNKNOWN_B1: single net action not proven')
+                    else:result_action='UNATTRIBUTED' if visible_change else 'NOTHING_CHANGED'
                 before=baseline['total'] if baseline else None
-                accepted=baseline if retained_hidden else latest
+                accepted=latest
+                row['observation']=latest
+                row['side_count_deferred']=False
+                if accepted['precision']=='EXACT':row['retained_history']=None
                 row.update(baseline=accepted,version=row['version']+1,state='Ready',ready_at=self.clock())
-                if not count_check:row['events'][event_id]='BASELINE' if source=='STARTUP' else 'ACCEPTED'
+                if not count_check:row['events'][event_id]='BASELINE' if source=='STARTUP' else 'ACCEPTED' if latest['action_authorized'] else result_action
+                pictures={key:value for key,value in (images or {}).items() if key in ('image_back','image_front') and isinstance(value,str) and len(value)<=8*1024*1024}
+                if result_action is not None:
+                    summary=lambda observation:{key:copy.deepcopy(observation[key]) for key in ('total','count_range','slots')}
+                    self.changes.append(dict(id=event_id,shelf_id=shelf,timestamp=self.clock(),action=result_action,
+                        movement_warnings=copy.deepcopy(movement_warnings),
+                        label={'UNATTRIBUTED':'Unattributed change','NOTHING_CHANGED':'Nothing changed','BORROW':'Borrow','RETURN':'Return'}[result_action],
+                        before=summary(baseline),after=summary(latest),pictures=dict(before=copy.deepcopy(row['baseline_images']),after=pictures)))
+                row['baseline_images']=pictures
                 for identity in seen:captures.pop(identity,None)
                 return dict(status='success',run_id=self.run_id,version=row['version'],precision=accepted['precision'],
+                    action=result_action,action_authorized=latest['action_authorized'],
                     occupancy=list(accepted['slots']),count_range=accepted['count_range'],readiness='Ready',snapshot_initialized=source=='STARTUP',
                     count_check=copy.deepcopy(row['count_check']) if count_check else None,
                     comparison=dict(quantity_before=before,quantity_after=accepted['total'],delta=None if source=='STARTUP' or before is None or accepted['total'] is None else accepted['total']-before,

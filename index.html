@@ -959,6 +959,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     </header>
 
     <p style="padding:0 24px;color:var(--text-muted)">Active vision layout: 5 slots. Bottom: F1, M1, B1. Top: M2, B2. Front camera: F1, M1, M2. Back camera: B1, B2; conditional M2 cross-check. Existing database capacities require an explicit layout migration.</p>
+    <p style="padding:0 24px;color:var(--text-muted)">Recommended loading practice: Fill B2 before placing M2 to reduce B1 occlusion. This is advice, not a validity rule.</p>
     <!-- Bridge Config & Quick Action Bar -->
     <div class="config-bar" style="flex-wrap: wrap; gap: 12px;">
       <div class="config-bar-left" style="flex-wrap: wrap; gap: 8px;">
@@ -2279,7 +2280,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const sameRun=localIntentRun===data.run_id;
       notifyLiveConsensus(data,sameRun);
       add(host,'p',`Processor: ${bridgeStatus.authoritative_processor==='native'?'Native active':bridgeStatus.mode==='shadow'?'Shadow testing — no automated inventory changes':'Disabled — automated validation paused'}. Updated ${new Date().toLocaleTimeString()}.`);
-      if(!records.length)add(host,'p','No interactions recorded yet. In shadow mode, predictions do not create authoritative action confirmations.');
+      for(const warning of (data.cctv_warnings || []))add(host,'p',`Possible missed movement: ${warning.camera_id}. ${warning.recovered_at===null?'Waiting for fresh video.':'Fresh quiet paired verification is required.'} Counts are retained; a change spanning the gap cannot be attributed as Borrow/Return.`);
+      if(!records.length && !(data.changes || []).length)add(host,'p','No interactions recorded yet. In shadow mode, predictions do not create authoritative action confirmations.');
       for(const record of records){
         const view=localIntentPresentation(record),card=add(host,'article','');
         card.style.cssText='padding:12px;margin:8px 0;border:1px solid var(--border);border-radius:8px;';
@@ -2287,6 +2289,35 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         add(card,'div',`${view.action} · ${view.time}${record.camera_id?' · '+record.camera_id:''}`);
         add(card,'p',view.explanation);
         if(notify && sameRun && localIntentSeen.get(record.id)!==record.status && ['CONSENSUS','ACCEPTED'].includes(record.status))showToast(`${view.status}: ${view.location}`,record.status==='ACCEPTED'?'success':'info');
+      }
+      for(const change of (data.changes || []).slice(0,5)){
+        const card=add(host,'article','');
+        const count=observation=>Number.isInteger(observation.total)?String(observation.total):observation.count_range.join('–');
+        add(card,'strong',change.label);
+        add(card,'div',`${change.shelf_id} · ${new Date(change.timestamp*1000).toLocaleString()} · ${count(change.before)} → ${count(change.after)} boxes`);
+        if(change.action==='UNATTRIBUTED')add(card,'p','Count and baseline updated from two matching reads. No Borrow/Return was created.');
+        if(change.has_images){
+          const button=add(card,'button','View Back/Front pictures');button.type='button';
+          button.onclick=async()=>{
+            const url=getBridgeUrl(),epoch=previewGeneration;
+            try{
+              const response=await fetch(`${url}/api/comparisons/latest?id=${encodeURIComponent(change.id)}`,{cache:'no-store'});
+              if(!response.ok)throw Error();
+              const rows=await response.json(),record=rows.find(row=>row.id===change.id);
+              if(!record || epoch!==previewGeneration)throw Error();
+              const dialog=document.createElement('dialog');
+              add(dialog,'strong',record.label);
+              const close=add(dialog,'button','Close');close.onclick=()=>dialog.remove();
+              for(const phase of ['before','after'])for(const angle of ['back','front']){
+                const src=record.pictures?.[phase]?.[`image_${angle}`];
+                if(typeof src!=='string' || !/^data:image\/(jpeg|png);base64,/.test(src))continue;
+                add(dialog,'p',`${phase} · ${angle}`);
+                const image=add(dialog,'img','');image.src=src;image.alt=`${phase} ${angle}`;image.style.maxWidth='40vw';
+              }
+              document.body.appendChild(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();
+            }catch(_){showToast('Pictures expired or bridge unavailable. Refresh the activity list.', 'error');}
+          };
+        }
       }
       localIntentRun=data.run_id;localIntentSeen=new Map(records.map(r=>[r.id,r.status]));
       const latest=records[0],banner=document.getElementById('confirmedActionBanner');
@@ -4010,7 +4041,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const initial=scan && state!=='Offline' && (comp.status || '').toUpperCase()==='ONLINE' && scan.epoch===previewGeneration && scan.ip===comp.ip_address && scan.ip2===comp.secondary_ip_address && bridgeStatus.online && bridgeStatus.authoritative_processor!=='native'?scan:null;
       const slots=observation=>observation?.slots?.map((value,i)=>`${['F1','M1','M2','B1','B2'][i]}=${value===null?'unknown':value}`).join(' ') || 'None';
       const base={quantity:exact?runtime.current_quantity:null,
-        label:exact?`Exact ${runtime.current_quantity}`:range?`Estimated ${runtime.count_range.join('\u2013')}`:initial?.label || (initial?.state==='Scanning'?'Scanning...':'Scan needed'),
+        label:exact?`Exact ${runtime.current_quantity}`:range?`${runtime.count_range.join('\u2013')} boxes · B1 hidden — range`:initial?.label || (initial?.state==='Scanning'?'Scanning...':'Scan needed'),
         state:range?'Ready Limited':!ready && initial?initial.state:state,
         reason:!ready && initial?initial.reason:null,
         details:`${!ready && initial?`${initial.reason}\n${initial.timestamp?'Picture time: '+new Date(initial.timestamp*1000).toLocaleString()+'\n':''}`:''}${range?'B1 unknown; actions require proof across all possibilities.\n':''}Last accepted baseline (history): ${slots(runtime.baseline)}\nLatest observed: ${slots(runtime.latest_observation)}\n${runtime.latest_observation?.hold_code || status?.code || ''}`};
@@ -4031,20 +4062,24 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       let display;
       if(keptCount!==null)display=`Last known: ${keptCount} / ${max} boxes (not verified)${counted}${runtime.count_check?'\n'+runtime.count_check.status:''}`;
       else if(exact)display=`${runtime.current_quantity} / ${max} boxes${counted}`;
-      else if(range)display=`${runtime.count_range.join('–')} / ${max} boxes (range)${counted}`;
+      else if(range)display=`${runtime.count_range.join('–')} boxes (B1 hidden — range; capacity ${max})${counted}`;
       else if(scan.state==='Scanning')display='Scanning… keep hands clear';
       else display=scan.message || 'Waiting to scan this shelf';
       const countCheck=runtime.count_check;
       if(counted_ready && countCheck)display+='\n'+countCheck.status;
       const checkDetails=countCheck?`\nLast count check: ${countCheck.status} at ${new Date(countCheck.checked_at*1000).toLocaleTimeString()}\n${countCheck.message}`:'';
       const hist=runtime.historical,last=hist?(hist.total!==null&&hist.total!==undefined?hist.total:hist.count_range.join('–')):null;
-      const history=!counted_ready&&hist?`\nLast count (historical, not verified): ${last} / ${max}`:'';
+      const history=hist?`\nLast count (historical, not verified): ${last} / ${max}`:'';
+      const observed=runtime.latest_observation;
+      const hiddenSeen=(observed?.slots?.[3]===null && observed.slots[2]===1 && observed.slots[4]===0) || observed?.candidate?.back_class==='Back_X01';
+      const hiddenWarning=hiddenSeen?`\n${range?'B1 hidden — range.':'B1 hidden in the latest picture; recheck any unclear pair.'} Recommended loading practice: Fill B2 before placing M2. B1 is unknown; Borrow/Return still requires proof across every possible B1 value.`:'';
+      const historyTime=hist && Number.isFinite(hist.observed_at)?` at ${new Date(hist.observed_at*1000).toLocaleTimeString()}`:'';
       return {...view,display,
         actions:native.actions_ready?'Actions ready':`Actions paused: ${native.actions_paused_reason || 'waiting for a fresh count'}`,
         actionsReady:!!native.actions_ready,
         canRetry:!counted_ready && ['Needs retry','Unavailable','Waiting'].includes(scan.state || 'Waiting'),
         reason:view.reason || unverifiedReason || (!counted_ready?scan.message:null) || null,
-        details:view.details+history+checkDetails};
+        details:view.details+history+(history?historyTime:'')+checkDetails+hiddenWarning};
     }
     function renderCompartments(items) {
       if (!items || items.length === 0) {
@@ -5072,7 +5107,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           dropGracePeriod: 0.3, // 300ms grace period before drop
           trajectoryHistory: [], // [{ x, y, time }]
           triggerFired: false,
-          lastConfirmedAction: 'BORROW',
+          lastConfirmedAction: 'RECHECK',
           lastConfirmedConf: 0,
           cooldownUntil: 0
         };
@@ -5094,22 +5129,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     let poseFps = 0;
     let activeMediaStream = null;
 
-    function classifyTrajectoryAction(trajectory) {
-      if (!trajectory || trajectory.length < 5) return 'BORROW';
-      const startPt = trajectory[0];
-      const endPt = trajectory[trajectory.length - 1];
-      const dy = endPt.y - startPt.y;
-      const dx = endPt.x - startPt.x;
-      const mid = Math.floor(trajectory.length / 2);
-      const firstHalfY = trajectory.slice(0, mid).reduce((acc, p) => acc + p.y, 0) / Math.max(1, mid);
-      const secondHalfY = trajectory.slice(mid).reduce((acc, p) => acc + p.y, 0) / Math.max(1, trajectory.length - mid);
-      const netVerticalShift = secondHalfY - firstHalfY;
-      // Downward placement motion indicates RETURN; upward/outward extraction indicates BORROW
-      if (dy > 0.03 && netVerticalShift > 0.015 && Math.abs(dy) >= Math.abs(dx) * 0.4) {
-        return 'RETURN';
-      }
-      return 'BORROW';
-    }
+    function classifyTrajectoryAction() { return 'RECHECK'; }
 
     let recordedVideoUrl = null;
     let isYoloInferencing = false;
@@ -5257,7 +5277,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       sourceBinding: source => cctvSourceBinding(source),
       resetTracker: () => ({state:'IDLE', dwellStartTime:null,lastSeenTime:null,currentDwellDuration:0,
         dwellThreshold:1.2,dropGracePeriod:.3,trajectoryHistory:[],triggerFired:false,
-        lastConfirmedAction:'BORROW',lastConfirmedConf:0,cooldownUntil:0}),
+        lastConfirmedAction:'RECHECK',lastConfirmedConf:0,cooldownUntil:0}),
       consume: result => consumeCctvTrigger({...result,source:'CCTV'}),
       diagnosticVote:body=>recordDiagnosticConsensusVote(body),
       resetDiagnostic:()=>{diagnosticConsensusVotes={};diagnosticLastMatch=null;},

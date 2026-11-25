@@ -79,7 +79,7 @@ from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
 from src.preview_panel import diagnostic_preview
 from src.model_assets import ModelAssets
-from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence
+from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence, prepare_runtime_retry
 RUNTIME_INVENTORY = None
 from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
 from src.bridge_access import BridgeAccessError, require_application_user
@@ -208,8 +208,8 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
     last_triggers = LAST_SHELF_TRIGGER_TS if consensus_context is None else consensus_context["last_triggers"]
     pending = PENDING_CCTV_TRIGGERS if consensus_context is None else consensus_context["events"]
     shelves = set(SHELF_SET)
-    if action not in {"BORROW", "RETURN"} and camera_config.get(camera_id, {}).get("camera_role") != "SIDE_PRESENCE":
-        raise ValueError("expected_action must be BORROW or RETURN")
+    if action not in {"BORROW", "RETURN", "RECHECK", ""} and camera_config.get(camera_id, {}).get("camera_role") != "SIDE_PRESENCE":
+        raise ValueError("Invalid interaction vote")
     if not math.isfinite(confidence) or not 0 <= confidence <= 1:
         raise ValueError("oks_confidence must be finite and between 0 and 1")
     if not math.isfinite(dwell_duration_seconds) or dwell_duration_seconds < 1.2:
@@ -244,27 +244,27 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
         align_state[camera_id] = {
             "ts": evidence_ts, "action": action, "conf": confidence, "shelf_id": shelf_id, "camera_role": role,
         }
-        # Exact shelf and action must agree across all enabled grid views; side presence validates entry-zone presence.
+        # Grid views agree on shelf/time; side presence supports agreement, never direction.
         grid_votes = [align_state[cid] for cid, cam in active.items()
                       if cam["camera_role"] == "GRID_6_ROI" and cid in align_state]
         target = grid_votes[0]["shelf_id"] if grid_votes else None
-        target_action = grid_votes[0]["action"] if grid_votes else action
+        target_action = 'RECHECK'  # CCTV identifies shelf/time; ESP32 observations determine direction.
         supporters = {cid: vote for cid, vote in align_state.items()
                       if cid in active
                       and (vote["camera_role"] == "SIDE_PRESENCE"
-                           or (vote["shelf_id"] == target and vote["action"] == target_action))}
+                           or vote["shelf_id"] == target)}
         all_grids_present = all(cid in align_state for cid, cam in active.items()
                                 if cam["camera_role"] == "GRID_6_ROI")
         aligned = (target is not None and target in shelves and all_grids_present and len(supporters) == len(active))
         if not aligned or target is None:
-            if consensus_context is None and (intent_store := globals().get('LOCAL_INTENTS')) is not None:
+            if any(cid in align_state for cid in ('CCTV_01','CCTV_02')) and consensus_context is None and (intent_store := globals().get('LOCAL_INTENTS')) is not None:
                 intent_store.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=shelf_id,
-                    action=action or None,status='PENDING',reason='MISSING_CCTV_CONSENSUS'))
+                    action='RECHECK',status='PENDING',reason='MISSING_CCTV_CONSENSUS'))
             return {"status": "pending_consensus", "consensus_met": False, "shelf_id": shelf_id,
                     "confirmed_count": len(supporters), "required_cameras": len(active),
                     "window_seconds": CONSENSUS_WINDOW_SEC}
         last_ts = last_triggers.get(target)
-        if last_ts is not None and now - last_ts < CONSENSUS_COOLDOWN_SEC:
+        if last_ts is not None and now - last_ts < CONSENSUS_COOLDOWN_SEC and not any(t.get('shelf_id')==target and 0<=now-t.get('timestamp',0)<60 for t in pending):
             if consensus_context is None and (intent_store := globals().get('LOCAL_INTENTS')) is not None:
                 intent_store.add(dict(id=trigger_id or str(uuid.uuid4()),timestamp=now,camera_id=camera_id,shelf_id=target,
                     action=target_action,status='HELD',reason='VALIDATION_REJECTED'))
@@ -277,10 +277,15 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
                   "shelf_id": target, "confirmed_shelf_id": target, "trigger_id": confirmed_id,
                   "expected_action": target_action, "required_cameras": len(active),
                   "confirmed_count": len(supporters), "confirmed_cameras": sorted(supporters),
+                  "evidence_started_at": min(v['ts'] for v in supporters.values()),
+                  "evidence_completed_at": max(v['ts'] for v in supporters.values()),
                   "confidence": min(v["conf"] for v in supporters.values())}
         if consensus_context is not None:
             result["test_only"] = True
-        eligible=queue_ready is None or queue_ready(target)
+        overlapping=[t for t in pending if t.get('shelf_id')==target and 0<=now-t.get('timestamp',0)<60]
+        for previous in overlapping:previous['overlap']=True
+        result['overlap']=bool(overlapping)
+        eligible=queue_ready is None or queue_ready(target) or any(t.get('claimed') for t in overlapping)
         result['inventory_eligible']=eligible
         if consensus_context is None and (notices:=globals().get('CCTV_LAST_CONSENSUS')) is not None:
             notices[target]={**result,'timestamp':now}
@@ -310,15 +315,18 @@ def claim_cctv_trigger(trigger_id, shelf_id=None, validation_token=None):
     with RECHECKS.global_lock:
         if not RECHECKS.owns(shelf_id, validation_token) or not READINESS.ready(shelf_id):
             return False
+        authority=globals().get('RUNTIME_INVENTORY')
+        if authority is not None and authority.event_terminal(shelf_id,trigger_id):return False
         with CCTV_CONSENSUS_LOCK:
             if any(t.get("validation_token") == validation_token for t in PENDING_CCTV_TRIGGERS):
                 return False
             for trigger in PENDING_CCTV_TRIGGERS:
                 if (trigger.get("trigger_id") == trigger_id and trigger.get("shelf_id") == shelf_id
                         and not trigger.get("claimed")
-                        and trigger['timestamp'] >= READINESS.get(shelf_id).get('ready_at',0)
+                        and (trigger['timestamp'] >= READINESS.get(shelf_id).get('ready_at',0) or trigger.get('overlap') or trigger.get('retry_count')==1)
+                        and time.time()>=trigger.get('retry_after',0)
                         and 0 <= time.time() - trigger["timestamp"] < 60.0):
-                    trigger.update(claimed=True, validation_token=validation_token, claimed_at=time.time())
+                    trigger.update(claimed=True, validation_token=validation_token, claimed_at=time.time(),retry_pending=False)
                     READINESS.set(shelf_id,"Validating Action","CCTV consensus received")
                     return True
     return False
@@ -1360,6 +1368,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         if path == '/local_operations':
             failures=READINESS.failures
             self._send_json(200,dict(run_id=READINESS.run_id,intents=LOCAL_INTENTS.snapshot() if LOCAL_INTENTS else [],
+                changes=RUNTIME_INVENTORY.latest_changes() if globals().get('RUNTIME_INVENTORY') else [],
+                cctv_warnings=RUNTIME_INVENTORY.movement_warnings() if globals().get('RUNTIME_INVENTORY') else [],
                 cloud_metrics=CLOUD_METRICS.snapshot(),metrics_scope='Python PostgREST helper only; SDK/browser calls excluded',
                 unresolved_failures=failures.snapshot() if failures is not None else {},
                 release_blockers=['REAL_CAMERA_ACCEPTANCE'] if globals().get('RUNTIME_INVENTORY') else ['STRICT_CLOUD_SCHEMA_MIGRATION','REAL_CAMERA_ACCEPTANCE'],
@@ -1532,7 +1542,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path in ["/api/comparisons/latest", "/comparisons/latest"]:
-            self._send_json(200, list(LATEST_COMPARISONS_DEQUE))
+            self._send_json(200, RUNTIME_INVENTORY.latest_changes(identity=query.get('id',[None])[0],include_images=True) if globals().get('RUNTIME_INVENTORY') else list(LATEST_COMPARISONS_DEQUE))
             return
 
         if path == "/test_feed":
@@ -1810,13 +1820,16 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 else:
                     ended = RECHECKS.end(shelf, body.get("token"))
                     if ended:
-                        if body.get('source')=='COUNT_CHECK':
-                            with DUAL_CAM_CAPTURE_LOCK:
-                                for identity in list(DUAL_CAM_CAPTURES):
-                                    if DUAL_CAM_CAPTURES[identity].get('validation_token')==body.get('token'):DUAL_CAM_CAPTURES.pop(identity,None)
+                        with DUAL_CAM_CAPTURE_LOCK:
+                            for identity in list(DUAL_CAM_CAPTURES):
+                                if DUAL_CAM_CAPTURES[identity].get('validation_token')==body.get('token'):DUAL_CAM_CAPTURES.pop(identity,None)
                         esp32_ref_manager.baseline_freeze_until.pop(shelf, None)
                         trigger_id = body.get("trigger_id")
                         with CCTV_CONSENSUS_LOCK:
+                            for queued_trigger in PENDING_CCTV_TRIGGERS:
+                                if queued_trigger.get('trigger_id')==trigger_id and queued_trigger.get('validation_token')==body.get('token') and queued_trigger.get('retry_pending'):
+                                    queued_trigger.update(claimed=False)
+                                    queued_trigger.pop('validation_token',None);queued_trigger.pop('claimed_at',None)
                             PENDING_CCTV_TRIGGERS[:] = [t for t in PENDING_CCTV_TRIGGERS if not (t.get("trigger_id") == trigger_id and t.get("validation_token") == body.get("token"))]
                     self._send_json(200, {"released": ended})
             return
@@ -1892,6 +1905,11 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 old=READINESS.get(shelf)
                 stage=str(body.get('stage',''))[:300]
                 if body.get('failed'):
+                    retry=globals().get('prepare_runtime_retry')
+                    if retry and body.get('trigger_id') and retry(shelf,body.get('validation_token'),body.get('failure_code') or failure_code(stage),authority=RUNTIME_INVENTORY,coordinator=RECHECKS,consensus_lock=CCTV_CONSENSUS_LOCK,pending=PENDING_CCTV_TRIGGERS):
+                        READINESS.set(shelf,'Ready','Nonterminal validation; one fresh retry pending')
+                        self._send_json(200,{'status':'retry_pending'})
+                        return
                     if (authority:=globals().get('RUNTIME_INVENTORY')) is not None:
                         changed=authority.hold(shelf,body.get('trigger_id'))
                         discard_runtime_attempt(shelf,body.get('validation_token'),coordinator=RECHECKS,
@@ -2102,7 +2120,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(200, consensus)
                     return
                 if (consensus.get("shelf_id") not in SHELF_SET
-                        or consensus.get("expected_action") not in {"BORROW", "RETURN"}
+                        or consensus.get("expected_action") not in {"BORROW", "RETURN", "RECHECK"}
                         or not isinstance(consensus.get("confidence"), (int, float))
                         or not math.isfinite(consensus["confidence"]) or not 0 <= consensus["confidence"] <= 1
                         or not isinstance(consensus.get("trigger_id"), str) or not consensus["trigger_id"]):
@@ -2695,7 +2713,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 def cctv_busy():
                     with CCTV_CONSENSUS_LOCK:
                         now=time.time()
-                        return any(0<=now-v.get('ts',0)<=CONSENSUS_WINDOW_SEC for v in CCTV_ALIGN_STATE.values()) or any(
+                        return any(cid in ('CCTV_01','CCTV_02') and 0<=now-v.get('ts',0)<=CONSENSUS_WINDOW_SEC for cid,v in CCTV_ALIGN_STATE.items()) or any(
                             t.get('source')=='CCTV' and 0<=now-t.get('timestamp',0)<60 for t in PENDING_CCTV_TRIGGERS)
                 def invalidate(reason='Camera unavailable',preserve_counts=False,disable_actions=False):
                     try:
@@ -2708,8 +2726,9 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                     esp32_ref_manager.baseline_freeze_until.clear()
                     if AUTONOMOUS is not None:
                         AUTONOMOUS.panel_observations.clear()
-                        AUTONOMOUS.reset_scan_budget()  # new evidence boundary: counts may be retried
-                        for camera in AUTONOMOUS.cameras:camera['tracker'].reset()
+                        if reason!='CCTV outage exceeded five seconds':
+                            AUTONOMOUS.reset_scan_budget()  # Explicit lifecycle boundary, not a frame dropout.
+                            for camera in AUTONOMOUS.cameras:camera['tracker'].reset()
                 mqtt_bridge.on_connection_lost=lambda:invalidate('MQTT unavailable')
                 AUTONOMOUS=AutonomousProcessor(READINESS.run_id,
                     NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),

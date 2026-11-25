@@ -13,13 +13,30 @@ from typing import Callable, TYPE_CHECKING
 if TYPE_CHECKING:
     from .local_operations import LatestIntents
 
+TRANSIENT_CODES=frozenset({'LOW_CONFIDENCE','MISSING_CAMERA','CAPTURE_FAILED','BACK_CAMERA_OFFLINE','FRONT_CAMERA_OFFLINE','STALE_CAPTURE','MODEL_FAILURE','VALIDATION_TIMEOUT','M2_CONFLICT','CCTV_UNAVAILABLE'})
+
+
+def prepare_runtime_retry(shelf,token,code,*,authority,coordinator,consensus_lock,pending):
+    """One nonterminal retry of the original fresh event; never revive HELD."""
+    with coordinator.global_lock:
+        if authority is None or shelf not in SHELF_SET or code not in TRANSIENT_CODES or not coordinator.owns(shelf,token):return False
+        state=authority.snapshot(shelf)
+        if state['state']!='Ready' or not state['action_capable']:return False
+        with consensus_lock:
+            event=next((t for t in pending if t.get('shelf_id')==shelf and t.get('validation_token')==token and t.get('claimed')),None)
+            if not event or authority.event_terminal(shelf,event['trigger_id']) or not 0<=time.time()-event['timestamp']<55:return False
+            if event.get('retry_pending'):return True
+            if event.get('retry_count',0)>=1:return False
+            event.update(retry_count=1,retry_pending=True,retry_after=time.time()+2)
+            return True
+
 
 def discard_runtime_attempt(shelf,token,*,coordinator,consensus_lock,pending,capture_lock,captures,votes=None):
     """Caller owns the coordinator lock; discard evidence before recovery can run."""
     coordinator.end(shelf,token)
     with consensus_lock:
         if votes is not None:votes.clear()
-        pending[:]=[event for event in pending if event.get('shelf_id')!=shelf]
+        pending[:]=[event for event in pending if event.get('shelf_id')!=shelf or event.get('validation_token')!=token]
     with capture_lock:
         for identity in list(captures):
             if captures[identity].get('shelf_id')==shelf:captures.pop(identity,None)
@@ -75,7 +92,7 @@ def validate_runtime_request(
             event = None
             if source == 'CCTV':
                 with consensus_lock:
-                    events = [dict(t) for t in pending if t.get('trigger_id') == body.get('trigger_id') and t.get('shelf_id') == sid and (t.get('validation_token') == token) and t.get('claimed') and t.get('consensus_met')]
+                    events = [t for t in pending if t.get('trigger_id') == body.get('trigger_id') and t.get('shelf_id') == sid and (t.get('validation_token') == token) and t.get('claimed') and t.get('consensus_met')]
                 if len(events) != 1:
                     raise ValueError('Bound CCTV event required')
                 event = events[0]
@@ -83,21 +100,24 @@ def validate_runtime_request(
             if evidence.get('version') != VERSION:
                 raise ValueError('Wrong evidence version')
             samples = evidence.get('samples')
-            with (consensus_lock if source=='COUNT_CHECK' else nullcontext()):
+            with (consensus_lock if source in ('COUNT_CHECK','CCTV') else nullcontext()):
                 if source=='COUNT_CHECK' and (any(t.get('source')=='CCTV' and 0<=time.time()-t.get('timestamp',0)<60 for t in pending) or
-                        any(0<=time.time()-v.get('ts',0)<=consensus_window for v in (votes or {}).values())):
+                        any(cid in ('CCTV_01','CCTV_02') and 0<=time.time()-v.get('ts',0)<=consensus_window for cid,v in (votes or {}).items())):
                     return 409,{'status':'deferred','code':'COUNT_CHECK_SKIPPED','error':'CCTV check pending'}
                 with capture_lock:
                     for sample in samples if isinstance(samples, list) else []:
                         receipt = captures.get(sample.get('capture', {}).get('id'), {})
                         if (receipt.get('ip1'), receipt.get('ip2')) != (body.get('ip'), body.get('ip2')):
                             raise ValueError('Camera mapping mismatch')
-                    result = authority.accept(sid, run_id=body.get('run_id'), expected_version=body.get('expected_version'), event_id=body.get('trigger_id') if event else body.get('runtime_event_id'), source=source, samples=samples, captures=captures, lease=token, event=event, transport_ok=bool(mqtt.is_connected))
+                    result = authority.accept(sid, run_id=body.get('run_id'), expected_version=body.get('expected_version'), event_id=body.get('trigger_id') if event else body.get('runtime_event_id'), source=source, samples=samples, captures=captures, lease=token, event=event, transport_ok=bool(mqtt.is_connected),images={key:body[key] for key in ('image_back','image_front')})
+            if result.get('status')=='deferred':return 200,result
             if source!='COUNT_CHECK':readiness.set(sid, 'Ready', 'Fresh runtime ' + result['precision'] + ' observation; no persisted inventory', result['version'])
-            if source=='CCTV' and intents is not None:intents.update(body['trigger_id'],'ACCEPTED')
+            if source=='CCTV' and intents is not None:intents.update(body['trigger_id'],'ACCEPTED' if result.get('action_authorized') else 'RECONCILED',action=result['action'] if result.get('action_authorized') else 'RECHECK')
             return (200, result)
         except (ValueError, TypeError, KeyError) as exc:
             reason = str(exc)
+            if body.get('source')=='CCTV' and prepare_runtime_retry(sid,token,failure_code(reason),authority=authority,coordinator=coordinator,consensus_lock=consensus_lock,pending=pending):
+                return 409,{'status':'retry_pending','code':failure_code(reason),'error':'Nonterminal validation; one fresh retry pending'}
             if body.get('source')=='COUNT_CHECK':
                 if sid in SHELF_SET:authority.count_check_failed(sid,failure_code(reason),'Count check failed; last count retained.',body.get('expected_version'))
                 return 409,{'status':'count_retained','code':failure_code(reason),'error':'Count check failed; last count retained'}

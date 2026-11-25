@@ -49,7 +49,7 @@ SCAN_MESSAGES={
     'CAPTURE_FAILED':'Count unavailable — could not take the camera pictures; check the ESP32 connection.',
     'MISSING_CAMERA':'Count unavailable — a shelf camera did not respond.',
     'LOW_CONFIDENCE':'Low confidence — the cameras could not read the boxes clearly.',
-    'M2_CONFLICT':'Count unavailable — front and back cameras disagree about the shared slot.',
+    'M2_CONFLICT':'Unclear — recheck. Front and back cameras disagree about the shared slot.',
     'OCCUPANCY_CHANGED':'The boxes changed between pictures — keep hands clear.',
     'STALE_CAPTURE':'Camera pictures were too slow or out of date.',
     'QUIET_WINDOW':'Waiting for the rack to be clear — keep hands away.',
@@ -124,13 +124,6 @@ def inside(point, points):
     return all(x>=-1e-9 for x in crosses) or all(x<=1e-9 for x in crosses)
 
 
-def trajectory_action(history):
-    if len(history)<5:return 'BORROW'
-    dx=history[-1]['x']-history[0]['x'];dy=history[-1]['y']-history[0]['y'];mid=len(history)//2
-    shift=sum(p['y'] for p in history[mid:])/len(history[mid:])-sum(p['y'] for p in history[:mid])/mid
-    return 'RETURN' if dy>.03 and shift>.015 and abs(dy)>=abs(dx)*.4 else 'BORROW'
-
-
 class ActionTracker:
     """Port of browser ROI membership, landmark ordering and dwell/withdrawal rules."""
     def __init__(self, role, rois):
@@ -140,7 +133,7 @@ class ActionTracker:
     def reset(self):
         self.last_frame=None
         self.states={s:dict(state='IDLE',start=None,seen=0,duration=0,fired=False,
-            cooldown=0,history=[],presence=0,action='BORROW',confidence=0) for s in self.rois}
+            cooldown=0,history=[],presence=0,action='RECHECK',confidence=0) for s in self.rois}
 
     def update(self, persons, now):
         if self.last_frame is not None and (now<=self.last_frame or now-self.last_frame>1.5):
@@ -175,7 +168,7 @@ class ActionTracker:
                 elif t['state']=='DWELLING':
                     t['duration']=now-t['start']
                     if t['duration']>=1.2:
-                        t.update(state='INTENT_CONFIRMED',confidence=point['visibility'] or .88,action=trajectory_action(t['history']))
+                        t.update(state='INTENT_CONFIRMED',confidence=point['visibility'] or .88,action='RECHECK')
                         if self.role=='SIDE_PRESENCE':t.update(fired=True,presence=now);emit=True
                 elif t['state']=='INTENT_CONFIRMED':
                     t['duration']=now-t['start']
@@ -456,11 +449,8 @@ class AutonomousProcessor:
         down_since=previous.get('down_since',now)
         duration_ms=max(0,int((now-down_since)*1000))
         self.log(self.run_id,'cctv_frame_failure',camera_id=cam['id'],reason=reason,duration_ms=duration_ms)
-        was_live=previous.get('state')=='Online'
         invalidated=self.runtime.camera(cam['id'],now,False) if self.runtime is not None else False
-        for camera in self.cameras:camera['tracker'].reset()
-        # Clear votes/claims immediately without throwing away the displayed count.
-        if was_live:self.invalidate('CCTV frame unavailable',preserve_counts=True)
+        cam['tracker'].reset()  # Other cameras' trajectories and evidence remain untouched.
         if invalidated:self.invalidate('CCTV outage exceeded five seconds')
         self.health[cam['id']]={'state':'Offline','at':now,'down_since':down_since,'reason':reason,'duration_ms':duration_ms}
 
@@ -499,6 +489,11 @@ class AutonomousProcessor:
                     with self.cctv_lock:
                         if not self.cctv_enabled or generation!=self.cctv_generation:break
                         result=self.pose_native.infer({'kind':'pose','image':frame['image']},ttl=1.5)
+                        previous_health=self.health.get(cam['id'],{})
+                        if previous_health.get('state')=='Online' and now-previous_health['at']>=1.5:
+                            self.health[cam['id']]={**previous_health,'down_since':previous_health['at']}
+                            self._frame_failed(cam,'FRAME_GAP',now)
+                            if now-previous_health['at']>5:self.invalidate('CCTV outage exceeded five seconds')
                         self.metrics['pose']=result['metrics'];self.health[cam['id']]={'state':'Online','at':now}
                         votes=cam['tracker'].update(result['persons'],now)
                         if self.runtime is not None:
@@ -530,21 +525,32 @@ class AutonomousProcessor:
             if trigger and not self.request('/cctv_trigger_claim',dict(shelf_id=sid,trigger_id=trigger['trigger_id'],validation_token=token))['claimed']:
                 raise ValueError('Trigger not claimable')
             deadline=time.monotonic()+SCAN_DEADLINE_SECONDS
+            if trigger is not None and isinstance(trigger.get('timestamp'),(int,float)):
+                now=self.runtime.clock() if self.runtime is not None else time.time()
+                deadline=min(deadline,time.monotonic()+max(0,trigger['timestamp']+60-now))
             runtime=self.runtime
             runtime_version=runtime.snapshot(sid)['version'] if runtime is not None else None
             if runtime is not None:
-                while True:
-                    try:runtime.environment_ready(require_cameras=trigger is not None);break
-                    except ValueError:
-                        if count_check:raise ScanFailure('COUNT_CHECK_SKIPPED') from None
-                        if trigger is None:
-                            self._set_scan(sid,'Waiting','QUIET_WINDOW',runtime.environment_wait_reason(require_cameras=False))
-                        if self.stop.is_set() or time.monotonic()>=deadline:
-                            if trigger is None:raise ScanFailure('QUIET_WINDOW') from None
-                            raise TimeoutError('Quiet/healthy baseline window unavailable') from None
-                        self.stop.wait(.2)
+                def await_environment():
+                    while True:
+                        try:runtime.environment_ready(require_cameras=trigger is not None);break
+                        except ValueError:
+                            if count_check:raise ScanFailure('COUNT_CHECK_SKIPPED') from None
+                            if trigger is None:
+                                self._set_scan(sid,'Waiting','QUIET_WINDOW',runtime.environment_wait_reason(require_cameras=False))
+                            if self.stop.is_set() or time.monotonic()>=deadline:
+                                if trigger is None:raise ScanFailure('QUIET_WINDOW') from None
+                                raise TimeoutError('Quiet/healthy baseline window unavailable') from None
+                            if not self.request('/validation_renew',dict(shelf_id=sid,token=token))['renewed']:raise ValueError('Lease expired')
+                            self.stop.wait(.2)
+                await_environment()
             trail=[];failure='VALIDATION_REJECTED';last=None
+            movement_generation=runtime.movement_generation() if runtime is not None and trigger is not None else None
             for number in range(MAX_PAIRS_PER_ATTEMPT):
+                if trigger is not None and runtime is not None:
+                    await_environment()
+                    current=runtime.movement_generation()
+                    if current!=movement_generation:trail=[];movement_generation=current
                 if count_check and (self.cctv_busy() or runtime.environment_wait_reason(require_cameras=False)):
                     raise ScanFailure('COUNT_CHECK_SKIPPED')
                 if self.stop.is_set() or time.monotonic()>deadline:raise TimeoutError('Validation time limit')
@@ -559,8 +565,12 @@ class AutonomousProcessor:
                 if preview is not None:
                     result=self.native.infer(dict(kind='pair',image_back=preview['image_back'],image_front=preview['image_front'],boost=CAPTURE_BOOST))
                     self.metrics['pair']=result['metrics'];candidate=result['candidate']
+                    if trigger is not None and runtime is not None and runtime.movement_generation()!=movement_generation:
+                        trail=[];failure='STALE_CAPTURE'
+                        if number<MAX_PAIRS_PER_ATTEMPT-1 and self.stop.wait(2):raise RuntimeError('Stopping')
+                        continue
                     if not count_check:self.panel_observations.put(sid,preview,candidate)
-                    if runtime is not None and not count_check:runtime.observe(sid,candidate,preview['capture'])
+                    if runtime is not None:runtime.observe(sid,candidate,preview['capture'])
                     valid_range=runtime is not None and candidate.get('hold')=='UNKNOWN_B1'
                     if candidate.get('hold') and not valid_range:
                         failure=candidate['hold'];trail=[]
@@ -575,6 +585,9 @@ class AutonomousProcessor:
                 if number<MAX_PAIRS_PER_ATTEMPT-1 and self.stop.wait(2):raise RuntimeError('Stopping')
             if len(trail)<REQUIRED_MATCHING_PAIRS:raise ScanFailure(failure)
             samples=[row[1] for row in trail[-REQUIRED_MATCHING_PAIRS:]];preview,candidate=trail[-1][2],trail[-1][3]
+            if trigger is not None and runtime is not None:
+                await_environment()
+                if runtime.movement_generation()!=movement_generation:raise ScanFailure('STALE_CAPTURE')
             if self.stop.is_set() or (trigger is not None and not self.cameras_ready()):raise ValueError('CCTV health lost before validation')
             if count_check and self.cctv_busy():raise ScanFailure('COUNT_CHECK_SKIPPED')
             return self.request('/esp32_validate',dict(shelf_id=sid,validation_token=token,source=source,
@@ -585,8 +598,10 @@ class AutonomousProcessor:
                 tm_confidence=min(candidate['front_confidence'],candidate['back_confidence']),boost=CAPTURE_BOOST))
         except Exception as exc:
             if token and not count_check:
-                try:self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,trigger_id=trigger.get('trigger_id') if trigger else None,
-                    failed=True,stage=failure_code(exc)+': native validation held; fresh verification required'))
+                try:
+                    progress=self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,trigger_id=trigger.get('trigger_id') if trigger else None,
+                        failed=True,failure_code=reason_code(exc),stage=failure_code(exc)+': native validation held; fresh verification required'))
+                    if isinstance(progress,dict) and progress.get('status')=='retry_pending':return progress
                 except Exception:pass
             raise
         finally:
@@ -600,7 +615,15 @@ class AutonomousProcessor:
             n=self.attempts[sid]=self.attempts.get(sid,0)+1
             self._set_scan(sid,'Scanning',message='Scanning: keep hands clear of the rack',attempt=n)
         try:
-            self.validate(shelf,trigger)
+            result=self.validate(shelf,trigger)
+            if isinstance(result,dict) and result.get('status')=='retry_pending':
+                self._set_scan(sid,'Waiting',message='Nonterminal validation; waiting for one fresh retry')
+                return
+            if isinstance(result,dict) and result.get('code')=='SIDE_PRESENCE_DEFERRED':
+                self.attempts[sid]=max(0,self.attempts.get(sid,1)-1)
+                self.retry_at[sid]=time.monotonic()+2
+                self._set_scan(sid,'Waiting','SIDE_PRESENCE_DEFERRED','Changed count deferred until the side zone is clear for 2 s, then two new matching pairs are taken.',attempt=self.attempts[sid])
+                return
             self.count_check_due[sid]=time.monotonic()+COUNT_CHECK_INTERVAL_SECONDS
             if trigger is None and self.cameras_ready():self.cctv_recounts.discard(sid)
             self.attempts.pop(sid,None);self.exhausted.discard(sid);self.retry_at.pop(sid,None)
@@ -627,7 +650,10 @@ class AutonomousProcessor:
         sid=shelf['shelf_id'];version=self.runtime.snapshot(sid)['version']
         self.count_check_due[sid]=time.monotonic()+COUNT_CHECK_INTERVAL_SECONDS
         with self.scan_lock:self.active_shelf=sid
-        try:self.validate(shelf,count_check=True)
+        try:
+            result=self.validate(shelf,count_check=True)
+            if isinstance(result,dict) and result.get('code')=='SIDE_PRESENCE_DEFERRED':
+                self.count_check_due[sid]=time.monotonic()+2
         except Exception as exc:
             code=reason_code(exc)
             if code=='COUNT_CHECK_SKIPPED':self.count_check_due[sid]=time.monotonic()+2
@@ -654,13 +680,15 @@ class AutonomousProcessor:
                     ready=status['state']=='Ready'
                     if ready and self.runtime is not None:
                         due=self.count_check_due.setdefault(sid,now+COUNT_CHECK_INTERVAL_SECONDS)
-                        if now>=due and not self.cctv_busy():checks.append(shelf)
+                        if now>=due and not self.cctv_busy() and self.runtime.count_recheck_ready(sid):checks.append(shelf)
                     if not shelf.get('ip_address') or not shelf.get('secondary_ip_address'):
                         missing='BACK_CAMERA_NOT_CONFIGURED' if not shelf.get('ip_address') else 'FRONT_CAMERA_NOT_CONFIGURED'
                         self._set_scan(sid,'Unavailable',missing);continue
                     if ready and runtime.get('action_capable'):
-                        actions+=[(shelf,t) for t in self.pending() if t['shelf_id']==sid] if blocker is None else []
+                        head=next((t for t in self.pending() if t['shelf_id']==sid),None)
+                        if blocker is None and head and not head.get('claimed') and time.time()>=head.get('retry_after',0):actions.append((shelf,head))
                         continue
+                    if runtime.get('side_count_deferred') and (ready or not self.runtime.count_recheck_ready(sid)):continue
                     if ready and runtime.get('count_check_unverified') and not pending and sid not in self.cctv_recounts:continue
                     # Counts need only models and the ESP32 HTTP pair; a count taken while CCTV/MQTT was down is redone once they are live.
                     if ready and blocker is not None and not (sid in self.cctv_recounts and self.cameras_ready()):continue

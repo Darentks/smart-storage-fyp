@@ -60,9 +60,9 @@ class LatestIntents:
             records=[r for r in self.records if r['id']!=record['id']]+[record]
             atomic_json(self.path,dict(version=1,records=records[-5:]));self.records=records[-5:]
 
-    def update(self,identity,status,reason=None):
+    def update(self,identity,status,reason=None,action=None):
         with self.lock:
-            records=[self.clean(dict(r,status=status,reason=reason)) if r['id']==identity and not
+            records=[self.clean(dict(r,status=status,reason=reason,**({'action':action} if action else {}))) if r['id']==identity and not
                 (status=='HELD' and r['status'] in ('ACCEPTED','RECONCILED')) else dict(r) for r in self.records]
             atomic_json(self.path,dict(version=1,records=records));self.records=records
 

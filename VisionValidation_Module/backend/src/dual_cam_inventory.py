@@ -182,3 +182,9 @@ def prove_unit_action(before, after, action) -> ActionProof:
     visible=any(a is not None and b is not None and a!=b for a,b in zip(before,after))
     code=('VISIBLE_CHANGE_NET_UNPROVEN' if visible else 'UNKNOWN_B1') if unknown else 'OCCUPANCY_CHANGED'
     return ActionProof(False,code,tuple(sorted(deltas)))
+
+
+def candidate_direction(before, after):
+    """Pictures propose direction; only prove_unit_action can authorize it."""
+    deltas={sum(current)-sum(previous) for previous in feasible_completions(before) for current in feasible_completions(after)}
+    return 'BORROW' if max(deltas)<0 else 'RETURN' if min(deltas)>0 else None
