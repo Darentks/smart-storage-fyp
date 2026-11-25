@@ -1150,7 +1150,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <small>8 pairs = 16 training pictures. Keep the arrangement unchanged. Raw lighting, boost OFF, full-frame 224 x 224; no inventory write.</small>
               <button type="button" id="tmBatchButton" class="btn-action" disabled title="Checking bridge" onclick="captureTMTrainingBatch()">Capture Training Batch (Back + Front ZIPs)</button>
               <button type="button" id="tmBatchCancel" class="btn-action" disabled onclick="cancelTMTrainingBatch()">Cancel Batch</button>
-              <div id="tmBatchStatus" aria-live="polite"></div>
+              <div id="tmBatchAvailability" role="status" aria-live="polite">Waiting for bridge status before training capture.</div>
+              <progress id="tmBatchProgress" max="1" value="0" hidden style="width:100%" aria-label="Training pairs captured"></progress>
+              <div id="tmBatchStatus" role="status" aria-live="polite"></div>
               <div id="tmBatchDownload"></div>
               <button type="button" id="tmExportBtn" class="btn-action" style="justify-content:center;" onclick="downloadTMTrainingSnapshots()">Download TM Training Snapshots</button>
               <button type="button" class="btn-action" onclick="exportEdgeTMFixture()">Download Service Comparison (Uploaded Photos)</button>
@@ -2739,6 +2741,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const batchButton=document.getElementById('tmBatchButton');
       batchButton.disabled=!online || native || diagnosticRunning || tmComparisonRunning;
       batchButton.title=!online?'Bridge unavailable':native?'Native owns cameras; batch capture is unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':'Read-only capture; manually verify both labels first';
+      batchButton.textContent=tmBatchRunning?'Capturing training data...':'Capture Training Batch (Back + Front ZIPs)';
+      document.getElementById('tmBatchAvailability').textContent=tmBatchRunning?'Training capture in progress. Keep the boxes unchanged.':
+        !online?'Training capture unavailable: bridge disconnected.':
+        native?'Training capture unavailable: the native processor owns the cameras. Stopping CCTV alone does not stop native counting.':
+        diagnosticRunning || tmComparisonRunning?'Training capture waiting: another diagnostic is running.':
+        'Ready for training capture. Select both verified labels; capture takes several seconds per pair.';
       if(!native && !diagnosticRunning){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
     }
     function renderPanelFrames(row){
@@ -2821,22 +2829,32 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       view.setUint32(12,central.reduce((n,x)=>n+x.length,0),true);view.setUint32(16,offset,true);
       return new Blob([...chunks,...central,end],{type:'application/zip'});
     }
-    function cancelTMTrainingBatch(){tmBatchCancelled=true;tmBatchController?.abort();}
+    function trainingBatchFeedback(message,completed,total){
+      document.getElementById('tmBatchStatus').textContent=message;
+      const progress=document.getElementById('tmBatchProgress');
+      progress.hidden=!total;progress.max=total || 1;progress.value=completed || 0;
+    }
+    function cancelTMTrainingBatch(){
+      if(!tmBatchRunning)return;
+      tmBatchCancelled=true;tmBatchController?.abort();
+      trainingBatchFeedback('Cancelling training capture; incomplete files will be discarded.');
+    }
     async function captureTMTrainingBatch(){
-      const status=document.getElementById('tmBatchStatus');
-      if(tmBatchRunning || diagnosticRunning || tmComparisonRunning || !bridgeStatus.online || bridgeStatus.authoritative_processor==='native'){status.textContent='Batch unavailable: connect the bridge and wait for diagnostics; native must be disabled.';return;}
+      if(tmBatchRunning)return;
+      if(diagnosticRunning || tmComparisonRunning || !bridgeStatus.online || bridgeStatus.authoritative_processor==='native'){trainingBatchFeedback('Batch unavailable: connect the bridge and wait for diagnostics; native must be disabled.');return;}
       const count=Number(document.getElementById('tmBatchCount').value),backLabel=document.getElementById('tmBatchBack').value,frontLabel=document.getElementById('tmBatchFront').value;
-      if(![8,16,24,32].includes(count) || !['Back_11X','Back_X01','Back_100','Back_000'].includes(backLabel) || !['Front_111','Front_110','Front_100','Front_011','Front_010','Front_000'].includes(frontLabel)){status.textContent='Select both manually verified physical scenario labels first.';return;}
+      if(![8,16,24,32].includes(count) || !['Back_11X','Back_X01','Back_100','Back_000'].includes(backLabel) || !['Front_111','Front_110','Front_100','Front_011','Front_010','Front_000'].includes(frontLabel)){trainingBatchFeedback('Select both manually verified physical scenario labels first.');return;}
       const shelf=refShelfSelect.value,ip=refEspIpInput.value.trim(),ip2=refEspIp2Input.value.trim(),owned=previewGeneration;
       const check=()=>{if(tmBatchCancelled)throw Error('Cancelled; incomplete batch discarded.');if(owned!==previewGeneration || !bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || shelf!==refShelfSelect.value || ip!==refEspIpInput.value.trim() || ip2!==refEspIp2Input.value.trim())throw Error('Camera, shelf or bridge changed; incomplete batch discarded.');};
       tmBatchRunning=diagnosticRunning=true;tmBatchCancelled=false;panelState(bridgeStatus);
       document.getElementById('tmBatchCancel').disabled=false;
+      trainingBatchFeedback(`Preparing ${count} picture pairs (${count*2} images). Keep the boxes unchanged.`,0,count);
       const host=document.getElementById('tmBatchDownload');host.replaceChildren();
       tmBatchUrls.forEach(url=>URL.revokeObjectURL(url));tmBatchUrls=[];
       const session=new Date().toISOString().replace(/[:.]/g,'-'),files={Back:[],Front:[]};
       try{
         for(let i=1;i<=count;i++){
-          check();status.textContent=`Capturing pair ${i}/${count} (read-only)...`;
+          check();trainingBatchFeedback(`Capturing pair ${i}/${count}: waiting for Back and Front cameras...`,i-1,count);
           tmBatchController=new AbortController();
           const timer=setTimeout(()=>tmBatchController?.abort(),15000);
           let row;
@@ -2851,17 +2869,19 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             const name=`${label}_${shelf}_${session}_${String(i).padStart(2,'0')}.png`;
             files[role].push({name,blob:await tmCanvasPNG(preprocessForTM(image,'off'))});
           }
+          trainingBatchFeedback(`Captured ${i}/${count} pairs (${i*2} images).${i<count?' Waiting for the next capture...':''}`,i,count);
           if(i<count)await new Promise(resolve=>setTimeout(resolve,2000));
         }
-        check();const archives=await Promise.all(['Back','Front'].map(role=>buildTMTrainingZip(files[role])));check();
+        check();trainingBatchFeedback('Preparing Back and Front ZIP downloads...',count,count);
+        const archives=await Promise.all(['Back','Front'].map(role=>buildTMTrainingZip(files[role])));check();
         try{for(const zip of archives)tmBatchUrls.push(URL.createObjectURL(zip));}
         catch(error){tmBatchUrls.forEach(url=>URL.revokeObjectURL(url));tmBatchUrls=[];throw error;}
         for(const [i,role,label] of [[0,'Back',backLabel],[1,'Front',frontLabel]]){
           const link=document.createElement('a');link.href=tmBatchUrls[i];link.download=`TM_${role}_${label}_${shelf}_${session}.zip`;link.textContent=`Download ${role} ZIP (${count} training images for ${label})`;link.style.display='block';host.appendChild(link);link.click();
         }
-        status.textContent=`Complete: Back ZIP and Front ZIP, ${count} training PNGs each. Extract each ZIP and upload its images to the named TM class. If a download is blocked, use the links below. No inventory write.`;
+        trainingBatchFeedback(`Ready: Back ZIP and Front ZIP, ${count} training PNGs each. Browser downloads requested; this page cannot confirm files were saved. If blocked, use the links below. Extract each ZIP and upload to the named TM class. No inventory write.`,count,count);
         console.info('[Diagnostic] Skipping inventory write');
-      }catch(error){status.textContent=tmBatchCancelled?'Batch cancelled; incomplete batch discarded.':'Batch failed: '+error.message;}
+      }catch(error){trainingBatchFeedback(tmBatchCancelled?'Batch cancelled; incomplete batch discarded.':error.name==='AbortError'?'Batch failed: camera capture timed out after 15 seconds. Check both ESP32 cameras and retry.':'Batch failed: '+error.message);}
       finally{tmBatchRunning=diagnosticRunning=false;tmBatchController=null;document.getElementById('tmBatchCancel').disabled=true;panelState(bridgeStatus,bridgeStatus.online);}
     }
     async function compareTMPreprocessing(){

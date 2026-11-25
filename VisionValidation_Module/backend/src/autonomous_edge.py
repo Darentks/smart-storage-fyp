@@ -324,6 +324,7 @@ class AutonomousProcessor:
         self.cctv_enabled=False;self.cctv_generation=0;self.cctv_lock=threading.RLock()
         self.cctv_recounts=set()
         self.scan={};self.attempts={};self.exhausted=set();self.scan_lock=threading.Lock()
+        self.active_shelf=None
 
     # ---- setup / lifecycle -------------------------------------------------
     @property
@@ -408,7 +409,12 @@ class AutonomousProcessor:
 
     def shelf_status(self,sid,runtime=None):
         """Per-shelf view: count scan progress and, separately, whether actions can be confirmed."""
-        with self.scan_lock:scan=dict(self.scan.get(sid) or dict(state='Waiting',message='Waiting to scan this shelf',reason=None,attempt=0))
+        with self.scan_lock:
+            scan=dict(self.scan.get(sid) or dict(state='Waiting',message='Waiting to scan this shelf',reason=None,attempt=0))
+            active=self.active_shelf
+        if scan['state']=='Waiting' and not scan.get('reason'):
+            if not self.models_loaded:scan['message']='Waiting for the box-reading models to load'
+            elif active and active!=sid:scan['message']=f'Waiting for {active} to finish its camera check'
         paused=self.actions_blocker()
         if paused is None and runtime is not None and not runtime.get('action_capable'):
             paused='Waiting for a fresh count with all cameras live' if runtime.get('state')!='Ready' else 'Recounting now that all cameras are live'
@@ -523,6 +529,8 @@ class AutonomousProcessor:
                 while True:
                     try:runtime.environment_ready(require_cameras=trigger is not None);break
                     except ValueError:
+                        if trigger is None:
+                            self._set_scan(sid,'Waiting','QUIET_WINDOW',runtime.environment_wait_reason(require_cameras=False))
                         if self.stop.is_set() or time.monotonic()>=deadline:
                             if trigger is None:raise ScanFailure('QUIET_WINDOW') from None
                             raise TimeoutError('Quiet/healthy baseline window unavailable') from None
@@ -576,6 +584,7 @@ class AutonomousProcessor:
 
     def _attempt(self,shelf,trigger):
         sid=shelf['shelf_id']
+        with self.scan_lock:self.active_shelf=sid
         if trigger is None:
             n=self.attempts[sid]=self.attempts.get(sid,0)+1
             self._set_scan(sid,'Scanning',message='Scanning: keep hands clear of the rack',attempt=n)
@@ -599,6 +608,8 @@ class AutonomousProcessor:
             else:
                 self.retry_at[sid]=time.monotonic()+SCAN_BACKOFF_SECONDS[min(n-1,len(SCAN_BACKOFF_SECONDS)-1)]
                 self._set_scan(sid,'Retrying',code,scan_message(code)+f' Retrying (attempt {n} of {MAX_SCAN_ATTEMPTS}).',attempt=n)
+        finally:
+            with self.scan_lock:self.active_shelf=None
 
     def _validations(self):
         while not self.stop.is_set():

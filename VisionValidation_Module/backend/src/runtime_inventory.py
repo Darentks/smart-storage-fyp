@@ -108,6 +108,7 @@ class RuntimeInventory:
             lost_since=None if valid else (previous or {}).get('lost_since')
             if not valid and lost_since is None:lost_since=self.monotonic()
             self.cameras[cid]=dict(at=observed_at,healthy=valid,lost_since=lost_since,
+                interacting=bool(valid and interacting),
                 was_live=valid or bool(previous and previous.get('was_live')),
                 invalidated=False if valid else bool(previous and previous.get('invalidated')))
             if interacting:self.last_interaction=self.monotonic()
@@ -123,12 +124,35 @@ class RuntimeInventory:
             return self.cctv_enabled and all(self.cameras.get(c,{}).get('healthy') and 0<=self.clock()-self.cameras[c]['at']<1.5
                 for c in ('CCTV_01','CCTV_02','CCTV_03'))
 
+    def _environment_issue(self,require_cameras):
+        """Caller holds guard; one source for the readiness gate and its user-facing explanation."""
+        if not self.models_ready:return 'Native models unavailable','Waiting for the box-reading models to load'
+        if require_cameras and not self.cameras_fresh():
+            down=[cid for cid in ('CCTV_01','CCTV_02','CCTV_03') if not (
+                self.cameras.get(cid,{}).get('healthy') and 0<=self.clock()-self.cameras[cid]['at']<1.5)]
+            message='Waiting for live frames from '+', '.join(down) if self.cctv_enabled else 'Waiting for CCTV to start'
+            return 'Fresh CCTV feeds required',message
+        remaining=self.quiet_seconds-(self.monotonic()-self.last_interaction)
+        if remaining>0:
+            active=[cid for cid,camera in self.cameras.items() if self.cctv_enabled and camera.get('interacting') and
+                camera['healthy'] and 0<=self.clock()-camera['at']<1.5]
+            if active:
+                detected='; '.join(cid+(' detects someone in the entry zone' if cid=='CCTV_03' else ' detects someone in a shelf region') for cid in active)
+                message='Waiting for the rack to clear: '+detected
+            else:message=f'Waiting for the rack to stay clear for another {remaining:.1f} s'
+            return 'Quiet interaction window not satisfied',message
+        return None
+
+    def environment_wait_reason(self,require_cameras=True):
+        with self.guard:
+            issue=self._environment_issue(require_cameras)
+            return issue[1] if issue else None
+
     def environment_ready(self,require_cameras=True):
         """Count scans need models and a quiet rack; actions additionally need all three fresh CCTV feeds."""
         with self.guard:
-            if not self.models_ready:raise ValueError('Native models unavailable')
-            if require_cameras and not self.cameras_fresh():raise ValueError('Fresh CCTV feeds required')
-            if self.monotonic()-self.last_interaction<self.quiet_seconds:raise ValueError('Quiet interaction window not satisfied')
+            issue=self._environment_issue(require_cameras)
+            if issue:raise ValueError(issue[0])
             return True
 
     def accept(self,shelf,*,run_id,event_id,expected_version,samples,captures,lease,source,event=None,transport_ok=True):
