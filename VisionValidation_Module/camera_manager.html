@@ -2752,13 +2752,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       updateTMComparisonButton();
       document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active \u2014 Displaying authoritative observations.':'Native Processor Disabled \u2014 Automated validation is paused.';
       const batchButton=document.getElementById('tmBatchButton');
-      batchButton.disabled=!online || native || diagnosticRunning || tmComparisonRunning;
-      batchButton.title=!online?'Bridge unavailable':native?'Native owns cameras; batch capture is unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':'Read-only capture; manually verify both labels first';
+      batchButton.disabled=!online || diagnosticRunning || tmComparisonRunning;
+      batchButton.title=!online?'Bridge unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':'Read-only training capture; automatic camera checks have priority';
       batchButton.textContent=tmBatchRunning?'Capturing training data...':'Capture Training Batch (Back + Front ZIPs)';
       document.getElementById('tmBatchAvailability').textContent=tmBatchRunning?'Training capture in progress. Keep the boxes unchanged.':
         !online?'Training capture unavailable: bridge disconnected.':
-        native?'Training capture unavailable: the native processor owns the cameras. Stopping CCTV alone does not stop native counting.':
         diagnosticRunning || tmComparisonRunning?'Training capture waiting: another diagnostic is running.':
+        native?'Ready for training capture. Native counting continues; capture waits while automatic checks use the cameras.':
         'Ready for training capture. Select both verified labels; capture takes several seconds per pair.';
       if(!native && !diagnosticRunning){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
     }
@@ -2854,11 +2854,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     async function captureTMTrainingBatch(){
       if(tmBatchRunning)return;
-      if(diagnosticRunning || tmComparisonRunning || !bridgeStatus.online || bridgeStatus.authoritative_processor==='native'){trainingBatchFeedback('Batch unavailable: connect the bridge and wait for diagnostics; native must be disabled.');return;}
+      if(diagnosticRunning || tmComparisonRunning || !bridgeStatus.online){trainingBatchFeedback('Batch unavailable: connect the bridge and wait for the current diagnostic to finish.');return;}
       const count=Number(document.getElementById('tmBatchCount').value),backLabel=document.getElementById('tmBatchBack').value,frontLabel=document.getElementById('tmBatchFront').value;
       if(![8,16,24,32].includes(count) || !['Back_11X','Back_X01','Back_100','Back_000'].includes(backLabel) || !['Front_111','Front_110','Front_100','Front_011','Front_010','Front_000'].includes(frontLabel)){trainingBatchFeedback('Select both manually verified physical scenario labels first.');return;}
       const shelf=refShelfSelect.value,ip=refEspIpInput.value.trim(),ip2=refEspIp2Input.value.trim(),owned=previewGeneration;
-      const check=()=>{if(tmBatchCancelled)throw Error('Cancelled; incomplete batch discarded.');if(owned!==previewGeneration || !bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || shelf!==refShelfSelect.value || ip!==refEspIpInput.value.trim() || ip2!==refEspIp2Input.value.trim())throw Error('Camera, shelf or bridge changed; incomplete batch discarded.');};
+      const check=()=>{if(tmBatchCancelled)throw Error('Cancelled; incomplete batch discarded.');if(owned!==previewGeneration || !bridgeStatus.online || shelf!==refShelfSelect.value || ip!==refEspIpInput.value.trim() || ip2!==refEspIp2Input.value.trim())throw Error('Camera, shelf or bridge changed; incomplete batch discarded.');};
       tmBatchRunning=diagnosticRunning=true;tmBatchCancelled=false;panelState(bridgeStatus);
       document.getElementById('tmBatchCancel').disabled=false;
       trainingBatchFeedback(`Preparing ${count} picture pairs (${count*2} images). Keep the boxes unchanged.`,0,count);
@@ -2868,14 +2868,26 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       try{
         for(let i=1;i<=count;i++){
           check();trainingBatchFeedback(`Capturing pair ${i}/${count}: waiting for Back and Front cameras...`,i-1,count);
-          tmBatchController=new AbortController();
-          const timer=setTimeout(()=>tmBatchController?.abort(),15000);
           let row;
-          try{
-            const query=new URLSearchParams({run_mode:'diagnostic',shelf_id:shelf,ip,ip2});
-            const response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',signal:tmBatchController.signal});
-            row=await response.json();if(!response.ok)throw Error(row.error || 'Capture failed');
-          }finally{clearTimeout(timer);tmBatchController=null;}
+          for(let busyRetries=0;;busyRetries++){
+            check();tmBatchController=new AbortController();
+            const timer=setTimeout(()=>tmBatchController?.abort(),15000);
+            let response;
+            try{
+              const query=new URLSearchParams({run_mode:'diagnostic',purpose:'training',shelf_id:shelf,ip,ip2});
+              response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',signal:tmBatchController.signal});
+              row=await response.json();
+            }finally{clearTimeout(timer);tmBatchController=null;}
+            check();
+            if(response.status===409){
+              if(busyRetries>=30)throw Error('Automatic checks are still using the cameras. Retry the batch after they finish.');
+              trainingBatchFeedback(`Waiting for automatic camera checks; retrying pair ${i}/${count} (${busyRetries+1}/30)...`,i-1,count);
+              await new Promise(resolve=>setTimeout(resolve,2000));continue;
+            }
+            if(!response.ok)throw Error(row.error || 'Capture failed');
+            if(row.purpose!=='training' || row.authorizes_write!==false)throw Error('Restart the updated local bridge to enable read-only training capture.');
+            break;
+          }
           check();
           const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
           for(const [role,image,label] of [['Back',images[0],backLabel],['Front',images[1],frontLabel]]){

@@ -33,7 +33,10 @@ class NativeObservations:
 
 def diagnostic_preview(query,manager,coordinator,native):
     if query.get('run_mode',[''])[0]!='diagnostic':return 400,{'error':'Explicit diagnostic mode required'}
-    # Allowed beside the native processor: read-only, and refused only for a shelf it is scanning right now.
+    purpose=query.get('purpose',['preview'])[0]
+    if purpose not in ('preview','training'):return 400,{'error':'Invalid capture purpose'}
+    # Read-only beside native processing. Training yields to every queued/active
+    # native check; ordinary previews retain their per-shelf exclusion rule.
     try:
         shelf=query.get('shelf_id',[''])[0]
         if shelf not in SHELF_SET:raise ValueError('Invalid shelf')
@@ -43,13 +46,17 @@ def diagnostic_preview(query,manager,coordinator,native):
         if not coordinator.global_lock.acquire(blocking=False):
             return 409,{'error':'Another capture is in progress; retry in a few seconds'}
         try:
-            if coordinator.busy(shelf):return 409,{'error':'This shelf is being scanned right now; try again in a few seconds'}
+            if purpose=='training':
+                cctv_busy=getattr(native,'cctv_busy',None)
+                if coordinator.busy() or getattr(coordinator,'waiting',{}) or (callable(cctv_busy) and cctv_busy()):
+                    return 409,{'error':'Automatic camera checks have priority; training capture will retry'}
+            elif coordinator.busy(shelf):return 409,{'error':'This shelf is being scanned right now; try again in a few seconds'}
             _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=LIVE_CAPTURE_DUTY,boost_mode=LIVE_CAPTURE_BOOST)
         finally:
             coordinator.global_lock.release()
         if not back or not front:return 502,{'error':'Both camera frames required'}
-        row=dict(status='success',run_mode='diagnostic',authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
-        if native is not None:
+        row=dict(status='success',run_mode='diagnostic',purpose=purpose,authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
+        if native is not None and purpose!='training':
             if not native.models_loaded:return 503,{'error':'Native box-reading models are not ready'}
             # Exactly the scanner's engine, staged models, boost and pair decoder.
             # No lease, receipt or inventory acceptance is created by this diagnostic.
