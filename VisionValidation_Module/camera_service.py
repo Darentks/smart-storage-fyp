@@ -9,14 +9,14 @@ Runs a lightweight HTTP server on port 8008 providing:
    - GET    /test_feed               : Capture single CCTV frame snapshot & latency
    - POST   /run_calibration         : Open desktop OpenCV ROI calibrator
 
-2. Micro ESP32-CAM Node & 30s Baseline Comparison Pipeline:
-   - GET    /esp32_nodes             : Read Shelf Compartments, 30s baselines, live MQTT health & recent comparison logs
+2. Micro ESP32-CAM Node & Shelf Count Validation:
+   - GET    /esp32_nodes             : Read Shelf Compartments, paired observations, live MQTT health & recent comparison logs
    - GET    /esp32_preview           : Live test preview from http://<esp32_ip>/capture
    - POST   /esp32_trigger           : Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
    - GET    /esp32_reference_samples : List stored ESP32-CAM reference samples
    - POST   /esp32_reference_samples : Capture & store an ESP32-CAM scenario reference (5, 4, 3, 2, 1, 0 boxes)
    - DELETE /esp32_reference_samples : Delete an ESP32-CAM reference sample
-   - POST   /esp32_validate          : Run hybrid 30s baseline + reference validation and apply Supabase delta
+   - POST   /esp32_validate          : Run hybrid paired observation + reference validation and apply Supabase delta
 """
 
 import base64
@@ -73,8 +73,7 @@ from src.config_loader import (  # type: ignore
     list_comparison_logs,
     SupabaseRestFallback,
 )
-from src.periodic_recheck import (RecheckCoordinator, StaggeredPollSchedule, inspect_candidate,
-                                  has_pending_shelf, queue_periodic_trigger)
+from src.periodic_recheck import RecheckCoordinator
 from src.bridge_runtime import InstanceLock, configure_logs, event
 from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
@@ -121,9 +120,6 @@ spatial_mapper = SpatialMapper(ROI_CONFIG_PATH)
 
 esp32_ref_manager = ESP32ReferenceManager()
 RECHECKS = RecheckCoordinator()
-PERIODIC_DIFF_THRESHOLD = float(os.getenv("PERIODIC_DIFF_THRESHOLD", "3.5"))
-if not 0 < PERIODIC_DIFF_THRESHOLD <= 100:
-    raise ValueError("PERIODIC_DIFF_THRESHOLD must be between 0 and 100")
 
 ACTIVE_ESP32_IPS: Dict[str, Any] = {
     "SHELF_R1_C1": {
@@ -1786,7 +1782,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     self._send_json(200, {"queued": queued})
                 elif path == "/validation_begin":
                     source = body.get("source") or "MANUAL"
-                    if source in {'CCTV','PERIODIC_RECHECK'} and not READINESS.ready(shelf):
+                    if source in {'CCTV','PERIODIC_RECHECK','COUNT_CHECK'} and not READINESS.ready(shelf):
                         RECHECKS.cancel(body.get('request_id'))
                         self._send_json(409, {'error':'Shelf not Ready; interaction not validated, retry only after readiness'})
                         return
@@ -1794,7 +1790,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     with CCTV_CONSENSUS_LOCK:
                         live_waiting = any(t.get("source") == "CCTV" and not t.get("claimed")
                             and time.time()-t.get("timestamp", 0) < 60 for t in PENDING_CCTV_TRIGGERS)
-                    if source == "PERIODIC_RECHECK" and live_waiting:
+                    if source in {"PERIODIC_RECHECK","COUNT_CHECK"} and live_waiting:
                         self._send_json(200, {"token": None})
                         return
                     token = RECHECKS.begin(shelf, source, body.get("request_id"), body.get("created_at"))
@@ -1809,6 +1805,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 else:
                     ended = RECHECKS.end(shelf, body.get("token"))
                     if ended:
+                        if body.get('source')=='COUNT_CHECK':
+                            with DUAL_CAM_CAPTURE_LOCK:
+                                for identity in list(DUAL_CAM_CAPTURES):
+                                    if DUAL_CAM_CAPTURES[identity].get('validation_token')==body.get('token'):DUAL_CAM_CAPTURES.pop(identity,None)
                         esp32_ref_manager.baseline_freeze_until.pop(shelf, None)
                         trigger_id = body.get("trigger_id")
                         with CCTV_CONSENSUS_LOCK:
@@ -2107,7 +2107,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         'dispatched':None,'message':'All cameras agreed; shelf baseline is not Ready. No action queued or capture dispatched.'})
                     return
 
-            # Guardrail 1: Freeze 30s baseline for 10s during interaction
+            # Guardrail 1: Freeze paired observation for 10s during interaction
             esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
 
             if command == "CAPTURE_REFERENCE":
@@ -2149,7 +2149,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        # VALIDATE: Run 30s baseline + Teachable Machine validation and apply Supabase delta
+        # VALIDATE: Run paired observation + Teachable Machine validation and apply Supabase delta
         if path == "/esp32_validate":
             if globals().get('RUNTIME_INVENTORY') is not None:
                 self._runtime_validate(body)
@@ -2165,7 +2165,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 boost = body.get("boost") or "auto"
                 if boost in ("auto", "high", "off"):
                     esp32_ref_manager.vision_boost_mode = boost
-                # Guardrail 1: Freeze 30s baseline for 10s during interaction
+                # Guardrail 1: Freeze paired observation for 10s during interaction
                 esp32_ref_manager.freeze_baseline(shelf_id, 10.0)
 
                 mqtt_client_id = str(body.get("mqtt_client_id") or f"ESP32_{shelf_id.replace('SHELF_', '')}").strip()
@@ -2495,141 +2495,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": "Endpoint not found"})
 
 
-def poll_periodic_shelf(shelf_id, ip_entry):
-    """Bounded health probes; capture only when both cameras report online."""
-    if runtime_enabled():return  # Native scheduler owns runtime paired captures.
-    if isinstance(ip_entry, dict):
-        raw_ip1 = ip_entry.get("ip1")
-        raw_ip2 = ip_entry.get("ip2")
-    else:
-        raw_ip1 = ip_entry
-        raw_ip2 = None
-
-    if not raw_ip1 or not str(raw_ip1).strip():
-        return
-
-    clean_ip = str(raw_ip1).split("//")[-1].split("/")[0].strip()
-    status_url = f"http://{clean_ip}/status"
-    rssi_dbm = None
-    online = False
-
-    # 1. Quick probe to http://<ip>/status (1.5s timeout)
-    try:
-        req = urllib.request.Request(status_url, headers={"User-Agent": "SmartStoragePoller/1.0"})
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
-            if resp.status == 200:
-                online = True
-                raw = resp.read().decode("utf-8")
-                try:
-                    status_data = json.loads(raw)
-                    rssi_dbm = status_data.get("rssi_dbm") or status_data.get("rssi")
-                except Exception:
-                    pass
-    except Exception:
-        online = False
-
-    # 2. If reachable (or for baseline refresh), fetch baseline & sync Supabase
-    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    sec_ip = str(raw_ip2).split("//")[-1].split("/")[0].strip() if raw_ip2 else None
-    if not sec_ip:
-        return
-
-    if online:
-        dev_id1 = f"ESP32_{shelf_id.replace('SHELF_', '')}"
-        node_health = {
-            "device_id": dev_id1,
-            "mqtt_client_id": dev_id1,
-            "shelf_id": shelf_id,
-            "ip_address": clean_ip,
-            "rssi_dbm": rssi_dbm,
-            "status": "ONLINE",
-            "angle": "BACK",
-            "last_seen_at": now_iso,
-            "last_seen_ts": time.time(),
-        }
-        mqtt_bridge.edge_nodes[dev_id1] = node_health
-    else:
-        record_probe_result(clean_ip)
-
-    # Also probe secondary camera (CAM 2 Front Angle)
-    online_cam2 = False
-    rssi_cam2 = None
-    if sec_ip:
-        try:
-            req2 = urllib.request.Request(f"http://{sec_ip}/status", headers={"User-Agent": "SmartStoragePoller/1.0"})
-            with urllib.request.urlopen(req2, timeout=1.5) as resp2:
-                if resp2.status == 200:
-                    online_cam2 = True
-                    raw2 = resp2.read().decode("utf-8")
-                    try:
-                        s_data2 = json.loads(raw2)
-                        rssi_cam2 = s_data2.get("rssi_dbm") or s_data2.get("rssi")
-                    except Exception:
-                        pass
-        except Exception:
-            online_cam2 = False
-
-    if online_cam2:
-        dev_id2 = f"ESP32_{shelf_id.replace('SHELF_', '')}_CAM2"
-        node_health2 = {
-            "device_id": dev_id2,
-            "mqtt_client_id": dev_id2,
-            "shelf_id": shelf_id,
-            "ip_address": sec_ip,
-            "rssi_dbm": rssi_cam2,
-            "status": "ONLINE",
-            "angle": "FRONT",
-            "last_seen_at": now_iso,
-            "last_seen_ts": time.time(),
-        }
-        mqtt_bridge.edge_nodes[dev_id2] = node_health2
-    elif sec_ip:
-        record_probe_result(sec_ip)
-
-
-    if not (online and online_cam2):
-        return
-    with RECHECKS.global_lock:
-        # Baseline captures yield to queued/active validation traffic.
-        if RECHECKS.busy() or RECHECKS.waiting:
-            return
-        with CCTV_CONSENSUS_LOCK:
-            if has_pending_shelf(PENDING_CCTV_TRIGGERS, shelf_id, time.time()):
-                return
-        score = inspect_candidate(esp32_ref_manager, shelf_id, clean_ip, sec_ip, PERIODIC_DIFF_THRESHOLD)
-        if score is not None:
-            with CCTV_CONSENSUS_LOCK:
-                queue_periodic_trigger(PENDING_CCTV_TRIGGERS, shelf_id, score, time.time())
-
-
-def periodic_shelf_mappings():
-    """Only real dual-IP mappings, optionally narrowed for staged testing."""
-    configured = {}
-    for row in get_cached_compartments(force_refresh=False):
-        if row.get("shelf_id") and row.get("ip_address") and row.get("secondary_ip_address"):
-            configured[row["shelf_id"]] = {"ip1": row["ip_address"], "ip2": row["secondary_ip_address"]}
-    for shelf, entry in list(ACTIVE_ESP32_IPS.items()):
-        if isinstance(entry, dict) and entry.get("ip1") and entry.get("ip2"):
-            configured[shelf] = entry
-    selected = {s.strip() for s in os.getenv("PERIODIC_RECHECK_SHELVES", "").split(",") if s.strip()}
-    return {s: entry for s, entry in configured.items() if not selected or s in selected}
-
-
-def esp32_http_baseline_poller():
-    """One staggered shelf slot; slow/offline requests never cause catch-up bursts."""
-    schedule = StaggeredPollSchedule()
-    time.sleep(2.0)
-    while True:
-        try:
-            mappings = periodic_shelf_mappings()
-            shelf = schedule.take(mappings, time.monotonic())
-            if shelf is not None:
-                poll_periodic_shelf(shelf, mappings[shelf])
-        except Exception as exc:
-            print(f"[CameraService Poller] Exception in baseline poller slot: {exc}")
-        time.sleep(0.5)
-
-
 _FRONT_OCCUPANCY_LABELS = {f"Front_{s}" for s in ("000", "010", "011", "100", "110", "111")}
 _BACK_OCCUPANCY_LABELS = {f"Back_{s}" for s in ("000", "100", "X01", "11X")}
 
@@ -2692,13 +2557,6 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
         print("[Inventory] Persistent state unavailable. Validations fail closed until migration/database access is ready.")
     mqtt_bridge.connect_broker(timeout=1.5)
 
-    # Start background 30s HTTP baseline poller daemon thread
-    poller_thread = threading.Thread(target=esp32_http_baseline_poller, daemon=True, name="ESP32BaselinePoller")
-    poller_thread.start()
-    print("[CameraService] Started background 30s ESP32 HTTP baseline poller daemon.")
-
-
-
     cert_path, key_path = _resolve_ssl_cert_and_key(ssl_cert, ssl_key)
     if cert_path and key_path:
         try:
@@ -2720,7 +2578,7 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
     print("    - GET    /status                  : Service & MQTT health status")
     print("    - GET    /api/comparisons/latest  : In-memory ring buffer (latest 5 actions)")
     print("    - GET    /test_feed               : Capture single CCTV test snapshot")
-    print("    - GET    /esp32_nodes             : Shelf ROI, 30s baselines, & comparison logs")
+    print("    - GET    /esp32_nodes             : Shelf ROI, paired observations, & comparison logs")
     print("    - GET    /esp32_preview           : Live test snapshot from ESP32 camera")
     print("    - GET    /esp32_probe             : Proxy status probe to ESP32-CAM over LAN")
     print("    - POST   /esp32_nvs_config        : Proxy NVS config update to ESP32-CAM")

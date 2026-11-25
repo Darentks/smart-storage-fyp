@@ -38,8 +38,10 @@ CAPTURE_DUTY=LIVE_CAPTURE_DUTY
 MAX_SCAN_ATTEMPTS=3                # automatic count attempts per shelf before "Retry scan" is required
 SCAN_BACKOFF_SECONDS=(5,15,30)     # wait before the next automatic attempt
 SCAN_DEADLINE_SECONDS=90
+COUNT_CHECK_INTERVAL_SECONDS=30
 
 SCAN_MESSAGES={
+    'COUNT_CHECK_SKIPPED':'Count check deferred while CCTV or another camera check is active.',
     'BACK_CAMERA_OFFLINE':'Count unavailable — back camera offline.',
     'FRONT_CAMERA_OFFLINE':'Count unavailable — front camera offline.',
     'BACK_CAMERA_NOT_CONFIGURED':'Count unavailable — back camera is not assigned to this shelf.',
@@ -325,6 +327,7 @@ class AutonomousProcessor:
         self.cctv_recounts=set()
         self.scan={};self.attempts={};self.exhausted=set();self.scan_lock=threading.Lock()
         self.active_shelf=None
+        self.count_check_due={}
 
     # ---- setup / lifecycle -------------------------------------------------
     @property
@@ -511,15 +514,17 @@ class AutonomousProcessor:
             self.stop.wait(.1)
 
     # ---- one scan / confirmation attempt ----------------------------------
-    def validate(self, shelf, trigger=None):
+    def validate(self, shelf, trigger=None, *, count_check=False):
         """Take at most MAX_PAIRS_PER_ATTEMPT fresh pairs; submit once REQUIRED_MATCHING_PAIRS consecutive pairs agree."""
-        sid=shelf['shelf_id'];source=trigger.get('source','CCTV') if trigger else 'STARTUP'
+        sid=shelf['shelf_id'];source='COUNT_CHECK' if count_check else trigger.get('source','CCTV') if trigger else 'STARTUP'
         action=trigger['expected_action'] if trigger else 'RECHECK';request_id=str(uuid.uuid4());token=None
         if not shelf.get('ip_address'):raise ScanFailure('BACK_CAMERA_NOT_CONFIGURED')
         if not shelf.get('secondary_ip_address'):raise ScanFailure('FRONT_CAMERA_NOT_CONFIGURED')
         try:
             token=self.request('/validation_begin',dict(shelf_id=sid,source=source,request_id=request_id))['token']
-            if not token:raise ValueError('Lease unavailable')
+            if not token:
+                if count_check:raise ScanFailure('COUNT_CHECK_SKIPPED')
+                raise ValueError('Lease unavailable')
             if trigger and not self.request('/cctv_trigger_claim',dict(shelf_id=sid,trigger_id=trigger['trigger_id'],validation_token=token))['claimed']:
                 raise ValueError('Trigger not claimable')
             deadline=time.monotonic()+SCAN_DEADLINE_SECONDS
@@ -529,6 +534,7 @@ class AutonomousProcessor:
                 while True:
                     try:runtime.environment_ready(require_cameras=trigger is not None);break
                     except ValueError:
+                        if count_check:raise ScanFailure('COUNT_CHECK_SKIPPED') from None
                         if trigger is None:
                             self._set_scan(sid,'Waiting','QUIET_WINDOW',runtime.environment_wait_reason(require_cameras=False))
                         if self.stop.is_set() or time.monotonic()>=deadline:
@@ -537,10 +543,12 @@ class AutonomousProcessor:
                         self.stop.wait(.2)
             trail=[];failure='VALIDATION_REJECTED';last=None
             for number in range(MAX_PAIRS_PER_ATTEMPT):
+                if count_check and (self.pending() or runtime.environment_wait_reason(require_cameras=False)):
+                    raise ScanFailure('COUNT_CHECK_SKIPPED')
                 if self.stop.is_set() or time.monotonic()>deadline:raise TimeoutError('Validation time limit')
                 if not self.request('/validation_renew',dict(shelf_id=sid,token=token))['renewed']:raise ValueError('Lease expired')
-                self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,stage='Native paired capture',capture_number=number+1,boost=CAPTURE_BOOST,duty=CAPTURE_DUTY))
-                if trigger is None:self._set_scan(sid,'Scanning',message=f'Taking picture pair {number+1} of up to {MAX_PAIRS_PER_ATTEMPT}')
+                if not count_check:self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,stage='Native paired capture',capture_number=number+1,boost=CAPTURE_BOOST,duty=CAPTURE_DUTY))
+                if trigger is None and not count_check:self._set_scan(sid,'Scanning',message=f'Taking picture pair {number+1} of up to {MAX_PAIRS_PER_ATTEMPT}')
                 query=urllib.parse.urlencode(dict(tm_raw=1,ip=shelf['ip_address'],ip2=shelf['secondary_ip_address'],shelf_id=sid,boost=CAPTURE_BOOST,duty=CAPTURE_DUTY))
                 try:preview=self.request('/esp32_preview?'+query,None)
                 except ValueError:preview=None;failure='CAPTURE_FAILED';trail=[]
@@ -549,8 +557,8 @@ class AutonomousProcessor:
                 if preview is not None:
                     result=self.native.infer(dict(kind='pair',image_back=preview['image_back'],image_front=preview['image_front'],boost=CAPTURE_BOOST))
                     self.metrics['pair']=result['metrics'];candidate=result['candidate']
-                    self.panel_observations.put(sid,preview,candidate)
-                    if runtime is not None:runtime.observe(sid,candidate,preview['capture'])
+                    if not count_check:self.panel_observations.put(sid,preview,candidate)
+                    if runtime is not None and not count_check:runtime.observe(sid,candidate,preview['capture'])
                     valid_range=runtime is not None and candidate.get('hold')=='UNKNOWN_B1'
                     if candidate.get('hold') and not valid_range:
                         failure=candidate['hold'];trail=[]
@@ -566,6 +574,7 @@ class AutonomousProcessor:
             if len(trail)<REQUIRED_MATCHING_PAIRS:raise ScanFailure(failure)
             samples=[row[1] for row in trail[-REQUIRED_MATCHING_PAIRS:]];preview,candidate=trail[-1][2],trail[-1][3]
             if self.stop.is_set() or (trigger is not None and not self.cameras_ready()):raise ValueError('CCTV health lost before validation')
+            if count_check and self.pending():raise ScanFailure('COUNT_CHECK_SKIPPED')
             return self.request('/esp32_validate',dict(shelf_id=sid,validation_token=token,source=source,
                 trigger_id=trigger['trigger_id'] if trigger else None,expected_action=action,ip=shelf['ip_address'],ip2=shelf['secondary_ip_address'],
                 image=preview['image'],image_back=preview['image_back'],image_front=preview['image_front'],
@@ -573,13 +582,13 @@ class AutonomousProcessor:
                 run_id=self.run_id,expected_version=runtime_version,runtime_event_id='baseline:'+request_id,
                 tm_confidence=min(candidate['front_confidence'],candidate['back_confidence']),boost=CAPTURE_BOOST))
         except Exception as exc:
-            if token:
+            if token and not count_check:
                 try:self.request('/validation_progress',dict(shelf_id=sid,validation_token=token,run_id=self.run_id,trigger_id=trigger.get('trigger_id') if trigger else None,
                     failed=True,stage=failure_code(exc)+': native validation held; fresh verification required'))
                 except Exception:pass
             raise
         finally:
-            if token:self.request('/validation_end',dict(shelf_id=sid,token=token,trigger_id=trigger['trigger_id'] if trigger else None))
+            if token:self.request('/validation_end',dict(shelf_id=sid,token=token,source=source,trigger_id=trigger['trigger_id'] if trigger else None))
             else:self.request('/validation_cancel',dict(request_id=request_id))
 
     def _attempt(self,shelf,trigger):
@@ -590,6 +599,7 @@ class AutonomousProcessor:
             self._set_scan(sid,'Scanning',message='Scanning: keep hands clear of the rack',attempt=n)
         try:
             self.validate(shelf,trigger)
+            self.count_check_due[sid]=time.monotonic()+COUNT_CHECK_INTERVAL_SECONDS
             if trigger is None and self.cameras_ready():self.cctv_recounts.discard(sid)
             self.attempts.pop(sid,None);self.exhausted.discard(sid);self.retry_at.pop(sid,None)
             self._set_scan(sid,'Count ready',message='Count ready',attempt=0)
@@ -611,6 +621,19 @@ class AutonomousProcessor:
         finally:
             with self.scan_lock:self.active_shelf=None
 
+    def _count_check(self,shelf):
+        sid=shelf['shelf_id'];version=self.runtime.snapshot(sid)['version']
+        self.count_check_due[sid]=time.monotonic()+COUNT_CHECK_INTERVAL_SECONDS
+        with self.scan_lock:self.active_shelf=sid
+        try:self.validate(shelf,count_check=True)
+        except Exception as exc:
+            code=reason_code(exc)
+            if code=='COUNT_CHECK_SKIPPED':self.count_check_due[sid]=time.monotonic()+2
+            self.runtime.count_check_failed(sid,code,scan_message(code),version)
+            self.log(self.run_id,'count_check_failed',shelf_id=sid,code=code)
+        finally:
+            with self.scan_lock:self.active_shelf=None
+
     def _validations(self):
         while not self.stop.is_set():
             try:
@@ -620,18 +643,22 @@ class AutonomousProcessor:
                 self.mqtt_ok=info.get('mqtt_connected') is not False
                 statuses=info['shelves'];shelves={s['shelf_id']:s for s in self.shelves()}
                 blocker=self.actions_blocker();now=time.monotonic()
-                actions=[];scans=[]
+                actions=[];scans=[];checks=[];pending=self.pending()
                 for sid,status in statuses.items():
                     shelf=shelves.get(sid)
                     if shelf is None:continue
                     runtime=status.get('runtime') or {}
                     ready=status['state']=='Ready'
+                    if ready and self.runtime is not None:
+                        due=self.count_check_due.setdefault(sid,now+COUNT_CHECK_INTERVAL_SECONDS)
+                        if now>=due and not pending:checks.append(shelf)
                     if not shelf.get('ip_address') or not shelf.get('secondary_ip_address'):
                         missing='BACK_CAMERA_NOT_CONFIGURED' if not shelf.get('ip_address') else 'FRONT_CAMERA_NOT_CONFIGURED'
                         self._set_scan(sid,'Unavailable',missing);continue
                     if ready and runtime.get('action_capable'):
                         actions+=[(shelf,t) for t in self.pending() if t['shelf_id']==sid] if blocker is None else []
                         continue
+                    if ready and runtime.get('count_check_unverified') and not pending and sid not in self.cctv_recounts:continue
                     # Counts need only models and the ESP32 HTTP pair; a count taken while CCTV/MQTT was down is redone once they are live.
                     if ready and blocker is not None and not (sid in self.cctv_recounts and self.cameras_ready()):continue
                     if status['state'] in ('Starting','Offline','Held') or ready:
@@ -639,6 +666,8 @@ class AutonomousProcessor:
                         scans.append((shelf,None))
                 work=(actions+scans)[:1]
                 for shelf,trigger in work:self._attempt(shelf,trigger)
+                if not work and checks:
+                    self._count_check(checks[0]);work=[(checks[0],None)]
             except Exception:
                 work=[];self.log(self.run_id,'native_scheduler_error',code='VALIDATION_PENDING')
             self.stop.wait(.2 if work else 1)  # next shelf starts right after one finishes; idle polling stays at 1 s

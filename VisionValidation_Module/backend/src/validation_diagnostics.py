@@ -1,5 +1,6 @@
 """Stable diagnostic codes; no changes to inference or authorization semantics."""
-RULES = (('UNKNOWN_B1',('b1 unknown','unknown b1','back_x01')),
+RULES = (('COUNT_CHECK_SKIPPED',('count check skipped','cctv check pending')),
+       ('UNKNOWN_B1',('b1 unknown','unknown b1','back_x01')),
        ('MQTT_UNAVAILABLE',('mqtt unavailable',)),
        ('M2_CONFLICT',('m2 conflict','m2 disagreement')),
        ('LOW_CONFIDENCE',('low confidence','confidence insufficient','at least 80%')),

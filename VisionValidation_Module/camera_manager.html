@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Smart Storage &bull; 30s Baseline &amp; ESP32-CAM Inventory Monitor</title>
+  <title>Smart Storage &bull; Shelf Counts &amp; ESP32-CAM Inventory Monitor</title>
   <!-- Supabase JS Client via CDN -->
   <!-- TensorFlow.js & Google Teachable Machine Image Library -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
@@ -938,7 +938,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     <header>
       <div>
         <div class="brand-title">
-          <span>Smart Storage</span> &bull; 30s Baseline &amp; ESP32-CAM Monitor
+          <span>Smart Storage</span> &bull; Shelf Counts &amp; ESP32-CAM Monitor
         </div>
         <div class="brand-subtitle">
           Continuous Resting Baseline Comparison &bull; Scenario Reference Calibration &bull; Real-time Inventory Logs
@@ -992,12 +992,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       </div>
     </div>
 
-    <!-- Panel 1: Compartment Inventory Grid & 30s Baselines -->
+    <!-- Panel 1: Compartment Inventory Grid & Count Checks -->
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">&#128230; Panel 1 &bull; Shelf Compartments, Live Inventory &amp; 30s Baselines</h2>
-          <p class="panel-desc">Real-time stock level, latest 30-second resting baseline snapshot, and hardware
+          <h2 class="panel-title">&#128230; Panel 1 &bull; Shelf Compartments, Inventory &amp; Automatic Count Checks</h2>
+          <p class="panel-desc">Latest verified stock level, automatic 30-second count checks, and hardware
             telemetry from the local RAM inventory bridge.</p>
         </div>
         <span class="badge badge-online" id="liveBadge"><span class="pulse-dot"></span>Live Sync Active</span>
@@ -1201,12 +1201,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       </div>
     </section>
 
-    <!-- Panel 3: YOLO11n-Pose ONNX (Vercel Web) Before (30s Baseline) vs. After Comparison Log -->
+    <!-- Panel 3: YOLO11n-Pose ONNX (Vercel Web) Before vs. After Comparison Log -->
     <section class="panel">
       <div class="panel-header"
         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
         <div>
-          <h2 class="panel-title">&#128248; Panel 3 &bull; YOLO11n-Pose ONNX (Vercel Web) Before (30s Baseline) vs. After (Post-Trigger)
+          <h2 class="panel-title">&#128248; Panel 3 &bull; YOLO11n-Pose ONNX (Vercel Web) Before vs. After (Post-Trigger)
             Comparison Logs</h2>
           <p class="panel-desc">Every physical inventory interaction verification recorded in
             the latest five actions in local storage.
@@ -3158,7 +3158,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // DUAL-CAMERA TEACHABLE MACHINE VALIDATION PIPELINE
     // =========================================================================
     const validatingShelves = new Set();
-    const PERIODIC_CONFIRM_DELAY_MS = 2000;
+    const PAIR_CAPTURE_DELAY_MS = 2000;
     async function bridgePost(path, payload) {
       const response = await fetch(`${getBridgeUrl()}${path}`, {
         method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload),
@@ -3174,13 +3174,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
       return response.json();
     }
-    function validPeriodicPrediction(result) {
+    function validPairedPrediction(result) {
       return !!result && !result.degraded && Number.isInteger(result.totalBoxes)
         && result.totalBoxes >= 0 && result.totalBoxes <= 5 && !!result.occupancyKey
         && Number.isFinite(result.confidence) && result.confidence >= 80;
     }
-    function periodicCountsAgree(first, second) {
-      return validPeriodicPrediction(first) && validPeriodicPrediction(second)
+    function pairedCountsAgree(first, second) {
+      return validPairedPrediction(first) && validPairedPrediction(second)
         && first.occupancyKey === second.occupancyKey;
     }
     const VALIDATION_MAX_ROUNDS = 3;
@@ -3217,7 +3217,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const samples = [];
         try {
           for (let i = 0; i < required; i++) {
-            if (captured) await new Promise(resolve => setTimeout(resolve, PERIODIC_CONFIRM_DELAY_MS));
+            if (captured) await new Promise(resolve => setTimeout(resolve, PAIR_CAPTURE_DELAY_MS));
             captured = true;
             if(Date.now()>=deadline)throw new Error('VALIDATION_TIMEOUT: validation deadline exceeded');
             const sample = await validationTimeout(Promise.resolve().then(()=>capture(round)),Math.min(15000,deadline-Date.now()));
@@ -3227,8 +3227,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 seenReceipts.has(timing.id) || Date.now()/1000-timing.completed_at>60 || timing.completed_at>Date.now()/1000+1)
               throw new Error('STALE_CAPTURE: missing, reused or expired capture timing');
             seenReceipts.add(timing.id);
-            if(!validPeriodicPrediction(sample?.prediction))throw new Error(sample?.prediction?.scenarioLabel || 'Low confidence or unknown occupancy');
-            if (samples.length && !periodicCountsAgree(samples[0].prediction, sample.prediction)) throw new Error('Occupancy changed; retry');
+            if(!validPairedPrediction(sample?.prediction))throw new Error(sample?.prediction?.scenarioLabel || 'Low confidence or unknown occupancy');
+            if (samples.length && !pairedCountsAgree(samples[0].prediction, sample.prediction)) throw new Error('Occupancy changed; retry');
             samples.push(sample);
           }
           return {first: samples[0], second: samples[samples.length - 1], samples};
@@ -3397,7 +3397,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       execute: (item, token) => item.kind === 'EXPORT' ? exportTMTrainingLocked(item, token)
         : item.kind === 'PREVIEW' ? fetchLiveAnglePreviewLocked(item.shelfId, item.ip1, item.ip2, item.boost)
         : item.kind === 'PHOTO' ? runOfflinePhotoTestLocked(item.shelfId, token)
-        : item.source === 'PERIODIC_RECHECK' ? executePeriodicRecheckValidation(item.shelfId, item.trigger, token)
         : executeFullDualCamValidation(item.shelfId, item.action || 'BORROW', item.source === 'CCTV', token, item.trigger?.trigger_id, item.source),
       release: (item, token) => bridgePost('/validation_end', {
         shelf_id:item.shelfId, token, trigger_id:item.claimed ? item.trigger?.trigger_id : undefined
@@ -3500,58 +3499,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if(window.inventoryMode==='runtime') { showToast('Native service owns validation; use the monitoring dashboard.','info'); return; }
       return validationWorker.submit({shelfId, action, source:isCctvTrigger ? 'CCTV' : 'MANUAL'});
     }
-    function runPeriodicRecheckValidation(shelfId, trigger) {
-      return validationWorker.submit({shelfId, trigger, source:'PERIODIC_RECHECK',
-        createdAt: trigger.timestamp ? trigger.timestamp*1000 : Date.parse(trigger.created_at) || Date.now()});
-    }
-
-    async function executePeriodicRecheckValidation(shelfId, trigger, token) {
-      try {
-        const comp = compartmentsData.find(c => c.shelf_id === shelfId);
-        if (!comp?.ip_address || !comp?.secondary_ip_address) throw new Error('Both assigned cameras are required');
-        const capture = async () => {
-          if (!(await bridgePost('/validation_renew', {shelf_id:shelfId, token})).renewed) throw new Error('Validation lease expired');
-          // Fixed lighting/processing for both confirmation samples.
-          const response = await fetch(`${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(comp.ip_address)}&ip2=${encodeURIComponent(comp.secondary_ip_address)}&shelf_id=${encodeURIComponent(shelfId)}&boost=off&duty=140&_t=${Date.now()}`, {cache:'no-store'});
-          if (!response.ok) throw new Error('Periodic dual-camera capture failed');
-          const preview = await response.json();
-          if (!preview.image_back || !preview.image_front || !preview.image) throw new Error('Missing dual-angle evidence');
-          const load = src => new Promise((resolve, reject) => {
-            const img = new Image(); img.onload = () => resolve(img);
-            img.onerror = () => reject(new Error('Invalid periodic image')); img.src = src;
-          });
-          const [back, front] = await Promise.all([load(preview.image_back), load(preview.image_front)]);
-          const prediction = await predictDualCamerasWithTM(back, front, 'off');
-          if (!validPeriodicPrediction(prediction)) throw new Error('Periodic confidence insufficient');
-          return {preview, prediction};
-        };
-        const confirmed = await captureConfirmedPair(capture);
-        if (!confirmed) { showUnresolvedValidation(shelfId); return null; }
-        const {first, second} = confirmed;
-        const result = await bridgePost('/esp32_validate', {
-          shelf_id: shelfId, source: 'PERIODIC_RECHECK', expected_action: 'RECHECK',
-          validation_token: token, ip: comp.ip_address, ip2: comp.secondary_ip_address,
-          image: second.preview.image, image_back: second.preview.image_back, image_front: second.preview.image_front,
-          dual_cam_evidence: dualCamEvidence(confirmed.samples),
-          predicted_box_count: second.prediction.totalBoxes, tm_confidence: second.prediction.confidence,
-          scenario_label: second.prediction.scenarioLabel, boost: 'off',
-          periodic_evidence: {first_count: first.prediction.totalBoxes,
-            first_confidence: first.prediction.confidence, delay_ms: PERIODIC_CONFIRM_DELAY_MS}
-        });
-        if (result.comparison?.delta) {
-          const delta = result.comparison.delta;
-          showToast(`${shelfId}: ${result.comparison.state_delta} (${delta > 0 ? '+' : ''}${delta}) \u2014 periodic recheck`, 'info');
-          if (result.log) prependLatestAction(result.log);
-        }
-        await refreshAllData();
-      } catch (error) {
-        console.warn('[Periodic Recheck]', error.message);
-        if (String(error?.message || '').includes('/esp32_validate')) {
-          showToast(`${shelfId}: ${error.message.replace(/^\/esp32_validate:\s*HTTP\s*\d+\s*-\s*/i, '')}`, 'warning');
-        }
-      }
-    }
-
     async function executeFullDualCamValidation(shelfId, action, isCctvTrigger, validationToken, triggerId, validationSource) {
       const comp = compartmentsData.find(c => c.shelf_id === shelfId);
       const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201');
@@ -4051,6 +3998,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       else if(range)display=`${runtime.count_range.join('–')} / ${max} boxes (range)${counted}`;
       else if(scan.state==='Scanning')display='Scanning… keep hands clear';
       else display=scan.message || 'Waiting to scan this shelf';
+      const countCheck=runtime.count_check;
+      if(counted_ready && countCheck)display+='\n'+countCheck.status;
+      const checkDetails=countCheck?`\nLast count check: ${countCheck.status} at ${new Date(countCheck.checked_at*1000).toLocaleTimeString()}\n${countCheck.message}`:'';
       const hist=runtime.historical,last=hist?(hist.total!==null&&hist.total!==undefined?hist.total:hist.count_range.join('–')):null;
       const history=!counted_ready&&hist?`\nLast count (historical, not verified): ${last} / ${max}`:'';
       return {...view,display,
@@ -4058,7 +4008,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         actionsReady:!!native.actions_ready,
         canRetry:!counted_ready && ['Needs retry','Unavailable','Waiting'].includes(scan.state || 'Waiting'),
         reason:view.reason || (!counted_ready?scan.message:null) || null,
-        details:view.details+history};
+        details:view.details+history+checkDetails};
     }
     function renderCompartments(items) {
       if (!items || items.length === 0) {
@@ -4174,7 +4124,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div class="log-images-pair">
               <div class="log-thumb-box" title="30-Second Baseline Image [CAM 1 | CAM 2]">
                 ${beforeImg}
-                <span class="log-thumb-label">Before (30s)</span>
+                <span class="log-thumb-label">Before</span>
               </div>
               <div class="log-thumb-box" title="Post-Trigger Capture [CAM 1 | CAM 2]">
                 ${afterImg}

@@ -28,7 +28,7 @@ class RuntimeInventory:
         if shelf not in SHELF_SET:raise ValueError('Unknown shelf')
         if shelf not in self.shelves:
             self.shelves[shelf]=dict(lock=threading.RLock(),version=0,state='Starting',baseline=None,observation=None,
-                born_at=self.clock(),ready_at=None,events=OrderedDict())
+                born_at=self.clock(),ready_at=None,events=OrderedDict(),count_check=None)
         return self.shelves[shelf]
 
     def snapshot(self,shelf):
@@ -40,6 +40,7 @@ class RuntimeInventory:
                 historical=dict(total=baseline['total'],count_range=baseline['count_range'],precision=baseline['precision'],
                     observed_at=baseline.get('last_capture_at')) if baseline and row['state']!='Ready' else None
                 return dict(shelf_id=shelf,historical=historical,cctv_enabled=self.cctv_enabled,
+                    count_check=copy.deepcopy(row['count_check']),count_check_unverified=bool(baseline and baseline.get('count_check_unverified')),
                     action_capable=bool(baseline and baseline.get('action_capable')) and row['state']=='Ready',
                     observed_at=baseline.get('last_capture_at') if baseline else None,run_id=self.run_id,version=row['version'],state=row['state'],
                     ready_at=row['ready_at'],born_at=row['born_at'],baseline=baseline,latest_observation=copy.deepcopy(row['observation']),
@@ -99,6 +100,17 @@ class RuntimeInventory:
     def observe(self,shelf,candidate,capture):
         with self.guard:
             self._state(shelf)['observation']=dict(candidate=copy.deepcopy(candidate),capture=copy.deepcopy(capture),accepted=False)
+
+    def count_check_failed(self,shelf,code,message,expected_version):
+        """A failed background check never discards a last known count or alters a newer transaction."""
+        with self.guard:
+            row=self._state(shelf)
+            with row['lock']:
+                if row['state']!='Ready' or row['version']!=expected_version:return False
+                row['count_check']=dict(status='Check deferred' if code=='COUNT_CHECK_SKIPPED' else 'Check failed',code=code,message=message,checked_at=self.clock())
+                if row['baseline'] and code!='COUNT_CHECK_SKIPPED':
+                    row['baseline']['action_capable']=False;row['baseline']['count_check_unverified']=True
+                return True
 
     def camera(self,cid,observed_at,healthy,interacting=False):
         if cid not in ('CCTV_01','CCTV_02','CCTV_03'):raise ValueError('Unknown CCTV')
@@ -162,8 +174,9 @@ class RuntimeInventory:
                 if run_id!=self.run_id or type(expected_version) is not int or expected_version!=row['version']:raise ValueError('Stale run or inventory version')
                 if not isinstance(lease,str) or not lease:raise ValueError('Lease identity required')
                 if not isinstance(event_id,str) or not event_id or event_id in row['events']:raise ValueError('Duplicate/invalid event')
-                if len(row['events'])>=200:raise ValueError('In-run event limit reached; restart and reobserve')
-                self.environment_ready(require_cameras=source!='STARTUP')
+                count_check=source=='COUNT_CHECK'
+                if len(row['events'])>=200 and not count_check:raise ValueError('In-run event limit reached; restart and reobserve')
+                self.environment_ready(require_cameras=source not in ('STARTUP','COUNT_CHECK'))
                 if not isinstance(samples,list) or len(samples)!=REQUIRED_MATCHING_PAIRS:
                     raise ValueError(f'{REQUIRED_MATCHING_PAIRS} consecutive matching paired captures required')
                 seen=set();slots=None;previous=None;latest=None;first_start=None
@@ -185,7 +198,22 @@ class RuntimeInventory:
                     action_capable=bool(transport_ok) and self.cameras_fresh())
                 row['observation']=latest
                 baseline=row['baseline']
-                if source=='STARTUP':
+                retained_hidden=False
+                if count_check:
+                    if row['state']!='Ready' or baseline is None:raise ValueError('Shelf not Ready for count check')
+                    visible_match=all(value is None or value==baseline['slots'][i] for i,value in enumerate(slots))
+                    retained_hidden=any(value is None for value in slots) and visible_match
+                    changed=not retained_hidden and (latest['total']!=baseline['total'] or latest['count_range']!=baseline['count_range'])
+                    row['count_check']=dict(status='Hidden box not checked' if retained_hidden else 'Count changed' if changed else 'Count unchanged',
+                        message='Visible positions match; previous count retained. Hidden B1 was not checked.' if retained_hidden else
+                            'Hidden B1 was not checked; showing the observed count range.' if latest['precision']=='RANGE' else 'Two matching Back/Front reads confirmed.',
+                        checked_at=self.clock(),code=None)
+                    if retained_hidden:
+                        # Keep the prior count and its timestamp as last observed, never fill an unknown slot.
+                        baseline['action_capable']=False;baseline['count_check_unverified']=True
+                    else:
+                        latest['action_capable']=latest['action_capable'] and bool(baseline.get('action_capable'))
+                elif source=='STARTUP':
                     # A new camera baseline is an observation, never a historical transaction.
                     if row['state']=='Ready' and baseline and baseline.get('action_capable'):raise ValueError('Ready shelf cannot be silently rebaselined')
                 else:
@@ -203,10 +231,12 @@ class RuntimeInventory:
                         raise ValueError(f'{proof.code}: single net action not proven')
                     latest['action_authorized']=True
                 before=baseline['total'] if baseline else None
-                row.update(baseline=latest,version=row['version']+1,state='Ready',ready_at=self.clock())
-                row['events'][event_id]='BASELINE' if source=='STARTUP' else 'ACCEPTED'
+                accepted=baseline if retained_hidden else latest
+                row.update(baseline=accepted,version=row['version']+1,state='Ready',ready_at=self.clock())
+                if not count_check:row['events'][event_id]='BASELINE' if source=='STARTUP' else 'ACCEPTED'
                 for identity in seen:captures.pop(identity,None)
-                return dict(status='success',run_id=self.run_id,version=row['version'],precision=latest['precision'],
-                    occupancy=list(slots),count_range=latest['count_range'],readiness='Ready',snapshot_initialized=source=='STARTUP',
-                    comparison=dict(quantity_before=before,quantity_after=latest['total'],delta=None if source=='STARTUP' or before is None or latest['total'] is None else latest['total']-before,
-                        state_delta='BASELINE' if source=='STARTUP' else 'VERIFIED_RUNTIME_ACTION'))
+                return dict(status='success',run_id=self.run_id,version=row['version'],precision=accepted['precision'],
+                    occupancy=list(accepted['slots']),count_range=accepted['count_range'],readiness='Ready',snapshot_initialized=source=='STARTUP',
+                    count_check=copy.deepcopy(row['count_check']) if count_check else None,
+                    comparison=dict(quantity_before=before,quantity_after=accepted['total'],delta=None if source=='STARTUP' or before is None or accepted['total'] is None else accepted['total']-before,
+                        state_delta='COUNT_CHECK' if count_check else 'BASELINE' if source=='STARTUP' else 'VERIFIED_RUNTIME_ACTION'))

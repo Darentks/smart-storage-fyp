@@ -7,6 +7,8 @@ from .runtime_inventory import RuntimeInventory
 from .validation_diagnostics import failure_code
 from .dual_cam_inventory import VERSION
 from .shelves import SHELF_IDS, SHELF_SET
+from contextlib import nullcontext
+import time
 from typing import Callable, TYPE_CHECKING
 if TYPE_CHECKING:
     from .local_operations import LatestIntents
@@ -63,7 +65,7 @@ def validate_runtime_request(
         try:
             source = body.get('source')
             # Initial counts use the ESP32 HTTP pair only; actions also need the MQTT action transport.
-            if source != 'STARTUP' and not mqtt.is_connected:
+            if source not in ('STARTUP','COUNT_CHECK') and not mqtt.is_connected:
                 raise ValueError('MQTT unavailable')
             if not body.get('image_back') or not body.get('image_front'):
                 raise ValueError('Both camera images required')
@@ -81,17 +83,23 @@ def validate_runtime_request(
             if evidence.get('version') != VERSION:
                 raise ValueError('Wrong evidence version')
             samples = evidence.get('samples')
-            with capture_lock:
-                for sample in samples if isinstance(samples, list) else []:
-                    receipt = captures.get(sample.get('capture', {}).get('id'), {})
-                    if (receipt.get('ip1'), receipt.get('ip2')) != (body.get('ip'), body.get('ip2')):
-                        raise ValueError('Camera mapping mismatch')
-                result = authority.accept(sid, run_id=body.get('run_id'), expected_version=body.get('expected_version'), event_id=body.get('trigger_id') if event else body.get('runtime_event_id'), source=source, samples=samples, captures=captures, lease=token, event=event, transport_ok=bool(mqtt.is_connected))
-            readiness.set(sid, 'Ready', 'Fresh runtime ' + result['precision'] + ' observation; no persisted inventory', result['version'])
+            with (consensus_lock if source=='COUNT_CHECK' else nullcontext()):
+                if source=='COUNT_CHECK' and any(t.get('source')=='CCTV' and 0<=time.time()-t.get('timestamp',0)<60 for t in pending):
+                    return 409,{'status':'deferred','code':'COUNT_CHECK_SKIPPED','error':'CCTV check pending'}
+                with capture_lock:
+                    for sample in samples if isinstance(samples, list) else []:
+                        receipt = captures.get(sample.get('capture', {}).get('id'), {})
+                        if (receipt.get('ip1'), receipt.get('ip2')) != (body.get('ip'), body.get('ip2')):
+                            raise ValueError('Camera mapping mismatch')
+                    result = authority.accept(sid, run_id=body.get('run_id'), expected_version=body.get('expected_version'), event_id=body.get('trigger_id') if event else body.get('runtime_event_id'), source=source, samples=samples, captures=captures, lease=token, event=event, transport_ok=bool(mqtt.is_connected))
+            if source!='COUNT_CHECK':readiness.set(sid, 'Ready', 'Fresh runtime ' + result['precision'] + ' observation; no persisted inventory', result['version'])
             if source=='CCTV' and intents is not None:intents.update(body['trigger_id'],'ACCEPTED')
             return (200, result)
         except (ValueError, TypeError, KeyError) as exc:
             reason = str(exc)
+            if body.get('source')=='COUNT_CHECK':
+                if sid in SHELF_SET:authority.count_check_failed(sid,failure_code(reason),'Count check failed; last count retained.',body.get('expected_version'))
+                return 409,{'status':'count_retained','code':failure_code(reason),'error':'Count check failed; last count retained'}
             if sid in SHELF_SET and (not any((k in reason for k in ('Stale run', 'Duplicate/invalid', 'inventory version')))):
                 identity=body.get('trigger_id') if body.get('source')=='CCTV' else body.get('runtime_event_id')
                 authority.hold(sid,identity)
