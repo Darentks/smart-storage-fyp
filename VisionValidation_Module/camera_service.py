@@ -79,6 +79,7 @@ from src.bridge_runtime import InstanceLock, configure_logs, event
 from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
 from src.preview_panel import diagnostic_preview
+from src.model_assets import ModelAssets
 from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence
 RUNTIME_INVENTORY = None
 from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
@@ -134,6 +135,7 @@ ACTIVE_ESP32_IPS: Dict[str, Any] = {
 # Buffer of pending CCTV intent confirmation triggers to be consumed by the UI Teachable Machine engine
 PENDING_CCTV_TRIGGERS: list = []
 LAST_TM_BASE_URL: str = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/"
+TM_MODEL_ASSETS=ModelAssets()
 
 # Running YOLO11n-Pose CCTV pipeline process manager
 RUNNING_PIPELINES: Dict[str, Dict[str, Any]] = {}
@@ -1466,12 +1468,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 LAST_TM_BASE_URL = base_url
 
             clean_filename = filename.split("?")[0]
-            target_url = f"{base_url}{clean_filename}?t={int(time.time() * 1000)}"
-            data_bytes = None
-
-            try:
+            def fetch_model_asset(source,name):
                 req = urllib.request.Request(
-                    target_url,
+                    f"{source}{name}?t={int(time.time() * 1000)}",
                     headers={
                         "User-Agent": "SmartStorageVision/1.0",
                         "Cache-Control": "no-cache, no-store",
@@ -1479,34 +1478,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     },
                 )
                 with urllib.request.urlopen(req, timeout=7.0) as resp:
-                    data_bytes = resp.read()
-            except Exception as net_err:
-                print(f"[TM Proxy] Remote fetch failed for {target_url}: {net_err}")
-
-            # Isolate cache by source URL, including model weights. Preserve legacy endpoint shape.
-            cache_key = hashlib.sha256(base_url.encode("utf-8")).hexdigest()
-            if not re.fullmatch(r"[A-Za-z0-9_.-]+", clean_filename) or clean_filename in (".", ".."):
-                self._send_json(400, {"error": "Invalid model asset"})
+                    return resp.read(50_000_001)
+            try:
+                data_bytes=TM_MODEL_ASSETS.read(base_url,clean_filename,fetch_model_asset)
+            except (OSError,ValueError,KeyError,TypeError):
+                self._send_json(502, {"error":"Model asset unavailable; check the staged models or diagnostic source"})
                 return
-            target_dirs = [os.path.join(os.path.dirname(__file__), "models", "tm_cache", cache_key)]
-            if data_bytes:
-                for d in target_dirs:
-                    try:
-                        os.makedirs(d, exist_ok=True)
-                        with open(os.path.join(d, clean_filename), "wb") as out_f:
-                            out_f.write(data_bytes)
-                    except Exception:
-                        pass
-            else:
-                for d in target_dirs:
-                    local_f = os.path.join(d, clean_filename)
-                    if os.path.isfile(local_f):
-                        try:
-                            with open(local_f, "rb") as lf:
-                                data_bytes = lf.read()
-                            break
-                        except Exception:
-                            pass
 
             if data_bytes is not None:
                 ctype = "application/json" if clean_filename.endswith(".json") else "application/octet-stream"
@@ -2675,40 +2652,6 @@ def _has_valid_occupancy_metadata(dir_path: str) -> bool:
         return False
 
 
-def ensure_local_tm_model_cached(model_id: str = "0cQO4TjOm") -> None:
-    """
-    Downloads and caches Teachable Machine model files (model.json, metadata.json, weights.bin)
-    into models/tm_<model_id>/ so Guardrail 3's offline local fallback works when lab Wi-Fi has no internet.
-    """
-    base_url = f"https://teachablemachine.withgoogle.com/models/{model_id}/"
-    target_dirs = [
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models", f"tm_{model_id}")),
-        os.path.abspath(os.path.join(os.path.dirname(__file__), "models", f"tm_{model_id}")),
-    ]
-    for d in target_dirs:
-        os.makedirs(d, exist_ok=True)
-
-    metadata_valid = all(_has_valid_occupancy_metadata(d) for d in target_dirs)
-
-    for fname in ("model.json", "metadata.json", "weights.bin"):
-        if metadata_valid and all(os.path.isfile(os.path.join(d, fname)) and os.path.getsize(os.path.join(d, fname)) > 0 for d in target_dirs):
-            continue
-        try:
-            req = urllib.request.Request(
-                base_url + fname,
-                headers={"User-Agent": "SmartStorageVision/1.0"},
-            )
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                raw_bytes = resp.read()
-                if raw_bytes:
-                    for d in target_dirs:
-                        with open(os.path.join(d, fname), "wb") as out_f:
-                            out_f.write(raw_bytes)
-        except Exception:
-            # Offline or unreachable; skip silently
-            pass
-
-
 def _resolve_ssl_cert_and_key(ssl_cert: Optional[str] = None, ssl_key: Optional[str] = None):
     """Locates local SSL cert and key from CLI flags, env vars, or standard mkcert filenames."""
     cert = ssl_cert or os.getenv("SSL_CERT_FILE") or ""
@@ -2740,7 +2683,6 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
     httpd = ThreadingHTTPServer(server_address, CameraServiceRequestHandler)
     if EDGE_SHADOW:
         EDGE_SHADOW.start()
-    threading.Thread(target=ensure_local_tm_model_cached, daemon=True, name="TMModelCacheWorker").start()
     try:
         restored_count = 0 if runtime_enabled() else restore_inventory_cache(CONFIRMED_OCCUPANCY)
         print('[Inventory] Runtime authority starts empty; no inventory restored.' if runtime_enabled()
