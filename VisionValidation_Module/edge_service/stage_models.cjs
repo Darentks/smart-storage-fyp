@@ -2,11 +2,9 @@
 // Explicit local staging: never silently falls back to a different or combined model.
 const fs=require('node:fs');const path=require('node:path');
 const {checkLabels,sha}=require('./inference.cjs');
-const {loadSources,fetchExportAsset}=require('./tm_sources.cjs');
 const destination=path.resolve(process.argv[2]||'.runtime/edge-models');
+const sources={Front:'https://teachablemachine.withgoogle.com/models/0cQO4TjOm/',Back:'https://teachablemachine.withgoogle.com/models/40mk-G4Oq/'};
 async function main() {
-  // One snapshot for both roles; each manifest entry records the source it was built from.
-  const sources=loadSources(path.resolve(__dirname,'../..'));
   const localRoot=path.resolve(__dirname,'../../.runtime/edge-models');
   const localConfig=process.argv.includes('--from-cache')?JSON.parse(fs.readFileSync(path.join(localRoot,'manifest.json'),'utf8')):null;
   fs.mkdirSync(destination,{recursive:true});const config={version:1};
@@ -26,7 +24,9 @@ async function main() {
         bytes=fs.readFileSync(file);
         if(sha(bytes)!==entry.sha256)throw Error('Local model hash mismatch');
       } else {
-        bytes=await fetchExportAsset(sources[role],name);
+        const response=await fetch(sources[role]+name,{signal:AbortSignal.timeout(15000)});
+        if(!response.ok) throw Error('Model download failed');
+        bytes=Buffer.from(await response.arrayBuffer());
       }
       if(bytes.length>50_000_000)throw Error('Model asset too large');
       fs.writeFileSync(path.join(folder,name),bytes);

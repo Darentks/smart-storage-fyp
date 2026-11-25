@@ -79,7 +79,6 @@ from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
 from src.preview_panel import diagnostic_preview
 from src.model_assets import ModelAssets
-from src.tm_sources import sources_status, save_sources, is_local_dashboard
 from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence
 RUNTIME_INVENTORY = None
 from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
@@ -133,15 +132,6 @@ ACTIVE_ESP32_IPS: Dict[str, Any] = {
 PENDING_CCTV_TRIGGERS: list = []
 LAST_TM_BASE_URL: str = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/"
 TM_MODEL_ASSETS=ModelAssets()
-
-
-def _project_root():
-    return Path(__file__).resolve().parent.parent
-
-
-def _tm_sources_view():
-    root=_project_root()
-    return sources_status(root,os.getenv('SMART_STORAGE_EDGE_MANIFEST') or root/'.runtime/edge-models/manifest.json')
 
 # Running YOLO11n-Pose CCTV pipeline process manager
 RUNNING_PIPELINES: Dict[str, Dict[str, Any]] = {}
@@ -1244,19 +1234,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 verification={'status':'blocked','message':str(exc)[:300]+' — counts continue, but actions stay paused until this is fixed and installed again.'}
         self._send_json(200,{'status':'installed','output':output,'native':verification,'run_id':READINESS.run_id})
 
-    def _save_tm_sources(self,body):
-        """Store which exported models the next update installs. Downloads and activates nothing."""
-        if not is_local_dashboard(self.client_address[0],getattr(self,'headers',None)):
-            try:require_application_user(getattr(self,'headers',{}).get('Authorization'))
-            except BridgeAccessError as exc:
-                self._send_json(exc.status,{'error':str(exc)});return
-        try:save_sources(_project_root(),body)
-        except ValueError as exc:
-            self._send_json(400,{'error':str(exc)});return
-        except OSError:
-            self._send_json(500,{'error':'Could not save the model links on this bridge'});return
-        self._send_json(200,_tm_sources_view())
-
     def _control_cctv(self,body):
         """Same local/application-user access rule as scan requests; no browser evidence writer."""
         if self.client_address[0] not in ('127.0.0.1','::1','::ffff:127.0.0.1'):
@@ -1394,9 +1371,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             return
         if globals().get('RUNTIME_INVENTORY') is not None and path == '/esp32_preview' and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns live captures; dashboard is monitoring-only'})
-            return
-        if path == '/tm_model_sources':
-            self._send_json(200,_tm_sources_view())
             return
         if path == '/edge_status':
             status = AUTONOMOUS.snapshot() if AUTONOMOUS else EDGE_SHADOW.snapshot() if EDGE_SHADOW else {
@@ -1765,7 +1739,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request','/cctv_control','/tm_model_sources'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
+        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request','/cctv_control'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns processing; normal dashboard operations are monitoring-only'})
             return
         body = self._read_json_body()
@@ -1776,10 +1750,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         if path == '/scan_request':
             self._request_scan(body)
-            return
-
-        if path == '/tm_model_sources':
-            self._save_tm_sources(body)
             return
 
         if path == '/cctv_control':

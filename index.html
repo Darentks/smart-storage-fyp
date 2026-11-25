@@ -967,7 +967,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
         <a class="btn-action" href="smartstorage://start">Start local bridge</a>
         <a class="btn-action" href="smartstorage://restart">Restart local bridge</a>
-        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Back up, then download the Front and Back models saved as this bridge's install sources, and restart the bridge">Get latest TM models</a>
+        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Back up and download both exports configured in the local staging script, then restart the bridge">Get latest TM models</a>
         <span id="tmModelUpdateStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted)">Model updates run on this PC through the Windows launcher.</span>
         <span id="tmLoadedModelVersions" style="font-size:12px;color:var(--text-muted)">Loaded TM versions: waiting for bridge.</span>
         <button type="button" class="btn-action" onclick="setNativeCctv(true)">Start CCTV</button>
@@ -975,21 +975,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart clears counts and scans again.</span>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front exported model URL (6 classes):</label>
+        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front model URL (6 classes):</label>
         <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
-        <label for="tmBackModelUrlInput">CAM1 Back exported model URL (4 classes):</label>
+        <label for="tmBackModelUrlInput">CAM1 Back model URL (4 classes):</label>
         <input type="text" id="tmBackModelUrlInput" class="form-control" style="min-width:280px;"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
         <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302;
           Load Both TM Models</button>
-        <div id="tmSourcesPanel" style="flex-basis:100%;font-size:12px;line-height:1.6;color:var(--text-muted);">
-          <div>These two boxes are exported model links, not editable projects. <b>Load Both TM Models</b> affects this browser's preview only. For a link already installed, the preview uses the installed copy.</div>
-          <button type="button" class="btn-action" onclick="saveTmModelSources()">Save as bridge install sources</button>
-          <span>Applies to everyone using this bridge. Saving installs nothing.</span>
-          <div id="tmSourcesSaveStatus" role="status" aria-live="polite"></div>
-          <div id="tmSourcesStatus" role="status" aria-live="polite" style="white-space:pre-line;overflow-wrap:anywhere;">Bridge model sources not checked yet.</div>
-        </div>
       </div>
       <div style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
         <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);"
@@ -1154,25 +1147,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </button>
               <button type="button" id="tmPreprocessingCompareButton" class="btn-action" disabled title="Run Diagnostic Preview first" onclick="compareTMPreprocessing()">Compare TM Preprocessing (Read-Only)</button>
               <pre id="tmPreprocessingComparison" style="display:none;white-space:pre-wrap;font-size:12px;" aria-live="polite"></pre>
-              <section id="tmProjects" aria-labelledby="tmProjectsTitle" style="border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.5;">
-                <strong id="tmProjectsTitle">Teachable Machine projects (for retraining)</strong>
-                <p><b>Template (.tm project)</b> = editable classes and training samples. <b>Exported model URL</b> = the trained model used for predictions only; it cannot open the project or its samples.</p>
-                <div id="tmProjectFront"></div>
-                <div id="tmProjectBack"></div>
-                <p style="margin:8px 0 0;">Open your own copy in Teachable Machine (image model). Do not rename, add, remove or merge classes; keep Front and Back as separate projects.</p>
-              </section>
-              <section aria-labelledby="tmWorkflowTitle" style="border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.5;">
-                <strong id="tmWorkflowTitle">Retraining steps</strong>
-                <ol id="tmWorkflow" style="padding-left:18px;margin:8px 0 0;">
-                  <li><b>Arrange boxes</b> on the selected shelf, then keep hands clear.</li>
-                  <li><b>Pick labels:</b> choose the Back and Front labels that match what is physically there. Labels are never guessed from predictions.</li>
-                  <li><b>Capture</b> with the button below. It is read-only and waits while automatic camera checks use the cameras ("retry 2 of 30" counts those waits, not pictures).</li>
-                  <li><b>Extract both ZIPs</b> (Windows: right-click, Extract All).</li>
-                  <li><b>Upload to matching classes:</b> Back pictures to the same-named class in the Back project, Front pictures in the Front project. Upload each batch once; repeat steps 1-5 for other arrangements and sessions.</li>
-                  <li><b>Train and test both</b> projects. Test with pictures from a separate session that you did not upload for training.</li>
-                  <li><b>Export TensorFlow.js</b> for both. Updating a model at a link this bridge already uses changes what the next "Get latest TM models" installs, so upload only after testing. A project saved after uploading can contain a publishing token: do not share that file.</li>
-                </ol>
-              </section>
               <label>Training batch pairs: <select id="tmBatchCount"><option>8</option><option>16</option><option>24</option><option>32</option></select></label>
               <label>Verified back label: <select id="tmBatchBack"><option value="">Choose physical scenario</option><option>Back_11X</option><option>Back_X01</option><option>Back_100</option><option>Back_000</option></select></label>
               <label>Verified front label: <select id="tmBatchFront"><option value="">Choose physical scenario</option><option>Front_111</option><option>Front_110</option><option>Front_100</option><option>Front_011</option><option>Front_010</option><option>Front_000</option></select></label>
@@ -1816,49 +1790,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // =========================================================================
     // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 18 STABLE CONFIGURATIONS
     // =========================================================================
-    // Owner-supplied retraining projects. Leave a value empty until the real file or link exists.
-    // downloadUrl: HTTPS link to a copy of the .tm project file. shareUrl: optional HTTPS sharing link.
-    // Never put credentials or access tokens here: this file is public to every dashboard user.
-    const TM_PROJECTS = {
-      Front: {downloadUrl: '', shareUrl: ''},
-      Back: {downloadUrl: '', shareUrl: ''}
-    };
-    function tmProjectLink(value) {
-      try {
-        const url = new URL(String(value || '').trim());
-        // An exported model URL is prediction assets only, so it is never offered as a project.
-        const exported = url.hostname === 'teachablemachine.withgoogle.com' && url.pathname.startsWith('/models/');
-        return url.protocol === 'https:' && !url.username && !url.password && !exported ? url.href : null;
-      } catch (_) { return null; }
-    }
-    function renderTMProjects(projects = TM_PROJECTS) {
-      for (const role of ['Front', 'Back']) {
-        const host = document.getElementById(`tmProject${role}`);
-        if (!host) continue;
-        host.replaceChildren();
-        const add = (tag, text) => {
-          const node = document.createElement(tag);
-          node.textContent = text;
-          host.appendChild(node);
-          return node;
-        };
-        const name = role === 'Front' ? 'Front project/template (6 classes)' : 'Back project/template (4 classes)';
-        add('strong', `${name}: `);
-        const download = tmProjectLink(projects?.[role]?.downloadUrl), share = tmProjectLink(projects?.[role]?.shareUrl);
-        for (const [url, text] of [[download, `Download ${role} project file (.tm)`], [share, `Open ${role} sharing link`]]) {
-          if (!url) continue;
-          const link = add('a', text);
-          link.href = url;
-          link.target = '_blank';
-          link.rel = 'noopener noreferrer';
-          link.style.cssText = 'display:inline-block;margin-right:12px;color:var(--primary);';
-        }
-        if (!download) add('span', 'Project file unavailable: the owner has not supplied it. ');
-        if (share) add('small', 'Access depends on the owner\'s sharing settings. Make your own copy; simultaneous editing is not supported.');
-      }
-    }
-
-    const DEFAULT_TM_MODEL_URL ="https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
+    const DEFAULT_TM_MODEL_URL = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
     const DEFAULT_TM_BACK_MODEL_URL = "https://teachablemachine.withgoogle.com/models/40mk-G4Oq/";
     const SCENARIO_LABELS = Object.fromEntries(Array.from({length: 6}, (_, n) => [n, `${n}/5 Boxes Present`]));
     const DUAL_CAM_LABELS = {
@@ -2193,39 +2125,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='Waiting for fresh native observation';}
         }
       }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
-    }
-    // Bridge install sources: what is saved for the next update versus what is installed on the bridge's disk.
-    function renderTmSources(data){
-      const label=document.getElementById('tmSourcesStatus');
-      if(!label)return;
-      if(!data){label.textContent='Bridge model sources not confirmed (bridge unavailable or needs restarting).';return;}
-      const pair=value=>value?`Front ${value.Front}\nBack ${value.Back}`:'unavailable';
-      const state=data.error?data.error:data.pending_install?'Not installed yet: the saved sources differ from the installed ones.':'Saved sources match the installed ones. A newer export at the same link still needs "Get latest TM models".';
-      label.textContent=`Saved for next install (${data.configured_origin==='saved'?'saved on this bridge':'default'}):\n${pair(data.configured)}\nInstalled on bridge:\n${pair(data.installed)}\n${state}\nThe versions actually loaded are shown under "Loaded TM versions".`;
-    }
-    async function refreshTmSources(){
-      const url=getBridgeUrl();
-      try{
-        const response=await fetch(`${url}/tm_model_sources`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-        if(!response.ok)throw Error('Unavailable');
-        const data=await response.json();
-        if(url===getBridgeUrl())renderTmSources(data);
-      }catch(_){renderTmSources(null);}
-    }
-    async function saveTmModelSources(){
-      const status=document.getElementById('tmSourcesSaveStatus');
-      const body={Front:document.getElementById('tmModelUrlInput').value.trim(),Back:document.getElementById('tmBackModelUrlInput').value.trim()};
-      status.textContent='Saving...';
-      try{
-        const headers={'Content-Type':'application/json'};
-        const token=window.smartStorageDeviceAdminSession?.access_token;
-        if(token)headers.Authorization=`Bearer ${token}`;
-        const response=await fetch(`${getBridgeUrl()}/tm_model_sources`,{method:'POST',headers,body:JSON.stringify(body),cache:'no-store',signal:AbortSignal.timeout(10000)});
-        const result=await response.json().catch(()=>({}));
-        if(!response.ok)throw Error(response.status===401?'Open the dashboard on the bridge computer (http://localhost:8008/dashboard) or sign in.':result.error || `Bridge rejected the links (HTTP ${response.status})`);
-        renderTmSources(result);
-        status.textContent=`Saved on the bridge. Nothing was installed or loaded. (${new Date().toLocaleTimeString()})`;
-      }catch(error){status.textContent=`Not saved at ${new Date().toLocaleTimeString()}: `+(error.name==='TimeoutError'?'the bridge did not respond.':error.message);}
     }
     function beginLocalTmUpdate(){
       document.getElementById('tmModelUpdateStatus').textContent='Windows update requested. Confirm the launcher; it shows backup/download progress and the final result. The bridge reconnects afterward.';
@@ -2982,7 +2881,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             check();
             if(response.status===409){
               if(busyRetries>=30)throw Error('Automatic checks are still using the cameras. Retry the batch after they finish.');
-              trainingBatchFeedback(`Waiting for automatic camera checks; retrying pair ${i}/${count} (retry ${busyRetries+1} of 30)...`,i-1,count);
+              trainingBatchFeedback(`Waiting for automatic camera checks; retrying pair ${i}/${count} (${busyRetries+1}/30)...`,i-1,count);
               await new Promise(resolve=>setTimeout(resolve,2000));continue;
             }
             if(!response.ok)throw Error(row.error || 'Capture failed');
@@ -7271,10 +7170,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       tmModelUrlInput.value = savedTmUrl;
     }
     populateAssignedIpDropdowns();
-    renderTMProjects();
     loadTeachableMachineModel();
-    refreshTmSources();
-    setInterval(refreshTmSources, 15000);
     setInterval(pollShelfReadiness, 5000);
     setInterval(pollEdgeProcessor, 5000);
     pollShelfReadiness();
