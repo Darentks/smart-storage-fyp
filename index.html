@@ -1147,6 +1147,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </button>
               <button type="button" id="tmPreprocessingCompareButton" class="btn-action" disabled title="Run Diagnostic Preview first" onclick="compareTMPreprocessing()">Compare TM Preprocessing (Read-Only)</button>
               <pre id="tmPreprocessingComparison" style="display:none;white-space:pre-wrap;font-size:12px;" aria-live="polite"></pre>
+              <section id="tmProjects" aria-labelledby="tmProjectsTitle" style="border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.5;">
+                <strong id="tmProjectsTitle">Teachable Machine projects (for retraining)</strong>
+                <p><b>Template (.tm project)</b> = editable classes and training samples. <b>Exported model URL</b> = the trained model used for predictions only; it cannot open the project or its samples.</p>
+                <div id="tmProjectFront"></div>
+                <div id="tmProjectBack"></div>
+                <ol style="padding-left:18px;margin:8px 0 0;">
+                  <li>Download the Front or Back project file and open it as an existing project in Teachable Machine (image model). Work on your own copy.</li>
+                  <li>Add pictures to the existing classes. Do not rename, add, remove or merge classes; keep Front and Back as separate projects.</li>
+                  <li>Train, test, then export each model for TensorFlow.js. Exporting does not change the models this bridge uses.</li>
+                </ol>
+              </section>
               <label>Training batch pairs: <select id="tmBatchCount"><option>8</option><option>16</option><option>24</option><option>32</option></select></label>
               <label>Verified back label: <select id="tmBatchBack"><option value="">Choose physical scenario</option><option>Back_11X</option><option>Back_X01</option><option>Back_100</option><option>Back_000</option></select></label>
               <label>Verified front label: <select id="tmBatchFront"><option value="">Choose physical scenario</option><option>Front_111</option><option>Front_110</option><option>Front_100</option><option>Front_011</option><option>Front_010</option><option>Front_000</option></select></label>
@@ -1790,7 +1801,49 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // =========================================================================
     // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 18 STABLE CONFIGURATIONS
     // =========================================================================
-    const DEFAULT_TM_MODEL_URL = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
+    // Owner-supplied retraining projects. Leave a value empty until the real file or link exists.
+    // downloadUrl: HTTPS link to a copy of the .tm project file. shareUrl: optional HTTPS sharing link.
+    // Never put credentials or access tokens here: this file is public to every dashboard user.
+    const TM_PROJECTS = {
+      Front: {downloadUrl: '', shareUrl: ''},
+      Back: {downloadUrl: '', shareUrl: ''}
+    };
+    function tmProjectLink(value) {
+      try {
+        const url = new URL(String(value || '').trim());
+        // An exported model URL is prediction assets only, so it is never offered as a project.
+        const exported = url.hostname === 'teachablemachine.withgoogle.com' && url.pathname.startsWith('/models/');
+        return url.protocol === 'https:' && !url.username && !url.password && !exported ? url.href : null;
+      } catch (_) { return null; }
+    }
+    function renderTMProjects(projects = TM_PROJECTS) {
+      for (const role of ['Front', 'Back']) {
+        const host = document.getElementById(`tmProject${role}`);
+        if (!host) continue;
+        host.replaceChildren();
+        const add = (tag, text) => {
+          const node = document.createElement(tag);
+          node.textContent = text;
+          host.appendChild(node);
+          return node;
+        };
+        const name = role === 'Front' ? 'Front project/template (6 classes)' : 'Back project/template (4 classes)';
+        add('strong', `${name}: `);
+        const download = tmProjectLink(projects?.[role]?.downloadUrl), share = tmProjectLink(projects?.[role]?.shareUrl);
+        for (const [url, text] of [[download, `Download ${role} project file (.tm)`], [share, `Open ${role} sharing link`]]) {
+          if (!url) continue;
+          const link = add('a', text);
+          link.href = url;
+          link.target = '_blank';
+          link.rel = 'noopener noreferrer';
+          link.style.cssText = 'display:inline-block;margin-right:12px;color:var(--primary);';
+        }
+        if (!download) add('span', 'Project file unavailable: the owner has not supplied it. ');
+        if (share) add('small', 'Access depends on the owner\'s sharing settings. Make your own copy; simultaneous editing is not supported.');
+      }
+    }
+
+    const DEFAULT_TM_MODEL_URL ="https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
     const DEFAULT_TM_BACK_MODEL_URL = "https://teachablemachine.withgoogle.com/models/40mk-G4Oq/";
     const SCENARIO_LABELS = Object.fromEntries(Array.from({length: 6}, (_, n) => [n, `${n}/5 Boxes Present`]));
     const DUAL_CAM_LABELS = {
@@ -7164,6 +7217,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       tmModelUrlInput.value = savedTmUrl;
     }
     populateAssignedIpDropdowns();
+    renderTMProjects();
     loadTeachableMachineModel();
     setInterval(pollShelfReadiness, 5000);
     setInterval(pollEdgeProcessor, 5000);
