@@ -146,6 +146,25 @@ class Inference {
     this.versions.runtime={tfjs:tf.version.tfjs,onnxruntime:'1.19.2',canvas:'0.1.80',preprocessing:'full-frame-v1'};
     return this.versions;
   }
+  // Installer check only: complete weight files and a real prediction from each loaded model.
+  async selfTest(configPath) {
+    const root=path.dirname(path.resolve(configPath)), config=JSON.parse(fs.readFileSync(configPath,'utf8'));
+    const blank=createCanvas(224,224);blank.getContext('2d').fillRect(0,0,224,224);
+    const image=blank.toDataURL('image/png');
+    for(const role of ['Front','Back']) {
+      const spec=config[role];
+      const declared=JSON.parse(verifiedFile(root,spec.model)).weightsManifest.flatMap(group=>group.weights);
+      const expected=declared.reduce((total,weight)=>{
+        if(weight.dtype!=='float32' || weight.quantization) throw Error('UNSUPPORTED_WEIGHT_FORMAT');
+        return total+4*weight.shape.reduce((a,b)=>a*b,1);
+      },0);
+      const actual=spec.weights.reduce((total,entry)=>total+verifiedFile(root,entry).length,0);
+      if(actual!==expected) throw Error('MODEL_WEIGHTS_SIZE_MISMATCH');
+      const {predictions}=await this.tm(role,image);
+      const sum=predictions.reduce((total,item)=>total+item.probability,0);
+      if(predictions.some(item=>item.probability<0 || item.probability>1) || Math.abs(sum-1)>.01) throw Error('INVALID_MODEL_OUTPUT');
+    }
+  }
   async tm(role,image,boost='off',includePixels=false) {
     const c=tmFrame(await decode(image),boost),pixels=rgb(c), {model,labels}=this.models[role]||{};
     if(!model) throw Error('MODEL_NOT_READY');

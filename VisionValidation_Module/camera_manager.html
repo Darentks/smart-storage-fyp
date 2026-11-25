@@ -2224,8 +2224,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const result=await response.json().catch(()=>({}));
         if(!response.ok)throw Error(response.status===401?'Open the dashboard on the bridge computer (http://localhost:8008/dashboard) or sign in.':result.error || `Bridge rejected the links (HTTP ${response.status})`);
         renderTmSources(result);
-        status.textContent='Saved on the bridge. Nothing was installed or loaded.';
-      }catch(error){status.textContent='Not saved: '+(error.name==='TimeoutError'?'the bridge did not respond.':error.message);}
+        status.textContent=`Saved on the bridge. Nothing was installed or loaded. (${new Date().toLocaleTimeString()})`;
+      }catch(error){status.textContent=`Not saved at ${new Date().toLocaleTimeString()}: `+(error.name==='TimeoutError'?'the bridge did not respond.':error.message);}
     }
     function beginLocalTmUpdate(){
       document.getElementById('tmModelUpdateStatus').textContent='Windows update requested. Confirm the launcher; it shows backup/download progress and the final result. The bridge reconnects afterward.';
@@ -4119,8 +4119,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const max=comp.max_capacity ?? 5,scan=native.scan || {};
       const counted=Number.isFinite(runtime.observed_at)?` · ${runtime.cctv_enabled===false?'last counted (CCTV stopped)':'counted'} ${new Date(runtime.observed_at*1000).toLocaleTimeString()}`:'';
       const counted_ready=exact||range;
+      // A failed or partial count check keeps the last count in the bridge but withdraws its verification.
+      // Show that count clearly as unverified; the earlier "Count ready" scan message no longer describes it.
+      const kept=!counted_ready && status.state==='Ready' && runtime.state==='Ready' && runtime.count_check_unverified===true?runtime.baseline:null;
+      const keptCount=Number.isInteger(kept?.total)?`${kept.total}`:Array.isArray(kept?.count_range)?`${kept.count_range.join('–')}`:null;
+      const unverifiedReason=keptCount===null?null:`Latest check not verified${runtime.count_check?.message?': '+runtime.count_check.message:''}`;
       let display;
-      if(exact)display=`${runtime.current_quantity} / ${max} boxes${counted}`;
+      if(keptCount!==null)display=`Last known: ${keptCount} / ${max} boxes (not verified)${counted}${runtime.count_check?'\n'+runtime.count_check.status:''}`;
+      else if(exact)display=`${runtime.current_quantity} / ${max} boxes${counted}`;
       else if(range)display=`${runtime.count_range.join('–')} / ${max} boxes (range)${counted}`;
       else if(scan.state==='Scanning')display='Scanning… keep hands clear';
       else display=scan.message || 'Waiting to scan this shelf';
@@ -4133,7 +4139,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         actions:native.actions_ready?'Actions ready':`Actions paused: ${native.actions_paused_reason || 'waiting for a fresh count'}`,
         actionsReady:!!native.actions_ready,
         canRetry:!counted_ready && ['Needs retry','Unavailable','Waiting'].includes(scan.state || 'Waiting'),
-        reason:view.reason || (!counted_ready?scan.message:null) || null,
+        reason:view.reason || unverifiedReason || (!counted_ready?scan.message:null) || null,
         details:view.details+history+checkDetails};
     }
     function renderCompartments(items) {
