@@ -967,6 +967,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
         <a class="btn-action" href="smartstorage://start">Start local bridge</a>
         <a class="btn-action" href="smartstorage://restart">Restart local bridge</a>
+        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Back up and download both exports configured in the local staging script, then restart the bridge">Get latest TM models</a>
+        <span id="tmModelUpdateStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted)">Model updates run on this PC through the Windows launcher.</span>
+        <span id="tmLoadedModelVersions" style="font-size:12px;color:var(--text-muted)">Loaded TM versions: waiting for bridge.</span>
         <button type="button" class="btn-action" onclick="setNativeCctv(true)">Start CCTV</button>
         <button type="button" class="btn-action" onclick="setNativeCctv(false)">Stop CCTV</button>
         <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart clears counts and scans again.</span>
@@ -2110,7 +2113,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const label=document.getElementById('edgeProcessorStatus');
       try {
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-        if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);renderLiveActivity(data);
+        if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);renderLiveActivity(data);renderLoadedTmVersions(data);
         if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?nativeProcessorLabel(data):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
         if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
         if(bridgeStatus.authoritative_processor==='native' && !(typeof lastManualPreviewAt!=='undefined' && Date.now()-lastManualPreviewAt<60000)) {
@@ -2121,7 +2124,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           if(payload.observation)renderPanelObservation(payload.observation,true);
           else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='Waiting for fresh native observation';}
         }
-      }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+      }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+    }
+    function beginLocalTmUpdate(){
+      document.getElementById('tmModelUpdateStatus').textContent='Windows update requested. Confirm the launcher; it shows backup/download progress and the final result. The bridge reconnects afterward.';
+    }
+    function renderLoadedTmVersions(data){
+      const label=document.getElementById('tmLoadedModelVersions');
+      if(!label)return;
+      if(!data){label.textContent='Bridge disconnected; loaded TM versions are not confirmed.';return;}
+      const version=role=>{const hash=data.model_versions?.[role]?.weights_sha256;return typeof hash==='string' && /^[a-f0-9]{64}$/i.test(hash)?hash.slice(0,12):'not loaded';};
+      label.textContent=`Loaded TM versions: Front ${version('Front')} · Back ${version('Back')}`;
     }
     function nativeProcessorLabel(data) {
       if(data.setup_issue)return `Native processor · setup needed: ${data.setup_issue}`;

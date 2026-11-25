@@ -18,4 +18,4 @@ New-ItemProperty -LiteralPath $protocolKey -Name 'URL Protocol' -Value '' -Prope
 New-Item -Path "$protocolKey\shell\open\command" -Force | Out-Null
 $command = '"' + $powershellPath + '" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $launcherPath + '" -Uri "%1"'
 Set-Item -LiteralPath "$protocolKey\shell\open\command" -Value $command
-Write-Output 'Installed Start/Restart launcher for the current Windows user. No bridge was started or restarted.'
+Write-Output 'Installed Start/Restart/Update models launcher for the current Windows user. No bridge or model update was started.'

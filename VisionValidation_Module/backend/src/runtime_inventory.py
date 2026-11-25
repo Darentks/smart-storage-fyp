@@ -44,7 +44,7 @@ class RuntimeInventory:
                     action_capable=bool(baseline and baseline.get('action_capable')) and row['state']=='Ready',
                     observed_at=baseline.get('last_capture_at') if baseline else None,run_id=self.run_id,version=row['version'],state=row['state'],
                     ready_at=row['ready_at'],born_at=row['born_at'],baseline=baseline,latest_observation=copy.deepcopy(row['observation']),
-                    authoritative=row['state']=='Ready',
+                    authoritative=row['state']=='Ready' and not bool(baseline and baseline.get('count_check_unverified')),
                     display_state='Ready Limited' if row['state']=='Ready' and baseline and baseline['precision']=='RANGE' else row['state'],
                     slots=baseline['slots'] if baseline and row['state']=='Ready' else [None]*5,precision=baseline['precision'] if baseline and row['state']=='Ready' else 'UNKNOWN',
                     current_quantity=baseline['total'] if baseline and row['state']=='Ready' else None,

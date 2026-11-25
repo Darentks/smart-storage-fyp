@@ -53,7 +53,7 @@ def validate_runtime_request(
     body: dict, *, authority: RuntimeInventory | None, coordinator, mqtt,
     load_mappings: Callable[[], list[dict]], consensus_lock, pending,
     capture_lock, captures, readiness, intents: 'LatestIntents | None'=None,
-    votes: dict | None=None,release_freeze: Callable[[str],object] | None=None,
+    votes: dict | None=None,release_freeze: Callable[[str],object] | None=None,consensus_window=4.0,
 ) -> tuple[int, dict]:
     if authority is None:
         raise RuntimeError('Runtime authority unavailable')
@@ -84,7 +84,8 @@ def validate_runtime_request(
                 raise ValueError('Wrong evidence version')
             samples = evidence.get('samples')
             with (consensus_lock if source=='COUNT_CHECK' else nullcontext()):
-                if source=='COUNT_CHECK' and any(t.get('source')=='CCTV' and 0<=time.time()-t.get('timestamp',0)<60 for t in pending):
+                if source=='COUNT_CHECK' and (any(t.get('source')=='CCTV' and 0<=time.time()-t.get('timestamp',0)<60 for t in pending) or
+                        any(0<=time.time()-v.get('ts',0)<=consensus_window for v in (votes or {}).values())):
                     return 409,{'status':'deferred','code':'COUNT_CHECK_SKIPPED','error':'CCTV check pending'}
                 with capture_lock:
                     for sample in samples if isinstance(samples, list) else []:

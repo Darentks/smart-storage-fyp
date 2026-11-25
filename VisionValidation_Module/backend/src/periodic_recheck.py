@@ -1,4 +1,4 @@
-"""Periodic evidence gating and expiring cross-browser validation leases."""
+"""Expiring shared camera-validation leases; the native coordinator schedules count checks."""
 import threading
 import time
 import uuid

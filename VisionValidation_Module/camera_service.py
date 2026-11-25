@@ -1337,7 +1337,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             load_mappings=get_cached_compartments, consensus_lock=CCTV_CONSENSUS_LOCK,
             pending=PENDING_CCTV_TRIGGERS, capture_lock=DUAL_CAM_CAPTURE_LOCK,
             captures=DUAL_CAM_CAPTURES, readiness=READINESS,intents=LOCAL_INTENTS,votes=CCTV_ALIGN_STATE,
-            release_freeze=lambda shelf:esp32_ref_manager.baseline_freeze_until.pop(shelf,None))
+            release_freeze=lambda shelf:esp32_ref_manager.baseline_freeze_until.pop(shelf,None),consensus_window=CONSENSUS_WINDOW_SEC)
         self._send_json(status_code, payload)
 
     def do_GET(self):
@@ -2683,6 +2683,11 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 def pending():
                     with CCTV_CONSENSUS_LOCK:
                         return [dict(t) for t in PENDING_CCTV_TRIGGERS if not t.get('claimed') and 0<=time.time()-t.get('timestamp',0)<60][-20:]
+                def cctv_busy():
+                    with CCTV_CONSENSUS_LOCK:
+                        now=time.time()
+                        return any(0<=now-v.get('ts',0)<=CONSENSUS_WINDOW_SEC for v in CCTV_ALIGN_STATE.values()) or any(
+                            t.get('source')=='CCTV' and 0<=now-t.get('timestamp',0)<60 for t in PENDING_CCTV_TRIGGERS)
                 def invalidate(reason='Camera unavailable',preserve_counts=False,disable_actions=False):
                     try:
                         reset_runtime_evidence(authority=RUNTIME_INVENTORY,coordinator=RECHECKS,
@@ -2700,7 +2705,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 AUTONOMOUS=AutonomousProcessor(READINESS.run_id,
                     NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),
                     cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event,
-                    pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'))
+                    pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'),cctv_busy=cctv_busy)
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
                 AUTONOMOUS.acceptance='ACCEPTED' if accepted else 'NOT_FIELD_ACCEPTED'
                 if setup_issue:AUTONOMOUS.calibration_issue=setup_issue
