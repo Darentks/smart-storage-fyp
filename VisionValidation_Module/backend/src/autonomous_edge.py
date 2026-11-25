@@ -303,7 +303,7 @@ class NativeClient:
 class AutonomousProcessor:
     """One shared native coordinator: counts each shelf, watches the three CCTVs, confirms actions with fresh ESP32 pairs."""
 
-    def __init__(self, run_id, native, cameras, reports, request, capture, shelves, pending, invalidate, log, pose_native=None, cctv_busy=None):
+    def __init__(self, run_id, native, cameras, reports, request, capture, shelves, pending, invalidate, log, pose_native=None, cctv_busy=None,training_paused=None,training_capturing=None):
         self.run_id=run_id;self.native=native;self.cameras=cameras;self.reports=reports
         self.request=request;self.capture=capture;self.shelves=shelves;self.pending=pending
         self.cctv_busy=cctv_busy if cctv_busy is not None else lambda:bool(self.pending())
@@ -322,6 +322,10 @@ class AutonomousProcessor:
         self.scan={};self.attempts={};self.exhausted=set();self.scan_lock=threading.Lock()
         self.active_shelf=None
         self.count_check_due={}
+        # training_paused(): shelf reserved for training capture (or None); only that shelf stops automatic checks.
+        # training_capturing(): shelf whose capture has started; its CCTV votes are staged handling, not actions.
+        self.training_paused=training_paused or (lambda:None);self.training_shelf=None
+        self.training_capturing=training_capturing or (lambda:None)
 
     # ---- setup / lifecycle -------------------------------------------------
     @property
@@ -413,6 +417,9 @@ class AutonomousProcessor:
             if not self.models_loaded:scan['message']='Waiting for the box-reading models to load'
             elif active and active!=sid:scan['message']=f'Waiting for {active} to finish its camera check'
         paused=self.actions_blocker()
+        if sid==self.training_shelf:
+            scan.update(state='Waiting',message='Training capture on this shelf; it is counted fresh afterwards')
+            paused='Training capture on this shelf'
         if paused is None and runtime is not None and not runtime.get('action_capable'):
             paused='A fresh complete count is required after the last count check' if runtime.get('count_check_unverified') else (
                 'Waiting for a fresh count with all cameras live' if runtime.get('state')!='Ready' else 'Recounting now that all cameras are live')
@@ -499,7 +506,9 @@ class AutonomousProcessor:
                         if self.runtime is not None:
                             interacting=any(t['seen']==now for t in cam['tracker'].states.values())
                             self.runtime.camera(cam['id'],now,True,interacting)
+                        training=self.training_capturing()
                         for vote in votes:
+                            if training is not None and vote.get('shelf_id')==training:continue
                             try:
                                 self.request('/esp32_trigger',dict(vote,source='CCTV',camera_id=cam['id'],camera_role=cam['role'],
                                     trigger_id=str(uuid.uuid4()),detected_at=now))
@@ -666,6 +675,7 @@ class AutonomousProcessor:
     def _validations(self):
         while not self.stop.is_set():
             try:
+                self.training_shelf=self.training_paused()
                 if not self.models_loaded:
                     self.stop.wait(1);continue
                 info=self.request('/shelf_readiness',None)
@@ -675,7 +685,7 @@ class AutonomousProcessor:
                 actions=[];scans=[];checks=[];pending=self.pending()
                 for sid,status in statuses.items():
                     shelf=shelves.get(sid)
-                    if shelf is None:continue
+                    if shelf is None or sid==self.training_shelf:continue
                     runtime=status.get('runtime') or {}
                     ready=status['state']=='Ready'
                     if ready and self.runtime is not None:

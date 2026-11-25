@@ -79,7 +79,7 @@ from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
 from src.preview_panel import diagnostic_preview
 from src.model_assets import ModelAssets
-from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence, prepare_runtime_retry
+from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence, prepare_runtime_retry, reset_shelf_evidence
 RUNTIME_INVENTORY = None
 from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
 from src.bridge_access import BridgeAccessError, require_application_user
@@ -1190,7 +1190,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def _send_cors_headers(self):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Training-Session")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 
@@ -1344,6 +1344,41 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_json(404, {"error": "Endpoint not found"})
 
+    def _training_session(self,body):
+        """Temporary camera reservation; never accepts browser inventory evidence."""
+        if self.client_address[0] not in ('127.0.0.1','::1','::ffff:127.0.0.1'):
+            try:require_application_user(getattr(self,'headers',{}).get('Authorization'))
+            except BridgeAccessError as exc:
+                self._send_json(exc.status,{'error':str(exc)});return
+        if AUTONOMOUS is None:
+            self._send_json(409,{'error':'Native processor is not running'});return
+        if not isinstance(body,dict):
+            self._send_json(400,{'error':'Training request must be an object'});return
+        try:
+            if body.get('operation')=='end':
+                released=RECHECKS.end_training(body.get('token'))
+                AUTONOMOUS.training_shelf=RECHECKS.training_shelf()
+                self._send_json(200,{'released':released,'state':'released'});return
+            if body.get('operation')!='begin':raise ValueError('Invalid training operation')
+            import ipaddress
+            sid=body.get('shelf_id')
+            ips=tuple(str(ipaddress.IPv4Address(body.get(key,''))) for key in ('ip','ip2'))
+            if sid not in SHELF_SET or ips[0]==ips[1] or not all(ipaddress.ip_address(ip).is_private for ip in ips):raise ValueError('Select a shelf and two private camera addresses')
+            with RECHECKS.global_lock:
+                result=RECHECKS.request_training(sid,ips,body.get('token'),idle=AUTONOMOUS.active_shelf!=sid)
+                AUTONOMOUS.training_shelf=sid
+                if result.pop('newly_ready',False):
+                    # Boxes are rearranged during training, so this shelf's count stops being authoritative now
+                    # and is counted fresh after the reservation ends. Other shelves keep their counts.
+                    try:
+                        reset_shelf_evidence(sid,authority=RUNTIME_INVENTORY,coordinator=RECHECKS,consensus_lock=CCTV_CONSENSUS_LOCK,
+                            pending=PENDING_CCTV_TRIGGERS,capture_lock=DUAL_CAM_CAPTURE_LOCK,captures=DUAL_CAM_CAPTURES,
+                            votes=CCTV_ALIGN_STATE,readiness=READINESS,intents=LOCAL_INTENTS,reason='Training capture on this shelf')
+                    except OSError:event(READINESS.run_id,'local_metadata_failure',code='VALIDATION_REJECTED')
+                    AUTONOMOUS.reset_scan_budget(sid)
+            self._send_json(200,result)
+        except (ValueError,TypeError):self._send_json(409,{'error':'Training reservation unavailable, expired or camera assignment changed; retry the batch'})
+
     def _runtime_validate(self, body):
         status_code, payload = validate_runtime_request(
             body, authority=RUNTIME_INVENTORY, coordinator=RECHECKS, mqtt=mqtt_bridge,
@@ -1357,7 +1392,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         if path == '/diagnostic_preview':
-            code,payload=diagnostic_preview(urllib.parse.parse_qs(parsed.query),esp32_ref_manager,RECHECKS,AUTONOMOUS)
+            code,payload=diagnostic_preview(urllib.parse.parse_qs(parsed.query),esp32_ref_manager,RECHECKS,AUTONOMOUS,training_token=getattr(self,'headers',{}).get('X-Training-Session'))
             self._send_json(code,payload)
             return
         if path == '/native_observation':
@@ -1754,10 +1789,14 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request','/cctv_control'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
+        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request','/cctv_control','/training_session'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns processing; normal dashboard operations are monitoring-only'})
             return
         body = self._read_json_body()
+
+        if path=='/training_session':
+            self._training_session(body)
+            return
 
         if path == '/local_rois':
             self._install_local_rois(body)
@@ -2092,6 +2131,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # MANUAL TRIGGER: Dispatch CAPTURE_STATE or CAPTURE_REFERENCE over MQTT
         if path == "/esp32_trigger":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
+            training=getattr(globals().get('RECHECKS'),'training_capturing',None)
+            if callable(training) and training() is not None and training()==shelf_id:
+                self._send_json(200,{'status':'training_paused','consensus_met':False,'dispatched':None});return
             command = str(body.get("command", "CAPTURE_STATE")).upper()
             expected_action = str(body.get("expected_action", "")).upper()
             rack_id = str(body.get("rack_id", spatial_mapper.rack_id)).strip()
@@ -2650,7 +2692,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
         mqtt_bridge.on_connection_lost=None
         CONFIRMED_OCCUPANCY.clear();DUAL_CAM_CAPTURES.clear();PENDING_CCTV_TRIGGERS.clear();CCTV_ALIGN_STATE.clear()
         CCTV_SEEN_TRIGGER_IDS.clear();LAST_SHELF_TRIGGER_TS.clear();CCTV_LAST_SEEN_TS.clear()
-        RECHECKS.leases.clear();RECHECKS.waiting.clear()
+        RECHECKS.leases.clear();RECHECKS.waiting.clear();RECHECKS.clear_training()
         configure_logs(runtime)
         event(READINESS.run_id,'startup')
         storage_lock=None
@@ -2733,7 +2775,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 AUTONOMOUS=AutonomousProcessor(READINESS.run_id,
                     NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),
                     cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event,
-                    pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'),cctv_busy=cctv_busy)
+                    pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'),cctv_busy=cctv_busy,training_paused=RECHECKS.training_shelf,training_capturing=RECHECKS.training_capturing)
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
                 AUTONOMOUS.acceptance='ACCEPTED' if accepted else 'NOT_FIELD_ACCEPTED'
                 if setup_issue:AUTONOMOUS.calibration_issue=setup_issue

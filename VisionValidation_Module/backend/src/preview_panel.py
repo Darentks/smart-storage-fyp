@@ -31,7 +31,7 @@ class NativeObservations:
     def clear(self):
         with self.lock:self.rows.clear()
 
-def diagnostic_preview(query,manager,coordinator,native):
+def diagnostic_preview(query,manager,coordinator,native,training_token=None):
     if query.get('run_mode',[''])[0]!='diagnostic':return 400,{'error':'Explicit diagnostic mode required'}
     purpose=query.get('purpose',['preview'])[0]
     if purpose not in ('preview','training'):return 400,{'error':'Invalid capture purpose'}
@@ -45,15 +45,24 @@ def diagnostic_preview(query,manager,coordinator,native):
         if not all(ipaddress.ip_address(ip).is_private for ip in ips):raise ValueError('Private camera addresses required')
         if not coordinator.global_lock.acquire(blocking=False):
             return 409,{'error':'Another capture is in progress; retry in a few seconds'}
+        locked=True
         try:
+            admission=getattr(coordinator,'training_capture_allowed',None)
+            reserved=admission(training_token,shelf,ips) if callable(admission) else None
+            if reserved is False or (reserved is True and purpose!='training'):
+                return 409,{'code':'TRAINING_SESSION_UNAVAILABLE','error':'This shelf is reserved for training, or the training session is waiting, expired or owned by another batch'}
             if purpose=='training':
                 cctv_busy=getattr(native,'cctv_busy',None)
-                if coordinator.busy() or getattr(coordinator,'waiting',{}) or (callable(cctv_busy) and cctv_busy()):
+                if reserved is not True and (coordinator.busy() or getattr(coordinator,'waiting',{}) or (callable(cctv_busy) and cctv_busy())):
                     return 409,{'error':'Automatic camera checks have priority; training capture will retry'}
+                if reserved is True:
+                    # The reservation already excludes native scans of this shelf; other shelves use other
+                    # cameras, so their scans must not wait behind this capture.
+                    coordinator.global_lock.release();locked=False
             elif coordinator.busy(shelf):return 409,{'error':'This shelf is being scanned right now; try again in a few seconds'}
             _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=LIVE_CAPTURE_DUTY,boost_mode=LIVE_CAPTURE_BOOST)
         finally:
-            coordinator.global_lock.release()
+            if locked:coordinator.global_lock.release()
         if not back or not front:return 502,{'error':'Both camera frames required'}
         row=dict(status='success',run_mode='diagnostic',purpose=purpose,authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
         if native is not None and purpose!='training':

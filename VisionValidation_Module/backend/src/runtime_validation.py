@@ -66,6 +66,28 @@ def reset_runtime_evidence(*,authority,coordinator,consensus_lock,pending,captur
                     except OSError as exc:metadata_error=exc
         if metadata_error is not None:raise metadata_error
 
+def reset_shelf_evidence(shelf,*,authority,coordinator,consensus_lock,pending,capture_lock,captures,votes,readiness,intents=None,reason):
+    """One shelf only: drop its count authority and in-flight evidence; other shelves are untouched."""
+    with coordinator.global_lock:
+        if authority is not None:authority.reset_shelf(shelf)
+        coordinator.leases.pop(shelf,None)
+        coordinator.waiting={key:job for key,job in coordinator.waiting.items() if job.get('shelf')!=shelf}
+        with consensus_lock:
+            abandoned=[event for event in pending if event.get('shelf_id')==shelf]
+            pending[:]=[event for event in pending if event.get('shelf_id')!=shelf]
+            for cid in [cid for cid,vote in votes.items() if vote.get('shelf_id')==shelf]:votes.pop(cid,None)
+        with capture_lock:
+            for identity in [i for i,capture in captures.items() if capture.get('shelf_id')==shelf]:captures.pop(identity,None)
+        metadata_error=None
+        try:readiness.set(shelf,'Offline',reason+'; fresh quiet baseline required')
+        except OSError as exc:metadata_error=exc
+        if intents is not None:
+            for event in abandoned:
+                if event.get('trigger_id'):
+                    try:intents.update(event['trigger_id'],'HELD',failure_code(reason))
+                    except OSError as exc:metadata_error=exc
+        if metadata_error is not None:raise metadata_error
+
 def validate_runtime_request(
     body: dict, *, authority: RuntimeInventory | None, coordinator, mqtt,
     load_mappings: Callable[[], list[dict]], consensus_lock, pending,
