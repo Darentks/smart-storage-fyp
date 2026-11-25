@@ -1152,10 +1152,18 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <p><b>Template (.tm project)</b> = editable classes and training samples. <b>Exported model URL</b> = the trained model used for predictions only; it cannot open the project or its samples.</p>
                 <div id="tmProjectFront"></div>
                 <div id="tmProjectBack"></div>
-                <ol style="padding-left:18px;margin:8px 0 0;">
-                  <li>Download the Front or Back project file and open it as an existing project in Teachable Machine (image model). Work on your own copy.</li>
-                  <li>Add pictures to the existing classes. Do not rename, add, remove or merge classes; keep Front and Back as separate projects.</li>
-                  <li>Train, test, then export each model for TensorFlow.js. Exporting does not change the models this bridge uses.</li>
+                <p style="margin:8px 0 0;">Open your own copy in Teachable Machine (image model). Do not rename, add, remove or merge classes; keep Front and Back as separate projects.</p>
+              </section>
+              <section aria-labelledby="tmWorkflowTitle" style="border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.5;">
+                <strong id="tmWorkflowTitle">Retraining steps</strong>
+                <ol id="tmWorkflow" style="padding-left:18px;margin:8px 0 0;">
+                  <li><b>Arrange boxes</b> on the selected shelf, then keep hands clear.</li>
+                  <li><b>Pick labels:</b> choose the Back and Front labels that match what is physically there. Labels are never guessed from predictions.</li>
+                  <li><b>Capture</b> with the button below. It is read-only and waits while automatic camera checks use the cameras ("retry 2 of 30" counts those waits, not pictures).</li>
+                  <li><b>Extract both ZIPs</b> (Windows: right-click, Extract All).</li>
+                  <li><b>Upload to matching classes:</b> Back pictures to the same-named class in the Back project, Front pictures in the Front project. Upload each batch once; repeat steps 1-5 for other arrangements and sessions.</li>
+                  <li><b>Train and test both</b> projects. Test with pictures from a separate session that you did not upload for training.</li>
+                  <li><b>Export TensorFlow.js</b> for both. Updating a model at a link this bridge already uses changes what the next "Get latest TM models" installs, so upload only after testing. A project saved after uploading can contain a publishing token: do not share that file.</li>
                 </ol>
               </section>
               <label>Training batch pairs: <select id="tmBatchCount"><option>8</option><option>16</option><option>24</option><option>32</option></select></label>
@@ -2934,7 +2942,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             check();
             if(response.status===409){
               if(busyRetries>=30)throw Error('Automatic checks are still using the cameras. Retry the batch after they finish.');
-              trainingBatchFeedback(`Waiting for automatic camera checks; retrying pair ${i}/${count} (${busyRetries+1}/30)...`,i-1,count);
+              trainingBatchFeedback(`Waiting for automatic camera checks; retrying pair ${i}/${count} (retry ${busyRetries+1} of 30)...`,i-1,count);
               await new Promise(resolve=>setTimeout(resolve,2000));continue;
             }
             if(!response.ok)throw Error(row.error || 'Capture failed');
