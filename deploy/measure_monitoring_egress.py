@@ -10,6 +10,9 @@ import types
 import urllib.parse
 import urllib.request
 ROOT=Path(__file__).resolve().parents[1]
+import sys
+sys.path.insert(0,str(ROOT/'VisionValidation_Module/backend'))
+from src.shelves import SHELF_IDS
 SERVICE='VisionValidation_Module/camera_service.py'
 
 def measure(source):
@@ -21,7 +24,7 @@ def measure(source):
         return row
     readiness=types.SimpleNamespace(run_id='fixture',get=lambda shelf:dict(state='Ready',revision=1),set=lambda *a:None)
     ns=dict(urllib=types.SimpleNamespace(parse=urllib.parse),time=time,PROCESSOR_AUTHORITY='browser',READINESS=readiness,
-        get_cached_compartments=lambda:[dict(shelf_id=f'SHELF_R1_C{i}') for i in range(1,7)],load_inventory_state=load,
+        get_cached_compartments=lambda:[dict(shelf_id=s) for s in SHELF_IDS],load_inventory_state=load,
         mqtt_bridge=types.SimpleNamespace(is_connected=True),RECHECKS=types.SimpleNamespace(busy=lambda shelf:False))
     exec(compile(ast.Module(body=[method],type_ignores=[]),'<readiness source>','exec'),ns)
     responses=[];handler=types.SimpleNamespace(path='/shelf_readiness',_send_json=lambda code,value:responses.append(code))

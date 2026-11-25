@@ -965,6 +965,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <label for="bridgeUrlInput">Local Bridge URL:</label>
         <input type="text" id="bridgeUrlInput" value="http://localhost:8008" placeholder="http://localhost:8008" />
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
+        <a class="btn-action" href="smartstorage://start">Start local bridge</a>
+        <a class="btn-action" href="smartstorage://restart">Restart local bridge</a>
+        <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart clears counts and scans again.</span>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
         <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front model URL (6 classes):</label>
