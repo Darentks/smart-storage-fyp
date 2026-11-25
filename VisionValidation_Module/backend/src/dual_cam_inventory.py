@@ -49,6 +49,10 @@ def decode_pair(front, back) -> tuple[int, int, int, int, int]:
 # succeeds when REQUIRED_MATCHING_PAIRS consecutive pairs agree on the same occupancy.
 REQUIRED_MATCHING_PAIRS = 2
 MAX_PAIRS_PER_ATTEMPT = 3
+MAX_CAPTURE_DURATION_MS = 2000
+HTTP_CAPTURE_BUDGET_SECONDS = 1.8
+HTTP_FIRST_ATTEMPT_SECONDS = 0.8
+HTTP_RETRY_DELAY_SECONDS = 0.1
 
 
 class CaptureTiming(NamedTuple):
@@ -84,7 +88,7 @@ def validate_capture(sample, now, captures, shelf_id, validation_token, seen,
     completed = record["completed_at"]
     if not_before is not None and completed - record["duration_ms"] / 1000 < not_before:
         raise ValueError("Capture predates the established inventory event")
-    if not record["complete"] or not 0 <= now - completed <= 60 or not 0 <= record["duration_ms"] <= 2000:
+    if not record["complete"] or not 0 <= now - completed <= 60 or not 0 <= record["duration_ms"] <= MAX_CAPTURE_DURATION_MS:
         raise ValueError("Missing, stale or mismatched camera frames")
     if previous is not None and completed - previous < 1.5:
         raise ValueError("Confirmation captures must be separated in time")

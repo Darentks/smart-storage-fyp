@@ -1297,17 +1297,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <div>
                   <label for="cctvIpInput" style="font-size: 10px; color: var(--text-muted);">IP Address</label>
                   <input type="text" id="cctvIpInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
-                    value="192.168.0.101" />
+                    value="" />
                 </div>
                 <div>
                   <label for="cctvUserInput" style="font-size: 10px; color: var(--text-muted);">User</label>
                   <input type="text" id="cctvUserInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
-                    value="admin" />
+                    value="" />
                 </div>
                 <div>
                   <label for="cctvPassInput" style="font-size: 10px; color: var(--text-muted);">Password</label>
                   <input type="password" id="cctvPassInput" class="form-control"
-                    style="font-size: 11px; padding: 4px 6px;" value="Password" />
+                    style="font-size: 11px; padding: 4px 6px;" value="" />
                 </div>
                 <div>
                   <label for="cctvChannelSelect" style="font-size: 10px; color: var(--text-muted);">Channel /
@@ -1334,8 +1334,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <label for="cctvRtspInput" style="font-size: 11px; font-weight: 600;">Full RTSP URL or Webcam
                 Index</label>
               <input type="text" id="cctvRtspInput" class="form-control"
-                placeholder="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102"
-                value="rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102" required />
+                placeholder="Enter the configured camera source"
+                value="" required />
             </div>
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
@@ -1740,7 +1740,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const resp = await fetch(url, opts);
         const text = await resp.text();
         cloudRequestMetrics.decoded_response_body_bytes += new TextEncoder().encode(text).length;
-        if (!resp.ok) throw new Error(`Supabase device request failed (${resp.status})`);
+        if (!resp.ok) {
+          const reason = resp.status === 401 ? 'authentication required' : resp.status === 403 ? 'permission denied (RLS/grants)' : resp.status === 409 ? 'constraint conflict' : resp.status === 400 ? 'invalid device data or schema' : 'database request failed';
+          throw new Error(`Supabase HTTP ${resp.status}: ${reason}`);
+        }
         if (resp.status === 204 || (effectivePrefer && effectivePrefer.includes('return=minimal'))) return null;
         return text ? JSON.parse(text) : null;
       } catch (error) { cloudRequestMetrics.failures++; throw error; }
@@ -2579,11 +2582,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
 
       const comp = compartmentsData.find(c => c.shelf_id === selShelf);
-      const defaultFallbacks = {
-        'SHELF_R1_C1': { ip1: '192.168.0.201', ip2: '192.168.0.202' },
-        'SHELF_R1_C2': { ip1: '192.168.0.203', ip2: '192.168.0.204' },
-        'SHELF_R1_C3': { ip1: '192.168.0.205', ip2: '192.168.0.206' },
-      }[selShelf] || { ip1: '192.168.0.201', ip2: '192.168.0.202' };
+      const defaultFallbacks = { ip1: '', ip2: '' };
 
       const activeEl = document.activeElement;
       const cam1Focused = (activeEl === refEspIpInput || activeEl === cam1IpSelect);
@@ -2645,8 +2644,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     async function saveAssignedShelfIps() {
       const shelfId = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
-      const ip1 = cleanCameraHost(refEspIpInput ? refEspIpInput.value : '192.168.0.201');
-      const ip2 = cleanCameraHost(refEspIp2Input ? refEspIp2Input.value : '192.168.0.202');
+      const ip1 = cleanCameraHost(refEspIpInput ? refEspIpInput.value : '');
+      const ip2 = cleanCameraHost(refEspIp2Input ? refEspIp2Input.value : '');
 
       if (!ip1 || !ip2) {
         showToast('Please enter or select valid IP addresses for both CAM 1 and CAM 2.', 'error');
@@ -2661,13 +2660,19 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       let savedCloud = false;
       let savedBridge = false;
 
-      // 1. Persist IPs in public.esp32_cameras (angle 1 = Back, angle 2 = Front); compartments holds no IP columns
+      // Confirm both persisted bindings before changing the running bridge.
+      let confirmed = 0;
       try {
-        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.1`, { ip_address: ip1 }, 'return=minimal');
-        await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.2`, { ip_address: ip2 }, 'return=minimal');
+        for (const [angle, ip] of [[1, ip1], [2, ip2]]) {
+          const rows = await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.${angle}`, { ip_address: ip }, 'return=representation');
+          if (!Array.isArray(rows) || rows.length !== 1 || rows[0].shelf_id !== shelfId || Number(rows[0].angle_index) !== angle || cleanCameraHost(rows[0].ip_address) !== ip) throw Error(`CAM${angle}: expected one saved camera row; check registration and permissions`);
+          confirmed++;
+        }
         savedCloud = true;
-      } catch (sbErr) {
-        console.warn('[Save IPs] Supabase esp32_cameras PATCH warning:', sbErr);
+      } catch (error) {
+        if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.textContent = 'Save Assigned IPs to Shelf'; }
+        showToast(`${confirmed ? 'CAM1 saved; CAM2 was not confirmed. ' : ''}Bridge unchanged. ${deviceSaveError(error)}`, 'error');
+        return;
       }
 
       // 2. Update in Local Python Bridge
@@ -2714,10 +2719,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf';
       }
 
-      if (savedCloud || savedBridge) {
+      if (savedCloud && savedBridge) {
         showToast(`Saved ${shelfId} IPs: CAM1=${ip1}, CAM2=${ip2}`, 'success');
       } else {
-        showToast(`Updated ${shelfId} IPs locally in session: CAM1=${ip1}, CAM2=${ip2}`, 'info');
+        showToast('Camera IPs saved to database; bridge update failed. Check Bridge and retry.', 'error');
       }
     }
 
@@ -3526,8 +3531,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     async function executeFullDualCamValidation(shelfId, action, isCctvTrigger, validationToken, triggerId, validationSource) {
       const comp = compartmentsData.find(c => c.shelf_id === shelfId);
-      const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '192.168.0.201');
-      const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '192.168.0.202');
+      const ip1 = (comp && comp.ip_address) || (refEspIpInput ? refEspIpInput.value.trim() : '');
+      const ip2 = (comp && comp.secondary_ip_address) || (refEspIp2Input ? refEspIp2Input.value.trim() : '');
 
       const prefix = isCctvTrigger ? 'CCTV Trigger' : 'Dual-Camera Validation';
       showToast(`${prefix}: Running validation for ${shelfId} (${action})...`, 'info');
@@ -3746,7 +3751,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       shelf_id: shelfId, rack_id: 'RACK_01',
       mqtt_client_id: `ESP32_R1_C${i + 1}`, secondary_mqtt_client_id: `ESP32_R1_C${i + 1}_CAM2`,
       camera_name: `ESP32 Dual Node R1-C${i + 1}`,
-      ip_address: `192.168.0.${201 + i * 2}`, secondary_ip_address: `192.168.0.${202 + i * 2}`,
+      ip_address: null, secondary_ip_address: null,
       current_quantity: null, inventory_mode:'runtime', precision:'UNKNOWN', state:'Starting', max_capacity: 5, status: 'OFFLINE'
     }));
 
@@ -4264,11 +4269,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         id: `cam-${201 + n}`, device_id: `ESP32_R1_C${s}_CAM${a}`,
         camera_name: `R1-C${s} ${a === 1 ? 'Back' : 'Front'} Angle (CAM ${n + 1})`,
         rack_id: 'RACK_01', shelf_id: shelfId, angle_index: a,
-        ip_address: `192.168.0.${201 + n}`, status: 'OFFLINE', rssi_dbm: null, last_seen: null
+        ip_address: null, status: 'OFFLINE', rssi_dbm: null, last_seen: null
       };
     }));
 
-    let esp32CameraNodesList = [...DEFAULT_12_ESP32_CAMERAS];
+    let esp32CameraNodesList = [];
     let esp32NodeSnapshotModeMap = {};
     let esp32NodeCacheBustMap = {};
     let esp32NodeOtaUploadingMap = {};
@@ -4399,37 +4404,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     const CAMERA_COLS = 'id,device_id,camera_name,rack_id,shelf_id,angle_index,ip_address';
 
     async function getCameras(forceRefresh = false) {
-      if (!forceRefresh) {
-        try {
-          const lastFetch = Number(localStorage.getItem('smart_storage_esp32_cameras_fetched_at') || 0);
-          const cached = localStorage.getItem('smart_storage_esp32_cameras_cache');
-          if (cached && (Date.now() - lastFetch < 300000)) {
-            const parsed = JSON.parse(cached);
-            if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-          }
-        } catch (_) { }
-      }
-
-      try {
-        const restData = await sbRest('esp32_cameras', 'GET', `?select=${CAMERA_COLS}&order=shelf_id.asc,angle_index.asc`, null, 'return=representation');
-        if (Array.isArray(restData) && restData.length > 0) {
-          try {
-            localStorage.setItem('smart_storage_esp32_cameras_cache', JSON.stringify(restData));
-            localStorage.setItem('smart_storage_esp32_cameras_fetched_at', String(Date.now()));
-          } catch (_) { }
-          return restData;
-        }
-      } catch (_) { }
-
-      try {
-        const cached = localStorage.getItem('smart_storage_esp32_cameras_cache');
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-        }
-      } catch (_) { }
-
-      return [...DEFAULT_12_ESP32_CAMERAS];
+      const rows = await sbRest('esp32_cameras', 'GET', `?select=${CAMERA_COLS}&order=shelf_id.asc,angle_index.asc`, null, 'return=representation');
+      if (!Array.isArray(rows)) throw Error('Invalid camera database response');
+      return rows;
     }
 
     async function upsertCamera(cam) {
@@ -4502,7 +4479,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         });
         renderEsp32CameraManager();
       } catch (err) {
-        console.warn('loadEsp32CameraNodes fallback:', err);
+        esp32CameraNodesList = [];
+        showToast(`Cannot load ESP32 configuration. ${deviceSaveError(err)}`, 'error');
         renderEsp32CameraManager();
       }
     }
@@ -5042,38 +5020,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // 100% client-side YOLO11n-Pose ONNX on Vercel
     // =========================================================================
 
-    const DEFAULT_3_CCTV_CAMERAS = [
-      {
-        cctv_id: 'CCTV_01',
-        camera_role: 'GRID_6_ROI',
-        camera_name: 'Hikvision CCTV 1 (Left Angle - Column 1)',
-        rack_id: 'RACK_01',
-        ip_address: '192.168.0.101',
-        rtsp_url: 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102',
-        is_active: true,
-        status: 'ONLINE'
-      },
-      {
-        cctv_id: 'CCTV_02',
-        camera_role: 'GRID_6_ROI',
-        camera_name: 'Hikvision CCTV 2 (Center Angle)',
-        rack_id: 'RACK_01',
-        ip_address: '192.168.0.102',
-        rtsp_url: 'rtsp://admin:Password@192.168.0.102:554/Streaming/Channels/102',
-        is_active: true,
-        status: 'ONLINE'
-      },
-      {
-        cctv_id: 'CCTV_03',
-        camera_role: 'SIDE_PRESENCE',
-        camera_name: 'Hikvision CCTV 3 (Right Angle)',
-        rack_id: 'RACK_01',
-        ip_address: '192.168.0.103',
-        rtsp_url: 'rtsp://admin:Password@192.168.0.103:554/Streaming/Channels/102',
-        is_active: true,
-        status: 'ONLINE'
-      }
-    ];
+    const DEFAULT_3_CCTV_CAMERAS = [];
 
     const DEFAULT_COMPARTMENT_ROIS = {
       'SHELF_R1_C1': { x_min: 0.60, y_min: 0.19, x_max: 0.81, y_max: 0.42 }, // mirrors 385, 93, 516, 201 on 640x480
@@ -6873,11 +6820,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function buildCctvRtspFromInputs() {
-      const ip = (document.getElementById('cctvIpInput').value || '192.168.0.101').trim();
-      const user = (document.getElementById('cctvUserInput').value || 'admin').trim();
-      const pass = (document.getElementById('cctvPassInput').value || 'Password').trim();
+      const ip = (document.getElementById('cctvIpInput').value || '').trim();
+      const user = (document.getElementById('cctvUserInput').value || '').trim();
+      const pass = (document.getElementById('cctvPassInput').value || '').trim();
       const channel = (document.getElementById('cctvChannelSelect').value || '102').trim();
       const rtspEl = document.getElementById('cctvRtspInput');
+      if (channel !== '0' && (!ip || !user || !pass)) { showToast('Enter camera address and credentials first.', 'error'); return; }
       if (channel === '0') {
         rtspEl.value = '0';
       } else {
@@ -6889,8 +6837,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function resetCctvForm() {
       document.getElementById('cctvIdInput').value = 'CCTV_01';
       document.getElementById('cctvNameInput').value = 'Hikvision CCTV 1 - Left Angle (Column 1)';
-      document.getElementById('cctvIpInput').value = '192.168.0.101';
-      document.getElementById('cctvRtspInput').value = 'rtsp://admin:Password@192.168.0.101:554/Streaming/Channels/102';
+      document.getElementById('cctvIpInput').value = '';
+      document.getElementById('cctvRtspInput').value = '';
       document.getElementById('cctvActiveCheck').checked = true;
       document.getElementById('cctvRoleSelect').value = 'GRID_6_ROI';
     }
@@ -6899,7 +6847,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (event) event.preventDefault();
       const cctvId = (document.getElementById('cctvIdInput').value || '').trim();
       const cameraName = (document.getElementById('cctvNameInput').value || '').trim();
-      const ipAddress = (document.getElementById('cctvIpInput').value || '192.168.0.101').trim();
+      const ipAddress = (document.getElementById('cctvIpInput').value || '').trim();
       const rtspUrl = (document.getElementById('cctvRtspInput').value || '').trim();
       const isActive = document.getElementById('cctvActiveCheck').checked;
 
@@ -6926,55 +6874,36 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       };
 
       try {
-        await sbRest('cctv_cameras', 'POST', '?on_conflict=cctv_id', payload, 'resolution=merge-duplicates,return=minimal');
-        showToast(`Saved CCTV ${cctvId} to Supabase!`, 'success');
-        await loadCctvCameras();
-      } catch (err) {
-        console.error('Failed to save CCTV camera:', err);
-        const idx = cctvCamerasList.findIndex(c => c.cctv_id === cctvId);
-        if (idx >= 0) cctvCamerasList[idx] = payload;
-        else cctvCamerasList.push(payload);
-        cctvConfigLoaded = true;
-        renderCctvCameras();
-        showToast(`Saved CCTV ${cctvId} locally (DB offline)`, 'info');
+        const rows = await sbRest('cctv_cameras', 'POST', '?on_conflict=cctv_id', payload, 'resolution=merge-duplicates,return=representation');
+        if (!Array.isArray(rows) || rows.length !== 1 || rows[0].cctv_id !== cctvId) throw Error('No saved camera row returned; check permissions');
+      } catch (error) {
+        showToast(`CCTV was not saved. ${deviceSaveError(error)}`, 'error');
+        return;
       }
+      showToast(`Saved CCTV ${cctvId} to Supabase`, 'success');
+      await loadCctvCameras();
     }
 
+    function deviceSaveError(error) {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return 'Network offline; form values are retained.';
+      if (error instanceof TypeError) return 'Network request failed (connection or browser access policy); nothing saved locally.';
+      return error.message || 'Device request failed';
+    }
+
+    let cctvLoadError = false;
     async function loadCctvCameras() {
+      cctvLoadError = false;
       try {
-        try {
-          const bResp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
-          if (bResp.ok) {
-            const bJson = await bResp.json();
-            if (Array.isArray(bJson.running_pipelines)) {
-              runningPipelinesList = bJson.running_pipelines;
-            }
-          }
-        } catch (_) { }
-
-        let data = null;
-        try {
-          data = await sbRest('cctv_cameras', 'GET', '?select=cctv_id,camera_name,rack_id,ip_address,rtsp_url,is_active,camera_role&order=cctv_id.asc');
-        } catch (dbErr) {
-          console.warn('Supabase cctv_cameras read failed, checking fallback:', dbErr);
-        }
-
-        if (Array.isArray(data) && data.length > 0) {
-          cctvCamerasList = data.map(cam => ({ ...cam, camera_role: cameraRole(cam) }));
-        } else if (!cctvCamerasList || cctvCamerasList.length === 0) {
-          cctvCamerasList = [...DEFAULT_3_CCTV_CAMERAS];
-        }
-
-        cctvConfigLoaded = true;
-        renderCctvCameras();
-      } catch (err) {
-        console.error('Error loading CCTV cameras:', err);
-        if (!cctvCamerasList || cctvCamerasList.length === 0) {
-          cctvCamerasList = [...DEFAULT_3_CCTV_CAMERAS];
-        }
-        cctvConfigLoaded = true;
-        renderCctvCameras();
+        const data = await sbRest('cctv_cameras', 'GET', '?select=cctv_id,camera_name,rack_id,ip_address,rtsp_url,is_active,camera_role&order=cctv_id.asc');
+        if (!Array.isArray(data)) throw Error('Invalid camera database response');
+        cctvCamerasList = data.map(cam => ({ ...cam, camera_role: cameraRole(cam) }));
+      } catch (error) {
+        cctvCamerasList = [];
+        cctvLoadError = true;
+        showToast(`Cannot load CCTV configuration. ${deviceSaveError(error)}`, 'error');
       }
+      cctvConfigLoaded = !cctvLoadError;
+      renderCctvCameras();
     }
 
     function renderCctvCameras() {
@@ -6983,7 +6912,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
       if (!cctvCamerasList || cctvCamerasList.length === 0) {
         if (cctvConfigLoaded) syncCctvAlignmentConfig().catch(error => console.warn('[CCTV Alignment]', error.message));
-        grid.innerHTML = '<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--text-muted);">No CCTV cameras configured. Use the form above to add one.</div>';
+        grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--text-muted);">${cctvLoadError ? 'CCTV configuration unavailable. Check database access and retry.' : 'No CCTV cameras configured. Use the form above to add one.'}</div>`;
         return;
       }
 
@@ -7111,7 +7040,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const cam = JSON.parse(decodeURIComponent(encodedJson));
         document.getElementById('cctvIdInput').value = cam.cctv_id || 'CCTV_01';
         document.getElementById('cctvNameInput').value = cam.camera_name || '';
-        document.getElementById('cctvIpInput').value = cleanCameraHost(cam.ip_address) || '192.168.0.101';
+        document.getElementById('cctvIpInput').value = cleanCameraHost(cam.ip_address) || '';
         document.getElementById('cctvRtspInput').value = cam.rtsp_url || '';
         document.getElementById('cctvActiveCheck').checked = cam.is_active !== false;
         document.getElementById('cctvRoleSelect').value = cameraRole(cam);

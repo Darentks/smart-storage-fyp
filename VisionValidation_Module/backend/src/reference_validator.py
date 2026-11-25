@@ -23,6 +23,7 @@ import os
 import re
 import time
 import urllib.request
+from .dual_cam_inventory import HTTP_CAPTURE_BUDGET_SECONDS, HTTP_FIRST_ATTEMPT_SECONDS, HTTP_RETRY_DELAY_SECONDS
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -371,17 +372,19 @@ class ESP32ReferenceManager:
         esp32_ip1: Optional[str],
         esp32_ip2: Optional[str] = None,
         mode: str = "live",
-        timeout: float = 3.5,
+        timeout: float = HTTP_CAPTURE_BUDGET_SECONDS,
         flash: Optional[int] = None,
         duty: Optional[int] = None,
         boost_mode: Optional[str] = None,
     ) -> Tuple[Any, str, Optional[str], Optional[str]]:
         """
         Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=0,
-        retrying failed HTTP requests once (timeout=2.0).
+        retrying once within a shared bounded pair budget.
         Returns (combined_bgr, combined_data_url, url1, url2).
         Stitches the two images side-by-side horizontally for logging & comparison.
         """
+        deadline = time.monotonic() + min(timeout, HTTP_CAPTURE_BUDGET_SECONDS)
+
         def _fetch_single_with_retry(ip: str) -> Tuple[Optional[Any], Optional[str]]:
             clean = ip.replace("http://", "").replace("/", "").strip()
             flash_val = flash if flash is not None else 1
@@ -389,24 +392,50 @@ class ESP32ReferenceManager:
             if duty is not None:
                 f_url += f"&duty={max(0, min(255, int(duty)))}"
             for attempt in range(2):
-                req_timeout = timeout if attempt == 0 else 2.0
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                req_timeout = min(remaining, HTTP_FIRST_ATTEMPT_SECONDS) if attempt == 0 else remaining
                 try:
                     req = urllib.request.Request(
                         f_url,
                         headers={"User-Agent": "SmartStorageVision/1.0", "Cache-Control": "no-cache"},
                     )
                     with urllib.request.urlopen(req, timeout=req_timeout) as resp:
-                        raw = resp.read()
+                        # A socket inactivity timeout alone permits a slow trickle to
+                        # exceed the pair budget. Recheck the deadline between chunks.
+                        chunks = []
+                        size = 0
+                        while True:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                return None, None
+                            sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+                            if sock is not None:
+                                sock.settimeout(min(req_timeout, remaining))
+                            chunk = getattr(resp, "read1", resp.read)(65536)
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            size += len(chunk)
+                            if size > 8 * 1024 * 1024:
+                                return None, None
+                        raw = b"".join(chunks)
+                        if time.monotonic() > deadline:
+                            return None, None
                         arr = np.asarray(bytearray(raw), dtype=np.uint8)
                         frame = cv2.imdecode(arr, cv2.IMREAD_COLOR) if _OPENCV_AVAILABLE else None
                         if frame is not None:
                             frame = enhance_low_light_frame(frame, boost_mode=boost_mode or self.vision_boost_mode)
-                            return frame, encode_bgr_to_data_url(frame)
+                            encoded = encode_bgr_to_data_url(frame)
+                            if time.monotonic() <= deadline:
+                                return frame, encoded
+                            return None, None
                 except Exception as exc:
                     if attempt == 0:
-                        time.sleep(0.1)
+                        time.sleep(min(HTTP_RETRY_DELAY_SECONDS, max(0, deadline - time.monotonic())))
                         continue
-                    print(f"[ReferenceValidator] Snapshot fetch failed for {clean} (attempt {attempt + 1}): {exc}")
+                    print(f"[ReferenceValidator] Snapshot fetch failed (attempt {attempt + 1}): {type(exc).__name__}")
             # Return (None, None) when hardware camera is unreachable so degraded camera guardrail triggers properly
             return None, None
 

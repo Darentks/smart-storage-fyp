@@ -58,6 +58,7 @@ def _supabase_rest(
     timeout: float = 8.0,
     api_key: Optional[str] = None,
     bearer_token: Optional[str] = None,
+    distinguish_failure: bool = False,
 ) -> Any:
     """
     Native Python urllib.request PostgREST helper that calls:
@@ -101,6 +102,8 @@ def _supabase_rest(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if not 200 <= resp.status < 300:
+                if distinguish_failure:
+                    return None
                 return False if method.upper() in {"PATCH", "DELETE"} else []
             if resp.status == 204:
                 ok=True
@@ -112,6 +115,8 @@ def _supabase_rest(
             return result
     except Exception:
         print(f"[_supabase_rest] {method.upper()} request failed; details omitted")
+        if distinguish_failure:
+            return None
         return False if method.upper() in {"PATCH", "DELETE"} else []
     finally:
         CLOUD_METRICS.record(method,request_size,response_bytes,ok)

@@ -4,3 +4,8 @@ node_modules/
 __pycache__/
 *.py[cod]
 node_modules/
+
+# Local configuration and full-project backup copies must not be committed.
+.env
+/backup/
+/backups/

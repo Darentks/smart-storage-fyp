@@ -123,8 +123,8 @@ RECHECKS = RecheckCoordinator()
 
 ACTIVE_ESP32_IPS: Dict[str, Any] = {
     "SHELF_R1_C1": {
-        "ip1": os.getenv("ESP32_CAM_IP", "192.168.0.201"),
-        "ip2": os.getenv("ESP32_CAM_IP2", "192.168.0.202"),
+        "ip1": os.getenv("ESP32_CAM_IP", ""),
+        "ip2": os.getenv("ESP32_CAM_IP2", ""),
     },
 }
 
@@ -330,9 +330,12 @@ def get_cached_compartments(force_refresh: bool = False) -> list:
         from src.config_loader import _supabase_rest, ESP32_CAMERAS_COLS
         now=time.time()
         if force_refresh or now-SUPABASE_COMPARTMENTS_CACHE['fetched_at']>=SUPABASE_CACHE_TTL_SEC:
-            devices=_supabase_rest(table='esp32_cameras',query=f'?select={ESP32_CAMERAS_COLS}&order=shelf_id.asc,angle_index.asc')
+            devices=_supabase_rest(table='esp32_cameras',query=f'?select={ESP32_CAMERAS_COLS}&order=shelf_id.asc,angle_index.asc',distinguish_failure=True)
             from src.config_loader import device_shelves
-            SUPABASE_COMPARTMENTS_CACHE.update(data=device_shelves(devices) or SUPABASE_COMPARTMENTS_CACHE['data'],fetched_at=now)
+            if isinstance(devices, list):
+                SUPABASE_COMPARTMENTS_CACHE.update(data=device_shelves(devices),fetched_at=now)
+            else:
+                SUPABASE_COMPARTMENTS_CACHE['fetched_at']=now
         authority=globals().get('RUNTIME_INVENTORY')
         return [dict(row,**{k:v for k,v in authority.snapshot(row['shelf_id']).items() if k!='shelf_id'}) if authority else dict(row,current_quantity=None) for row in SUPABASE_COMPARTMENTS_CACHE['data']]
     now = time.time()
@@ -440,8 +443,8 @@ def get_merged_compartments_and_nodes():
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
         baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
         baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
-        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.201"
-        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or "192.168.0.202"
+        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or ""
+        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or ""
 
         merged.append({
             "camera_id": db_row.get("camera_id"),
@@ -460,7 +463,7 @@ def get_merged_compartments_and_nodes():
             "y_max": comp["y_max"],
             "dwell_threshold_seconds": comp.get("dwell_threshold_seconds", 1.2),
             "status": status,
-            "current_quantity": db_row.get("current_quantity", 5),
+            "current_quantity": db_row.get("current_quantity"),
             "max_capacity": int(db_row.get("max_capacity") or 5),
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
@@ -497,8 +500,8 @@ def get_merged_compartments_and_nodes():
         baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
         baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
         baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
-        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.201"
-        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or "192.168.0.202"
+        ip_addr = override_ip1 or live_row.get("ip_address") or db_row.get("ip_address") or ""
+        sec_ip_addr = override_ip2 or live_cam2_row.get("ip_address") or db_row.get("secondary_ip_address") or ""
 
         merged.append({
             "camera_id": db_row.get("camera_id"),
@@ -516,7 +519,7 @@ def get_merged_compartments_and_nodes():
             "y_max": db_row.get("roi_y_max", 350),
             "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
             "status": status,
-            "current_quantity": db_row.get("current_quantity", 5),
+            "current_quantity": db_row.get("current_quantity"),
             "max_capacity": int(db_row.get("max_capacity") or 5),
             "baseline_image_url": baseline_url,
             "baseline_image_2_url": baseline_2_url,
@@ -537,8 +540,8 @@ def get_merged_compartments_and_nodes():
             baseline_url = cached_baseline.get("data_url") or db_row.get("baseline_image_url")
             baseline_2_url = cached_baseline.get("data_url_2") or db_row.get("baseline_image_2_url")
             baseline_updated = cached_baseline.get("updated_at") or db_row.get("baseline_updated_at")
-            ip_addr = live_row.get("ip_address") or db_row.get("ip_address") or "192.168.0.201"
-            sec_ip_addr = db_row.get("secondary_ip_address") or "192.168.0.202"
+            ip_addr = live_row.get("ip_address") or db_row.get("ip_address") or ""
+            sec_ip_addr = db_row.get("secondary_ip_address") or ""
 
             merged.append({
                 "camera_id": db_row.get("camera_id"),
@@ -555,7 +558,7 @@ def get_merged_compartments_and_nodes():
                 "y_max": db_row.get("roi_y_max", 350),
                 "dwell_threshold_seconds": float(db_row.get("dwell_threshold_seconds", 1.2)),
                 "status": "ONLINE",
-                "current_quantity": db_row.get("current_quantity", 5),
+                "current_quantity": db_row.get("current_quantity"),
                 "max_capacity": int(db_row.get("max_capacity") or 5),
                 "baseline_image_url": baseline_url,
                 "baseline_image_2_url": baseline_2_url,
@@ -571,6 +574,8 @@ def get_merged_compartments_and_nodes():
     if runtime_enabled():
         for row in merged:
             row.update(RUNTIME_INVENTORY.snapshot(row['shelf_id']) if RUNTIME_INVENTORY else {'current_quantity':None,'precision':'UNKNOWN','count_range':[0,5]})
+    for row in merged:
+        row['camera_configuration'] = 'Configured' if row.get('ip_address') and row.get('secondary_ip_address') else 'Not configured'
     return merged
 
 
@@ -1639,8 +1644,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
             if clean_ip1 or clean_ip2:
                 prev_entry = ACTIVE_ESP32_IPS.get(shelf_id)
-                prev_ip1 = prev_entry.get("ip1") if isinstance(prev_entry, dict) else (str(prev_entry) if prev_entry else "192.168.0.201")
-                prev_ip2 = prev_entry.get("ip2") if isinstance(prev_entry, dict) else "192.168.0.202"
+                prev_ip1 = prev_entry.get("ip1") if isinstance(prev_entry, dict) else (str(prev_entry) if prev_entry else "")
+                prev_ip2 = prev_entry.get("ip2") if isinstance(prev_entry, dict) else ""
                 ACTIVE_ESP32_IPS[shelf_id] = {
                     "ip1": clean_ip1 or prev_ip1,
                     "ip2": clean_ip2 or prev_ip2,
@@ -2021,8 +2026,12 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         # ASSIGN DUAL CAMERA IPs TO SHELF: Update runtime mappings; never PATCH compartment IP/telemetry columns
         if path == "/esp32_assign_ips":
             shelf_id = str(body.get("shelf_id", "SHELF_R1_C1")).strip()
-            raw_ip1 = str(body.get("ip_address") or body.get("ip") or "192.168.0.201").split("//")[-1].split("/")[0].strip()
-            raw_ip2 = str(body.get("secondary_ip_address") or body.get("ip2") or "192.168.0.202").split("//")[-1].split("/")[0].strip()
+            raw_ip1 = str(body.get("ip_address") or body.get("ip") or "").split("//")[-1].split("/")[0].strip()
+            raw_ip2 = str(body.get("secondary_ip_address") or body.get("ip2") or "").split("//")[-1].split("/")[0].strip()
+
+            if shelf_id not in SHELF_SET or not raw_ip1 or not raw_ip2:
+                self._send_json(400, {"error": "Shelf and both camera addresses must be configured"})
+                return
 
             ACTIVE_ESP32_IPS[shelf_id] = {
                 "ip1": raw_ip1,

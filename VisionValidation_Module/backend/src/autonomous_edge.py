@@ -22,7 +22,7 @@ from .runtime_inventory import RuntimeInventory, runtime_enabled
 from .preview_panel import NativeObservations, LIVE_CAPTURE_BOOST, LIVE_CAPTURE_DUTY
 from .validation_diagnostics import failure_code
 from .shelves import SHELF_IDS, SHELF_SET
-from .dual_cam_inventory import REQUIRED_MATCHING_PAIRS, MAX_PAIRS_PER_ATTEMPT
+from .dual_cam_inventory import REQUIRED_MATCHING_PAIRS, MAX_PAIRS_PER_ATTEMPT, MAX_CAPTURE_DURATION_MS
 
 
 CHECKS = ('same_frame_tm', 'same_frame_pose', 'action_consensus_parity',
@@ -564,7 +564,7 @@ class AutonomousProcessor:
                     valid_range=runtime is not None and candidate.get('hold')=='UNKNOWN_B1'
                     if candidate.get('hold') and not valid_range:
                         failure=candidate['hold'];trail=[]
-                    elif preview['capture']['duration_ms']>2000:
+                    elif preview['capture']['duration_ms']>MAX_CAPTURE_DURATION_MS:
                         failure='STALE_CAPTURE';trail=[]
                     else:
                         sample=dict(front_class=candidate['front_class'],back_class=candidate['back_class'],
