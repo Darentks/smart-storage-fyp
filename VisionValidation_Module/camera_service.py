@@ -201,7 +201,7 @@ def consensus_view():
 
 
 def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=None,
-                          trigger_id=None, dwell_duration_seconds=1.2, consensus_context=None, detected_at=None):
+                          trigger_id=None, dwell_duration_seconds=1.2, consensus_context=None, detected_at=None, queue_ready=None):
     """Atomically align distinct enabled cameras and queue one claimable validation."""
     # Replays use isolated buffers/configuration and never enter the live trigger queue.
     camera_config = CCTV_CAMERA_CONFIG if consensus_context is None else consensus_context["cameras"]
@@ -282,11 +282,27 @@ def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=N
                   "confidence": min(v["conf"] for v in supporters.values())}
         if consensus_context is not None:
             result["test_only"] = True
-        pending.append({**result, "source": "CCTV", "timestamp": now})
+        eligible=queue_ready is None or queue_ready(target)
+        result['inventory_eligible']=eligible
+        if consensus_context is None and (notices:=globals().get('CCTV_LAST_CONSENSUS')) is not None:
+            notices[target]={**result,'timestamp':now}
+        if eligible:pending.append({**result, "source": "CCTV", "timestamp": now})
         del pending[:-20]
         last_triggers[target] = now
         align_state.clear()  # Consume all evidence so presence cannot validate another shelf.
         return result
+
+
+# At most one recent notification per active shelf. Independent of the latest-five
+# intent list so frequent side-presence observations cannot hide a real agreement.
+CCTV_LAST_CONSENSUS = {}
+
+def recent_cctv_consensus():
+    with CCTV_CONSENSUS_LOCK:
+        now=time.time()
+        for sid,row in list(CCTV_LAST_CONSENSUS.items()):
+            if not 0<=now-row['timestamp']<60:CCTV_LAST_CONSENSUS.pop(sid,None)
+        return [dict(row) for row in CCTV_LAST_CONSENSUS.values()]
 
 
 CCTV_REPLAY_MANAGER = CctvReplayManager(record_cctv_consensus, window_seconds=CONSENSUS_WINDOW_SEC)
@@ -1315,7 +1331,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 unresolved_failures=failures.snapshot() if failures is not None else {},
                 release_blockers=['REAL_CAMERA_ACCEPTANCE'] if globals().get('RUNTIME_INVENTORY') else ['STRICT_CLOUD_SCHEMA_MIGRATION','REAL_CAMERA_ACCEPTANCE'],
                 inventory_contract='runtime-v1' if globals().get('RUNTIME_INVENTORY') else 'persistent-v1',
-                strict_cloud_scope=globals().get('RUNTIME_INVENTORY') is not None))
+                strict_cloud_scope=globals().get('RUNTIME_INVENTORY') is not None,
+                consensus_notifications=recent_cctv_consensus()))
             return
         if path == '/local_rois':
             try:
@@ -2045,9 +2062,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             if source not in {"CCTV", "CCTV_BROWSER_DWELL"} and not expected_action:
                 expected_action = "BORROW"
             consensus = None
-            if source in {"CCTV", "CCTV_BROWSER_DWELL"} and not READINESS.ready(shelf_id) and shelf_id != 'ANY_SHELF':
-                self._send_json(409, {'error':'Shelf not Ready; interaction not validated and will not be queued'})
-                return
             if source in {"CCTV", "CCTV_BROWSER_DWELL"}:
                 try:
                     consensus = record_cctv_consensus(
@@ -2059,6 +2073,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                         trigger_id=body.get("trigger_id"),
                         dwell_duration_seconds=float(body.get("dwell_duration_seconds", 1.2)),
                         detected_at=body.get("detected_at"),
+                        queue_ready=READINESS.ready,
                     )
                 except (ValueError, TypeError) as exc:
                     self._send_json(400, {"status": "error", "error": str(exc)})
@@ -2076,6 +2091,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 shelf_id = consensus["shelf_id"]
                 expected_action = consensus["expected_action"]
                 command = "CAPTURE_STATE"
+                if not consensus.get('inventory_eligible',True):
+                    self._send_json(200,{**consensus,'status':'consensus_only','mqtt_connected':mqtt_bridge.is_connected,
+                        'dispatched':None,'message':'All cameras agreed; shelf baseline is not Ready. No action queued or capture dispatched.'})
+                    return
 
             # Guardrail 1: Freeze 30s baseline for 10s during interaction
             esp32_ref_manager.freeze_baseline(shelf_id, 10.0)

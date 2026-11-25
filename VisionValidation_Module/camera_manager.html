@@ -2214,12 +2214,22 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }catch(error){showToast(error.message,'error');}
     }
     let localIntentSeen=new Map(),localIntentRun=null,localOperationsBusy=false;
+    let liveConsensusSeen=new Set();
+    function notifyLiveConsensus(data,sameRun){
+      const notices=(data.consensus_notifications || []).filter(row=>row.consensus_met===true && row.required_cameras===3 && row.confirmed_count===3 && ['CCTV_01','CCTV_02','CCTV_03'].every(id=>(row.confirmed_cameras || []).includes(id)));
+      if(!sameRun)liveConsensusSeen.clear();
+      for(const notice of notices){
+        if(sameRun && !liveConsensusSeen.has(notice.trigger_id))showCctvConsensusResult({...notice,test_only:false});
+        liveConsensusSeen.add(notice.trigger_id);
+      }
+      liveConsensusSeen=new Set(notices.map(row=>row.trigger_id));
+    }
     function localIntentPresentation(record){
       const shelf=record.shelf_id,match=/^SHELF_R(\d+)_C([1-3])$/.exec(shelf || '');
       const configured=compartmentsData.find(c=>c.shelf_id===shelf);
       const rack=configured?.rack_id || (match?`RACK_${match[1].padStart(2,'0')}`:null);
       const location=match?`Rack ${rack} · Compartment ${match[2]} (${shelf})`:'Compartment not identified (entry-zone observation)';
-      const action={BORROW:'Borrow',RETURN:'Return',RECHECK:'Shelf recheck'}[record.action] || 'Interaction';
+      const action=record.shelf_id==='ANY_SHELF'?'Presence':({BORROW:'Borrow',RETURN:'Return',RECHECK:'Shelf recheck'}[record.action] || 'Interaction');
       const status={PENDING:'Waiting for camera agreement',CONSENSUS:'Camera agreement confirmed',HELD:'Validation on hold',ACCEPTED:`${action} confirmed`,RECONCILED:'Shelf verification completed'}[record.status] || 'Unknown status';
       const reason={MISSING_CCTV_CONSENSUS:'Waiting for the required cameras to agree.',LOW_CONFIDENCE:'Camera prediction confidence is too low.',MISSING_CAMERA:'A required camera is unavailable.',MQTT_UNAVAILABLE:'The MQTT connection is unavailable.',M2_CONFLICT:'The cameras disagree about the shared slot.',UNKNOWN_B1:'The back bottom slot is hidden; an exact count cannot be confirmed.',STALE_CAPTURE:'Fresh camera pictures are required.',OCCUPANCY_CHANGED:'The box arrangement changed during verification.',MODEL_FAILURE:'A prediction model could not complete verification.',VALIDATION_TIMEOUT:'Verification took too long.',LEASE_EXPIRED:'The validation session expired.',DATABASE_FAILURE:'A required data operation failed.',VISIBLE_CHANGE_NET_UNPROVEN:'A visible change was detected, but the quantity change is unproven.',VALIDATION_REJECTED:'The validation checks did not pass.'}[record.reason];
       const explanation=record.status==='CONSENSUS'?'Cameras agree — checking the box count now. This is not a completed pick yet.':record.status==='ACCEPTED'?'The guarded inventory validation passed.':record.status==='RECONCILED'?'Shelf verification completed; this does not imply a borrow or return.':reason || (record.status==='PENDING'?'Waiting for more evidence.':'Inventory change has not been confirmed.');
@@ -2230,6 +2240,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const add=(parent,tag,text)=>{const node=document.createElement(tag);node.textContent=text;parent.appendChild(node);return node;};
       const records=[...(data.intents || [])].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
       const sameRun=localIntentRun===data.run_id;
+      notifyLiveConsensus(data,sameRun);
       add(host,'p',`Processor: ${bridgeStatus.authoritative_processor==='native'?'Native active':bridgeStatus.mode==='shadow'?'Shadow testing — no automated inventory changes':'Disabled — automated validation paused'}. Updated ${new Date().toLocaleTimeString()}.`);
       if(!records.length)add(host,'p','No interactions recorded yet. In shadow mode, predictions do not create authoritative action confirmations.');
       for(const record of records){
@@ -5899,8 +5910,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function showCctvConsensusResult(result) {
       if (!result.consensus_met || cctvSeenConsensusResults.has(result.trigger_id)) return;
       cctvSeenConsensusResults.add(result.trigger_id);
+      while(cctvSeenConsensusResults.size>50)cctvSeenConsensusResults.delete(cctvSeenConsensusResults.values().next().value);
       const cameras=result.confirmed_cameras || [];
-      const message=`${result.shelf_id} ? ${result.expected_action}: ${cameras.join(' + ')} agree. ${result.test_only ? 'TEST ONLY: no ESP32 capture or inventory update was sent.' : 'Live validation confirmed.'}`;
+      const location=localIntentPresentation({shelf_id:result.shelf_id}).location;
+      const message=`${location} — ${result.expected_action}: ${cameras.join(' + ')} agree. ${result.test_only ? 'TEST ONLY: no ESP32 capture or inventory update was sent.' : result.inventory_eligible===false?'Shelf count is not Ready. Inventory confirmation is paused; no action was queued.':'CCTV consensus received. Box-count verification is still required before inventory changes.'}`;
       document.getElementById('cctvConsensusResult').textContent=message;
       document.getElementById('cctvConsensusPopupTitle').textContent=cameras.length===3?'All 3 cameras agree':`${cameras.length} cameras agree`;
       document.getElementById('cctvConsensusPopupText').textContent=message;

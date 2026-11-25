@@ -413,7 +413,7 @@ class AutonomousProcessor:
                         except ValueError:
                             self.log(self.run_id,'native_vote_held',code='SHELF_NOT_READY')
                 except Exception:
-                    was_online=self.health.get(cam['id'],{}).get('state')!='Offline'
+                    was_online=self.health.get(cam['id'],{}).get('state')=='Online'
                     if self.runtime is not None:self.runtime.camera(cam['id'],time.time(),False)
                     cam['tracker'].reset()
                     if was_online:

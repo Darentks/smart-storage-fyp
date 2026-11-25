@@ -91,7 +91,9 @@ class RuntimeInventory:
             valid=healthy and 0<=self.clock()-observed_at<1.5
             self.cameras[cid]=dict(at=observed_at,healthy=valid)
             if interacting:self.last_interaction=self.monotonic()
-            if not valid and (previous is None or previous['healthy']):self.invalidate()
+            # Missing CCTV at startup must not interrupt an independent ESP32 count.
+            # Only loss of a previously live feed invalidates existing authority.
+            if not valid and previous is not None and previous['healthy']:self.invalidate()
 
     def cameras_fresh(self):
         with self.guard:
