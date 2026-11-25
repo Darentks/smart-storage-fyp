@@ -48,5 +48,14 @@ def diagnostic_preview(query,manager,coordinator,native):
         finally:
             coordinator.global_lock.release()
         if not back or not front:return 502,{'error':'Both camera frames required'}
-        return 200,dict(status='success',run_mode='diagnostic',authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
+        row=dict(status='success',run_mode='diagnostic',authorizes_write=False,shelf_id=shelf,image=combined,image_back=back,image_front=front,timestamp=time.time())
+        if native is not None:
+            if not native.models_loaded:return 503,{'error':'Native box-reading models are not ready'}
+            # Exactly the scanner's engine, staged models, boost and pair decoder.
+            # No lease, receipt or inventory acceptance is created by this diagnostic.
+            try:
+                result=native.native.infer(dict(kind='pair',image_back=back,image_front=front,boost=LIVE_CAPTURE_BOOST))
+            except Exception:return 503,{'error':'Native diagnostic inference failed; retry after the scan finishes'}
+            row.update(candidate=result['candidate'],inference_source='native',model_versions=native.native.versions)
+        return 200,row
     except (ValueError,OSError):return 502,{'error':'Diagnostic capture failed; verify camera addresses/connectivity'}

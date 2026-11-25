@@ -967,6 +967,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
         <a class="btn-action" href="smartstorage://start">Start local bridge</a>
         <a class="btn-action" href="smartstorage://restart">Restart local bridge</a>
+        <button type="button" class="btn-action" onclick="setNativeCctv(true)">Start CCTV</button>
+        <button type="button" class="btn-action" onclick="setNativeCctv(false)">Stop CCTV</button>
         <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart clears counts and scans again.</span>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -2146,6 +2148,20 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       else if(grid.length)text='Waiting for the other grid camera and entry presence to agree.';
       if(stage)stage.textContent=text;
     }
+    async function setNativeCctv(enabled) {
+      try {
+        const headers={'Content-Type':'application/json'};
+        const token=window.smartStorageDeviceAdminSession?.access_token;
+        if(token)headers.Authorization=`Bearer ${token}`;
+        const response=await fetch(`${getBridgeUrl()}/cctv_control`,{method:'POST',headers,
+          body:JSON.stringify({enabled}),cache:'no-store',signal:AbortSignal.timeout(15000)});
+        const result=await response.json();
+        if(!response.ok)throw Error(result.error || 'CCTV control failed');
+        showToast(result.status,'success');
+        await pollEdgeProcessor();
+        if(typeof pollShelfReadiness==='function')void pollShelfReadiness();
+      } catch(error) {showToast(error.message,'error');}
+    }
     async function requestNativeScan(shelfId) {
       // A request to the shared native scanner; the browser never captures pictures or writes inventory.
       try {
@@ -2717,7 +2733,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const button=document.getElementById('diagnosticPreviewButton');
       button.disabled=!online || diagnosticRunning || tmComparisonRunning;
       button.textContent='Run Diagnostic Preview (Read-Only)';
-      button.title=!online?'Bridge unavailable':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Preprocessing comparison running':native?'Quick bright capture + Teachable Machine in this browser. Diagnostic only; the native processor keeps counting.':'Read-only capture; inventory is unchanged';
+      button.title=!online?'Bridge unavailable':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Preprocessing comparison running':native?'Quick bright capture using the same native models as initial counts. Diagnostic only; the native processor keeps counting.':'Read-only capture; inventory is unchanged';
       updateTMComparisonButton();
       document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active \u2014 Displaying authoritative observations.':'Native Processor Disabled \u2014 Automated validation is paused.';
       const batchButton=document.getElementById('tmBatchButton');
@@ -2757,6 +2773,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const row=await response.json();if(!response.ok)throw Error(row.error || 'Diagnostic capture failed');
         if(owned!==previewGeneration || !bridgeStatus.online || refShelfSelect.value!==shelf)return;
         renderPanelFrames(row);
+        if(bridgeStatus.authoritative_processor==='native'){
+          if(row.inference_source!=='native' || !row.candidate)throw Error('Restart the updated bridge to use matching native diagnostic models.');
+          lastManualPreviewAt=Date.now();
+          renderPanelObservation(row,false);
+          tmLivePredictionBanner.textContent=`Diagnostic Only (No Inventory Write): same native models and preprocessing as initial counts. ${row.candidate.hold || 'Pair verified; initial counts require two matching pairs.'}`;
+          return;
+        }
         backPredBadge.style.display=frontPredBadge.style.display='none';
         document.getElementById('previewModeBadge').textContent='Diagnostic images (No Inventory Write) — classifying';
         previewOverlayText.textContent='Pictures received; classifying...';
@@ -4001,7 +4024,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const native=status?.native;
       if(!native)return view;
       const max=comp.max_capacity ?? 5,scan=native.scan || {};
-      const counted=Number.isFinite(runtime.observed_at)?` · counted ${new Date(runtime.observed_at*1000).toLocaleTimeString()}`:'';
+      const counted=Number.isFinite(runtime.observed_at)?` · ${runtime.cctv_enabled===false?'last counted (CCTV stopped)':'counted'} ${new Date(runtime.observed_at*1000).toLocaleTimeString()}`:'';
       const counted_ready=exact||range;
       let display;
       if(exact)display=`${runtime.current_quantity} / ${max} boxes${counted}`;

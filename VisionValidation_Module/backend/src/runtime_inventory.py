@@ -22,6 +22,7 @@ class RuntimeInventory:
         self.run_id=run_id or str(uuid.uuid4());self.quiet_seconds=quiet_seconds
         self.clock=clock;self.monotonic=monotonic;self.guard=threading.RLock()
         self.shelves={};self.cameras={};self.models_ready=False;self.last_interaction=monotonic()
+        self.cctv_enabled=True
 
     def _state(self,shelf):
         if shelf not in SHELF_SET:raise ValueError('Unknown shelf')
@@ -38,7 +39,7 @@ class RuntimeInventory:
                 # A baseline that is no longer authoritative stays visible only as a clearly historical count.
                 historical=dict(total=baseline['total'],count_range=baseline['count_range'],precision=baseline['precision'],
                     observed_at=baseline.get('last_capture_at')) if baseline and row['state']!='Ready' else None
-                return dict(shelf_id=shelf,historical=historical,
+                return dict(shelf_id=shelf,historical=historical,cctv_enabled=self.cctv_enabled,
                     action_capable=bool(baseline and baseline.get('action_capable')) and row['state']=='Ready',
                     observed_at=baseline.get('last_capture_at') if baseline else None,run_id=self.run_id,version=row['version'],state=row['state'],
                     ready_at=row['ready_at'],born_at=row['born_at'],baseline=baseline,latest_observation=copy.deepcopy(row['observation']),
@@ -63,6 +64,21 @@ class RuntimeInventory:
             row=self._state(shelf)
             with row['lock']:
                 row.update(state='Starting',ready_at=None,born_at=self.clock(),version=row['version']+1)
+
+    def interrupt_actions(self,disable_actions=False):
+        """Discard in-flight action authority while retaining the last counted quantities/timestamps."""
+        with self.guard:
+            self.last_interaction=self.monotonic()
+            for row in self.shelves.values():
+                with row['lock']:
+                    row['version']+=1
+                    if row['state']=='Ready':row['ready_at']=self.clock()
+                    if disable_actions and row['baseline']:row['baseline']['action_capable']=False
+
+    def set_cctv_enabled(self,enabled):
+        with self.guard:
+            self.cctv_enabled=enabled
+            self.cameras.clear()
 
     def clear_baselines(self):
         """Drop RAM baselines/observations after calibration change; each shelf must rebaseline fresh."""
@@ -89,15 +105,22 @@ class RuntimeInventory:
         with self.guard:
             previous=self.cameras.get(cid)
             valid=healthy and 0<=self.clock()-observed_at<1.5
-            self.cameras[cid]=dict(at=observed_at,healthy=valid)
+            lost_since=None if valid else (previous or {}).get('lost_since')
+            if not valid and lost_since is None:lost_since=self.monotonic()
+            self.cameras[cid]=dict(at=observed_at,healthy=valid,lost_since=lost_since,
+                was_live=valid or bool(previous and previous.get('was_live')),
+                invalidated=False if valid else bool(previous and previous.get('invalidated')))
             if interacting:self.last_interaction=self.monotonic()
-            # Missing CCTV at startup must not interrupt an independent ESP32 count.
-            # Only loss of a previously live feed invalidates existing authority.
-            if not valid and previous is not None and previous['healthy']:self.invalidate()
+            # A missing startup camera never blocks counting. Brief outages preserve counts;
+            # action freshness still fails immediately, independently of this grace period.
+            camera=self.cameras[cid]
+            if not valid and camera['was_live'] and not camera['invalidated'] and self.monotonic()-lost_since>5:
+                camera['invalidated']=True;self.invalidate();return True
+            return False
 
     def cameras_fresh(self):
         with self.guard:
-            return all(self.cameras.get(c,{}).get('healthy') and 0<=self.clock()-self.cameras[c]['at']<1.5
+            return self.cctv_enabled and all(self.cameras.get(c,{}).get('healthy') and 0<=self.clock()-self.cameras[c]['at']<1.5
                 for c in ('CCTV_01','CCTV_02','CCTV_03'))
 
     def environment_ready(self,require_cameras=True):

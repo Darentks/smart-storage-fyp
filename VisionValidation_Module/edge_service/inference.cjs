@@ -115,12 +115,13 @@ function verifiedFile(root,entry) {
   return bytes;
 }
 class Inference {
-  async init(configPath) {
+  async init(configPath, kind='all') {
+    if(!['all','pair','pose'].includes(kind)) throw Error('INVALID_WORKER_KIND');
     const root=path.dirname(path.resolve(configPath)), config=JSON.parse(fs.readFileSync(configPath,'utf8'));
     if(config.version!==1) throw Error('INVALID_MODEL_MANIFEST');
     this.models={};this.versions={};
     await tf.setBackend('cpu');await tf.ready();
-    for(const role of ['Front','Back']) {
+    for(const role of kind==='pose'?[]:['Front','Back']) {
       const spec=config[role], metadata=JSON.parse(verifiedFile(root,spec.metadata)), json=JSON.parse(verifiedFile(root,spec.model));
       checkLabels(role,metadata.labels);
       if(metadata.imageSize!==224) throw Error('MODEL_IMAGE_SIZE_MISMATCH');
@@ -137,9 +138,11 @@ class Inference {
       this.models[role]={model,labels:metadata.labels};
       this.versions[role]={weights_sha256:await weightsHash(model),labels:metadata.labels,asset_sha256:spec.model.sha256};
     }
-    const poseBytes=verifiedFile(root,config.pose);
-    this.pose=await ort.InferenceSession.create(poseBytes,{executionProviders:['cpu'],intraOpNumThreads:1,interOpNumThreads:1});
-    this.versions.pose={asset_sha256:config.pose.sha256};
+    if(kind!=='pair') {
+      const poseBytes=verifiedFile(root,config.pose);
+      this.pose=await ort.InferenceSession.create(poseBytes,{executionProviders:['cpu'],intraOpNumThreads:1,interOpNumThreads:1});
+      this.versions.pose={asset_sha256:config.pose.sha256};
+    }
     this.versions.runtime={tfjs:tf.version.tfjs,onnxruntime:'1.19.2',canvas:'0.1.80',preprocessing:'full-frame-v1'};
     return this.versions;
   }

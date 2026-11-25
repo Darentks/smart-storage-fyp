@@ -1,8 +1,9 @@
 """Browser-independent orchestration; all inventory writes still use bridge guards.
 
-One shared native coordinator counts every shelf from fresh ESP32 pairs, watches the
-three CCTVs and confirms actions with fresh pairs. Normal startup needs only the saved
-device records, installed ROIs and staged models; a field-acceptance record is optional
+One native coordinator counts shelves from ESP32 pairs and optionally watches the
+three CCTVs, using separate box and pose workers. CCTV starts off. Counting needs
+saved ESP32 records and staged Front/Back models; movement also needs saved ROIs.
+A field-acceptance record is optional
 and, when supplied, is fully verified. Normal operation is labelled NOT_FIELD_ACCEPTED.
 No credentials or acquisition URLs are passed to the Node worker.
 """
@@ -249,36 +250,54 @@ def _accepted_reports(acceptance_path,manifest_path,calibration_path,code_paths)
 
 
 class NativeClient:
-    def __init__(self, root, run_id, manifest, node='node'):
+    def __init__(self, root, run_id, manifest, node='node', kind='pair'):
         self.owner=EdgeShadow(root,run_id,'shadow',manifest=manifest,node=node)
+        self.owner.worker_kind=kind
         self.lock=threading.Lock();self.replies=None;self.versions={};self.failures=0;self.accepted_versions=None
+        self.restart_count=0;self.retry_at=0
+
+    def _load(self):
+        if time.monotonic()<self.retry_at:raise RuntimeError('Native worker restart cooling down')
+        self.replies=self.owner._spawn();ready=self.owner._reply(self.replies,60)
+        if not ready.get('ready'):raise RuntimeError('Native models unavailable')
+        versions=ready['versions']
+        if self.accepted_versions is not None and versions!=self.accepted_versions:
+            raise ValueError('Model/runtime changed after worker restart; restart the bridge to load the new models')
+        self.versions=versions
+
+    def _failed(self):
+        self.failures+=1;self.restart_count+=1
+        self.owner._stop_child();self.replies=None
+        # Retry forever with bounded pacing instead of permanently exhausting a lifetime counter.
+        if self.failures>=3:self.retry_at=time.monotonic()+min(30,2**min(self.failures-2,5))
 
     def warm(self):
         with self.lock:
-            self.replies=self.owner._spawn();ready=self.owner._reply(self.replies,60)
-            if not ready.get('ready'):raise RuntimeError('Native models unavailable')
-            self.versions=ready['versions']
+            if self.replies is not None:return
+            try:self._load()
+            except Exception:
+                if time.monotonic()>=self.retry_at:self._failed()
+                raise
 
     def infer(self, job, ttl=15):
         started=time.monotonic()
         if not self.lock.acquire(timeout=min(ttl,2)):raise TimeoutError('Inference busy')
+        attempted=False
         try:
             if self.replies is None:
-                if self.failures>=3:raise RuntimeError('Native worker restart budget exhausted')
-                self.replies=self.owner._spawn();ready=self.owner._reply(self.replies,60)
-                if not ready.get('ready'):raise RuntimeError('Native models unavailable')
-                self.versions=ready['versions']
-                if self.accepted_versions is not None and self.versions!=self.accepted_versions:
-                    raise ValueError('Model/runtime changed after worker restart; restart the bridge to load the new models')
+                if time.monotonic()<self.retry_at:raise RuntimeError('Native worker restart cooling down')
+                attempted=True;self._load()
             if time.monotonic()-started>=ttl:raise TimeoutError('Late inference input')
             request=dict(job,id=str(uuid.uuid4()),startup_id=self.owner.startup_id,expires_at=time.time()+ttl-(time.monotonic()-started))
-            self.owner.proc.stdin.write(json.dumps(request)+'\n');self.owner.proc.stdin.flush()
+            attempted=True;self.owner.proc.stdin.write(json.dumps(request)+'\n');self.owner.proc.stdin.flush()
             reply=self.owner._reply(self.replies,max(.01,ttl-(time.monotonic()-started)))
             if reply.get('id')!=request['id'] or reply.get('startup_id')!=request['startup_id'] or 'error' in reply or time.time()>request['expires_at']:
                 raise ValueError('Late, failed or mismatched native evidence')
+            self.failures=0;self.retry_at=0
             return reply['result']
         except Exception:
-            self.failures+=1;self.owner._stop_child();self.replies=None;raise
+            if attempted:self._failed()
+            raise
         finally:self.lock.release()
 
     def close(self):
@@ -289,7 +308,7 @@ class NativeClient:
 class AutonomousProcessor:
     """One shared native coordinator: counts each shelf, watches the three CCTVs, confirms actions with fresh ESP32 pairs."""
 
-    def __init__(self, run_id, native, cameras, reports, request, capture, shelves, pending, invalidate, log):
+    def __init__(self, run_id, native, cameras, reports, request, capture, shelves, pending, invalidate, log, pose_native=None):
         self.run_id=run_id;self.native=native;self.cameras=cameras;self.reports=reports
         self.request=request;self.capture=capture;self.shelves=shelves;self.pending=pending
         self.invalidate=invalidate;self.log=log;self.stop=threading.Event();self.threads=[]
@@ -300,6 +319,10 @@ class AutonomousProcessor:
         self.panel_observations=NativeObservations()
         self.models_loaded=False;self.model_issue=None;self.calibration_issue=None
         self.mqtt_ok=True
+        self.pose_native=pose_native if pose_native is not None else native
+        self.pose_loaded=False;self.pose_issue=None
+        self.cctv_enabled=False;self.cctv_generation=0;self.cctv_lock=threading.RLock()
+        self.cctv_recounts=set()
         self.scan={};self.attempts={};self.exhausted=set();self.scan_lock=threading.Lock()
 
     # ---- setup / lifecycle -------------------------------------------------
@@ -309,7 +332,8 @@ class AutonomousProcessor:
 
     def start(self):
         """Never raises for setup problems: they are reported through status while counting stays available."""
-        for target in (self._boot,self._poses,self._validations):
+        if self.runtime is not None:self.runtime.set_cctv_enabled(False)
+        for target in (self._boot,self._poses,self._validations,self._recover_workers):
             thread=threading.Thread(target=target,daemon=True,name='AutonomousEdge');self.threads.append(thread);thread.start()
 
     def _boot(self):
@@ -318,7 +342,7 @@ class AutonomousProcessor:
                 self.native.warm()
                 for report in self.reports:
                     for role,version in report['models'].items():
-                        if role in ('Front','Back','pose') and version!=self.native.versions[role]:raise ValueError('Loaded model differs from accepted parity report')
+                        if role in ('Front','Back') and version!=self.native.versions[role]:raise ValueError('Loaded model differs from accepted parity report')
                 self.native.accepted_versions=json.loads(json.dumps(self.native.versions))
                 self.model_issue=None;self.models_loaded=True
                 if self.runtime is not None:self.runtime.models_ready=True
@@ -330,6 +354,13 @@ class AutonomousProcessor:
                 self.log(self.run_id,'native_models_unavailable',code='MODEL_FAILURE')
                 if self.stop.wait(10):return
 
+    def _recover_workers(self):
+        """Recreate crashed count workers even when the shelf's scan retry budget is exhausted."""
+        while not self.stop.wait(1):
+            if not self.models_loaded or self.native.replies is not None:continue
+            try:self.native.warm()
+            except Exception:self.log(self.run_id,'native_worker_restarting',code='WORKER_UNAVAILABLE')
+
     def set_calibration_issue(self,message):
         self.calibration_issue=message;self.cameras=[];self.last_frames.clear();self.health.clear()
 
@@ -340,15 +371,35 @@ class AutonomousProcessor:
         self.panel_observations.clear()
         self.reset_scan_budget()
 
+    def set_cctv_enabled(self,enabled):
+        """An explicit control boundary: retain displayed counts, discard all previous action evidence."""
+        with self.cctv_lock:
+            if self.cctv_enabled==enabled:return
+            self.cctv_generation+=1
+            self.cctv_enabled=enabled
+            self.cctv_recounts=set(SHELF_IDS) if enabled else set()
+            self.last_frames.clear();self.health.clear()
+            for cam in self.cameras:cam['tracker'].reset()
+            if self.runtime is not None:self.runtime.set_cctv_enabled(enabled)
+            self.invalidate('CCTV started' if enabled else 'CCTV stopped',preserve_counts=True,disable_actions=True)
+            self.reset_scan_budget()
+            if not enabled:
+                # Stop movement inference; the independent box-count process stays running.
+                self.pose_native.close()
+                self.pose_native.owner.stop_event.clear()
+                self.pose_loaded=False;self.pose_issue=None
+
     # ---- status ------------------------------------------------------------
     def cameras_ready(self):
-        return bool(self.cameras) and all(self.health.get(c['id'],{}).get('state')=='Online' and
+        return self.cctv_enabled and bool(self.cameras) and all(self.health.get(c['id'],{}).get('state')=='Online' and
             0<=time.time()-self.health[c['id']]['at']<1.5 for c in self.cameras)
 
     def actions_blocker(self):
         """Why BORROW/RETURN confirmation is paused right now, or None. Counting is independent of this."""
         if self.model_issue:return self.model_issue
         if not self.models_loaded:return 'Loading box-reading models'
+        if not self.cctv_enabled:return 'CCTV stopped; last counts retained'
+        if self.pose_issue:return self.pose_issue
         if self.calibration_issue:return self.calibration_issue
         if not self.cameras:return 'Install camera calibration'
         if not self.mqtt_ok:return 'MQTT unavailable'
@@ -371,7 +422,8 @@ class AutonomousProcessor:
             inventory_mode='runtime' if self.runtime is not None else 'persistent',
             startup_id=self.run_id,state=self.state,setup_issue=self.setup_issue,actions_paused_reason=blocker,
             cameras=dict(self.health),camera_ids=[c['id'] for c in self.cameras],model_versions=self.native.versions,
-            metrics=dict(self.metrics),restart_count=self.native.failures,authorizes_write=False,
+            metrics=dict(self.metrics),restart_count=self.native.restart_count,cctv_enabled=self.cctv_enabled,
+            movement_models_ready=self.pose_loaded,movement_issue=self.pose_issue,authorizes_write=False,
             acceptance=self.acceptance,release_blockers=[] if self.acceptance=='ACCEPTED' else ['REAL_CAMERA_ACCEPTANCE'])
 
     def _set_scan(self,sid,state,code=None,message=None,attempt=None):
@@ -388,38 +440,68 @@ class AutonomousProcessor:
                 if self.scan.get(shelf,{}).get('state') in ('Needs retry','Retrying'):self.scan.pop(shelf,None)
 
     # ---- CCTV tracking -----------------------------------------------------
+    def _frame_failed(self,cam,reason,now):
+        previous=self.health.get(cam['id'],{})
+        down_since=previous.get('down_since',now)
+        duration_ms=max(0,int((now-down_since)*1000))
+        self.log(self.run_id,'cctv_frame_failure',camera_id=cam['id'],reason=reason,duration_ms=duration_ms)
+        was_live=previous.get('state')=='Online'
+        invalidated=self.runtime.camera(cam['id'],now,False) if self.runtime is not None else False
+        for camera in self.cameras:camera['tracker'].reset()
+        # Clear votes/claims immediately without throwing away the displayed count.
+        if was_live:self.invalidate('CCTV frame unavailable',preserve_counts=True)
+        if invalidated:self.invalidate('CCTV outage exceeded five seconds')
+        self.health[cam['id']]={'state':'Offline','at':now,'down_since':down_since,'reason':reason,'duration_ms':duration_ms}
+
     def _poses(self):
         while not self.stop.is_set():
+            if not self.cctv_enabled:
+                self.stop.wait(.2);continue
+            if not self.pose_loaded:
+                try:
+                    with self.cctv_lock:
+                        if not self.cctv_enabled:continue
+                        self.pose_native.warm()
+                        for report in self.reports:
+                            version=report['models'].get('pose')
+                            if version is not None and version!=self.pose_native.versions.get('pose'):raise ValueError('Pose model differs from parity report')
+                        self.pose_native.accepted_versions=json.loads(json.dumps(self.pose_native.versions))
+                        self.pose_loaded=True;self.pose_issue=None
+                except Exception:
+                    self.pose_issue='Movement model unavailable; counting continues'
+                    self.stop.wait(2);continue
+            generation=self.cctv_generation
             for cam in list(self.cameras):
                 if self.stop.is_set():return
+                if not self.cctv_enabled or generation!=self.cctv_generation:break
+                reason='FRAME_UNAVAILABLE'
                 try:
                     frame=self.capture(cam['source']);now=time.time()
                     if frame.get('status')!='success':raise ValueError('Camera unavailable')
                     identity=frame.get('seq')
                     if identity==self.last_frames.get(cam['id']):
-                        if now-self.health.get(cam['id'],{}).get('at',0)>1.5:raise ValueError('Stale CCTV frame')
+                        if now-self.health.get(cam['id'],{}).get('at',0)>1.5:
+                            reason='STALE_FRAME';raise ValueError('Stale CCTV frame')
                         continue
                     self.last_frames[cam['id']]=identity
-                    result=self.native.infer({'kind':'pose','image':frame['image']},ttl=1.5)
-                    self.metrics['pose']=result['metrics'];self.health[cam['id']]={'state':'Online','at':now}
-                    votes=cam['tracker'].update(result['persons'],now)
-                    if self.runtime is not None:
-                        interacting=any(t['seen']==now for t in cam['tracker'].states.values())
-                        self.runtime.camera(cam['id'],now,True,interacting)
-                    for vote in votes:
-                        try:
-                            self.request('/esp32_trigger',dict(vote,source='CCTV',camera_id=cam['id'],camera_role=cam['role'],
-                                trigger_id=str(uuid.uuid4()),detected_at=now))
-                        except ValueError:
-                            self.log(self.run_id,'native_vote_held',code='SHELF_NOT_READY')
+                    reason='POSE_INFERENCE_FAILED'
+                    with self.cctv_lock:
+                        if not self.cctv_enabled or generation!=self.cctv_generation:break
+                        result=self.pose_native.infer({'kind':'pose','image':frame['image']},ttl=1.5)
+                        self.metrics['pose']=result['metrics'];self.health[cam['id']]={'state':'Online','at':now}
+                        votes=cam['tracker'].update(result['persons'],now)
+                        if self.runtime is not None:
+                            interacting=any(t['seen']==now for t in cam['tracker'].states.values())
+                            self.runtime.camera(cam['id'],now,True,interacting)
+                        for vote in votes:
+                            try:
+                                self.request('/esp32_trigger',dict(vote,source='CCTV',camera_id=cam['id'],camera_role=cam['role'],
+                                    trigger_id=str(uuid.uuid4()),detected_at=now))
+                            except ValueError:
+                                self.log(self.run_id,'native_vote_held',code='SHELF_NOT_READY')
                 except Exception:
-                    was_online=self.health.get(cam['id'],{}).get('state')=='Online'
-                    if self.runtime is not None:self.runtime.camera(cam['id'],time.time(),False)
-                    cam['tracker'].reset()
-                    if was_online:
-                        for camera in self.cameras:camera['tracker'].reset()
-                        self.invalidate()
-                    self.health[cam['id']]={'state':'Offline','at':time.time()}
+                    with self.cctv_lock:
+                        if self.cctv_enabled and generation==self.cctv_generation:self._frame_failed(cam,reason,time.time())
             self.stop.wait(.1)
 
     # ---- one scan / confirmation attempt ----------------------------------
@@ -499,6 +581,7 @@ class AutonomousProcessor:
             self._set_scan(sid,'Scanning',message='Scanning: keep hands clear of the rack',attempt=n)
         try:
             self.validate(shelf,trigger)
+            if trigger is None and self.cameras_ready():self.cctv_recounts.discard(sid)
             self.attempts.pop(sid,None);self.exhausted.discard(sid);self.retry_at.pop(sid,None)
             self._set_scan(sid,'Count ready',message='Count ready',attempt=0)
         except Exception as exc:
@@ -539,7 +622,7 @@ class AutonomousProcessor:
                         actions+=[(shelf,t) for t in self.pending() if t['shelf_id']==sid] if blocker is None else []
                         continue
                     # Counts need only models and the ESP32 HTTP pair; a count taken while CCTV/MQTT was down is redone once they are live.
-                    if ready and blocker is not None:continue
+                    if ready and blocker is not None and not (sid in self.cctv_recounts and self.cameras_ready()):continue
                     if status['state'] in ('Starting','Offline','Held') or ready:
                         if sid in self.exhausted or now<self.retry_at.get(sid,0):continue
                         scans.append((shelf,None))
@@ -552,5 +635,6 @@ class AutonomousProcessor:
     def close(self):
         if self.runtime is not None:self.runtime.models_ready=False;self.runtime.invalidate()
         self.stop.set();self.native.close()
+        if self.pose_native is not self.native:self.pose_native.close()
         for thread in self.threads:thread.join(timeout=10)
         self.state='Stopped'

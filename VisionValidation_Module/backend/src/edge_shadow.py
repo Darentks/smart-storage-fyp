@@ -103,7 +103,7 @@ class EdgeShadow:
         # Do not pass Supabase, MQTT, camera credentials or other application secrets.
         allowed = {'PATH','SYSTEMROOT','WINDIR','TEMP','TMP','TMPDIR','HOME','USERPROFILE','LOCALAPPDATA'}
         env = {k:v for k,v in os.environ.items() if k.upper() in allowed}
-        proc = subprocess.Popen([self.node, str(self.root/'VisionValidation_Module/edge_service/worker.cjs'), self.manifest],
+        proc = subprocess.Popen([self.node, str(self.root/'VisionValidation_Module/edge_service/worker.cjs'), self.manifest, getattr(self,'worker_kind','all')],
             cwd=self.root, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, text=True, encoding='utf-8', bufsize=1,
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

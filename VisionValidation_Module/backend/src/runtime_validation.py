@@ -22,10 +22,11 @@ def discard_runtime_attempt(shelf,token,*,coordinator,consensus_lock,pending,cap
         for identity in list(captures):
             if captures[identity].get('shelf_id')==shelf:captures.pop(identity,None)
 
-def reset_runtime_evidence(*,authority,coordinator,consensus_lock,pending,capture_lock,captures,votes,readiness,intents=None,reason='Camera unavailable'):
+def reset_runtime_evidence(*,authority,coordinator,consensus_lock,pending,capture_lock,captures,votes,readiness,intents=None,reason='Camera unavailable',preserve_counts=False,disable_actions=False):
     """Invalidate authority and all in-flight evidence as one recovery boundary."""
     with coordinator.global_lock:
-        authority.invalidate()
+        if preserve_counts:authority.interrupt_actions(disable_actions=disable_actions)
+        else:authority.invalidate()
         coordinator.leases.clear();coordinator.waiting.clear()
         with consensus_lock:
             abandoned=list(pending)
@@ -33,7 +34,10 @@ def reset_runtime_evidence(*,authority,coordinator,consensus_lock,pending,captur
         with capture_lock:captures.clear()
         metadata_error=None
         for sid in set(readiness.states) | set(authority.shelves):
-            try:readiness.set(sid,'Offline',reason+'; fresh quiet baseline required')
+            try:
+                if preserve_counts and authority.snapshot(sid)['state']=='Ready':
+                    readiness.set(sid,'Ready',reason+'; last count retained')
+                else:readiness.set(sid,'Offline',reason+'; fresh quiet baseline required')
             except OSError as exc:metadata_error=exc  # RAM state is already set; continue invalidating other shelves.
         # Disk failure must never prevent invalidating stale evidence/readiness.
         if intents is not None:

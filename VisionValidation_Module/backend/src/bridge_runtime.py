@@ -50,7 +50,7 @@ def configure_logs(directory):
 
 def event(startup_id,event_type,**fields):
     # Technical health/retry logs must not recreate the intent/event history.
-    allowed={'shelf_id','state','code','attempt','capture_number','status'}
+    allowed={'shelf_id','state','code','attempt','capture_number','status','camera_id','reason','duration_ms'}
     if event_type in {'reconciliation','edge_shadow_prediction'}:return
     def technical(value):
         return isinstance(value,str) and re.fullmatch(r'[A-Za-z0-9_. -]{1,80}',value) is not None

@@ -763,8 +763,16 @@ class _PersistentStreamReader:
         self.thread = threading.Thread(target=self._reader_loop, daemon=True, name=f"RTSPReader-{self.masked}")
         self.thread.start()
 
+    def _log_frame_failure(self,reason,duration_ms):
+        processor=globals().get('AUTONOMOUS')
+        for camera in list(processor.cameras if processor is not None else []):
+            if str(camera['source'])==str(self.source):
+                event(READINESS.run_id,'cctv_reader_failure',camera_id=camera['id'],reason=reason,duration_ms=duration_ms)
+
     def _reader_loop(self) -> None:
         cap = None
+        failure_started=None
+        opened_at=time.monotonic()
         try:
             print(f"[CameraService] Opening persistent low-latency stream: {self.masked}")
             if self.is_webcam:
@@ -774,6 +782,7 @@ class _PersistentStreamReader:
                 cap = cv2.VideoCapture(self.source, cv2.CAP_FFMPEG) if hasattr(cv2, "CAP_FFMPEG") else cv2.VideoCapture(self.source)
 
             if not cap or not cap.isOpened():
+                self._log_frame_failure('SOURCE_OPEN_FAILED',int((time.monotonic()-opened_at)*1000))
                 self.error_msg = f"Failed to open video source ({self.masked}). Check camera IP, power, and credentials."
                 self.running = False
                 self.ready_event.set()
@@ -789,6 +798,8 @@ class _PersistentStreamReader:
 
                 ret, frame = cap.read()
                 if not ret or frame is None:
+                    if failure_started is None:failure_started=time.monotonic()
+                    self._log_frame_failure('FRAME_READ_FAILED',int((time.monotonic()-failure_started)*1000))
                     fail_count += 1
                     if fail_count > 30:
                         self.error_msg = f"Stream disconnected for {self.masked}"
@@ -796,7 +807,7 @@ class _PersistentStreamReader:
                     time.sleep(0.02)
                     continue
 
-                fail_count = 0
+                fail_count = 0;failure_started=None
                 with self.lock:
                     self.latest_frame = frame
                     self.latest_seq += 1
@@ -806,6 +817,7 @@ class _PersistentStreamReader:
                 if self.is_webcam:
                     time.sleep(0.01)
         except Exception as exc:
+            self._log_frame_failure('FRAME_READER_EXCEPTION',int((time.monotonic()-(failure_started or opened_at))*1000))
             self.error_msg = f"Exception in stream reader: {str(exc)}"
         finally:
             self.running = False
@@ -1223,6 +1235,24 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:
                 verification={'status':'blocked','message':str(exc)[:300]+' — counts continue, but actions stay paused until this is fixed and installed again.'}
         self._send_json(200,{'status':'installed','output':output,'native':verification,'run_id':READINESS.run_id})
+
+    def _control_cctv(self,body):
+        """Same local/application-user access rule as scan requests; no browser evidence writer."""
+        if self.client_address[0] not in ('127.0.0.1','::1','::ffff:127.0.0.1'):
+            try:require_application_user(getattr(self,'headers',{}).get('Authorization'))
+            except BridgeAccessError as exc:
+                self._send_json(exc.status,{'error':str(exc)});return
+        if not isinstance(body,dict) or type(body.get('enabled')) is not bool:
+            self._send_json(400,{'error':'enabled must be a boolean'});return
+        if AUTONOMOUS is None:
+            self._send_json(409,{'error':'The native processor is not running'});return
+        AUTONOMOUS.set_cctv_enabled(body['enabled'])
+        if not body['enabled']:
+            with _PERSISTENT_STREAMS_LOCK:
+                for camera in AUTONOMOUS.cameras:
+                    reader=_PERSISTENT_STREAMS.pop(str(camera['source']).strip(),None)
+                    if reader is not None:reader.running=False
+        self._send_json(200,{'cctv_enabled':AUTONOMOUS.cctv_enabled,'status':'CCTV started; recount when cameras are live' if body['enabled'] else 'CCTV stopped; last counts retained'})
 
     def _request_scan(self, body):
         """Retry scan: ask the shared native scanner to recount. The browser never captures or writes inventory."""
@@ -1736,7 +1766,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
+        if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/esp32_ota_upload','/esp32_ota_flash','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request','/cctv_control'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns processing; normal dashboard operations are monitoring-only'})
             return
         body = self._read_json_body()
@@ -1747,6 +1777,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         if path == '/scan_request':
             self._request_scan(body)
+            return
+
+        if path == '/cctv_control':
+            self._control_cctv(body)
             return
 
         if path == "/cctv_replay":
@@ -2849,12 +2883,13 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 def pending():
                     with CCTV_CONSENSUS_LOCK:
                         return [dict(t) for t in PENDING_CCTV_TRIGGERS if not t.get('claimed') and 0<=time.time()-t.get('timestamp',0)<60][-20:]
-                def invalidate(reason='Camera unavailable'):
+                def invalidate(reason='Camera unavailable',preserve_counts=False,disable_actions=False):
                     try:
                         reset_runtime_evidence(authority=RUNTIME_INVENTORY,coordinator=RECHECKS,
                             consensus_lock=CCTV_CONSENSUS_LOCK,pending=PENDING_CCTV_TRIGGERS,
                             capture_lock=DUAL_CAM_CAPTURE_LOCK,captures=DUAL_CAM_CAPTURES,votes=CCTV_ALIGN_STATE,
-                            readiness=READINESS,intents=LOCAL_INTENTS,reason=reason)
+                            readiness=READINESS,intents=LOCAL_INTENTS,reason=reason,
+                            preserve_counts=preserve_counts,disable_actions=disable_actions)
                     except OSError:event(READINESS.run_id,'local_metadata_failure',code='VALIDATION_REJECTED')
                     esp32_ref_manager.baseline_freeze_until.clear()
                     if AUTONOMOUS is not None:
@@ -2864,7 +2899,8 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 mqtt_bridge.on_connection_lost=lambda:invalidate('MQTT unavailable')
                 AUTONOMOUS=AutonomousProcessor(READINESS.run_id,
                     NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),
-                    cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event)
+                    cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event,
+                    pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'))
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
                 AUTONOMOUS.acceptance='ACCEPTED' if accepted else 'NOT_FIELD_ACCEPTED'
                 if setup_issue:AUTONOMOUS.calibration_issue=setup_issue
