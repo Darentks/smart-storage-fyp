@@ -6,6 +6,9 @@ import subprocess
 import sys
 import time
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'VisionValidation_Module/backend'))
+from src.bridge_runtime import write_process_record, remove_process_record  # noqa: E402
+RECORD=ROOT/'.runtime/bridge-supervisor.json'
 
 def main():
     failures=0
@@ -27,4 +30,8 @@ def main():
 if __name__=='__main__':
     signal.signal(signal.SIGTERM,lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     if hasattr(signal,'SIGBREAK'):signal.signal(signal.SIGBREAK,lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
-    raise SystemExit(main())
+    # The launcher stops a recorded supervisor first so it cannot respawn the bridge during a restart.
+    write_process_record(RECORD,'supervisor')
+    try:code=main()
+    finally:remove_process_record(RECORD)
+    raise SystemExit(code)

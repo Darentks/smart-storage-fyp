@@ -74,7 +74,7 @@ from src.config_loader import (  # type: ignore
     SupabaseRestFallback,
 )
 from src.periodic_recheck import RecheckCoordinator, TrainingUnavailable
-from src.bridge_runtime import InstanceLock, configure_logs, event
+from src.bridge_runtime import InstanceLock, configure_logs, event, write_process_record, remove_process_record, model_update_status, read_model_sources
 from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
 from src.preview_panel import diagnostic_preview
@@ -1427,6 +1427,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             status = AUTONOMOUS.snapshot() if AUTONOMOUS else EDGE_SHADOW.snapshot() if EDGE_SHADOW else {
                 'mode':'browser','authoritative_processor':'none','service_cutover_available':False,
                 'state':'Disabled','startup_id':READINESS.run_id,'authorizes_write':False}
+            # Latest TM model update and whether these loaded models match it (shown by the dashboard).
+            project=os.path.join(os.path.dirname(__file__),'..')
+            status=dict(status,model_update=model_update_status(os.path.join(project,'.runtime','model-update-result.json'),status.get('model_versions')),
+                model_sources=read_model_sources(os.path.join(project,'deploy','tm-model-sources.json')))
             self._send_json(200, dict(status, consensus=consensus_view()) if AUTONOMOUS else status)
             return
         if path == "/validation_diagnostics":
@@ -2696,6 +2700,9 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
         RECHECKS.leases.clear();RECHECKS.waiting.clear();RECHECKS.clear_training()
         configure_logs(runtime)
         event(READINESS.run_id,'startup')
+        # Lets the Windows launcher find and stop exactly this process however it was started.
+        process_record=os.path.join(runtime,'bridge-process.json')
+        write_process_record(process_record,'bridge',startup_id=READINESS.run_id,port=port)
         storage_lock=None
         try:
             data_dir=Path(os.getenv('SMART_STORAGE_DATA_DIR') or runtime).resolve()
@@ -2810,6 +2817,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 EDGE_SHADOW.close()
             if storage_lock:
                 storage_lock.__exit__(None,None,None)
+            remove_process_record(process_record)
             event(READINESS.run_id,'shutdown')
 
 

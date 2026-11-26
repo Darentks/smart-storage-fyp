@@ -121,7 +121,7 @@ class Inference {
     if(config.version!==1) throw Error('INVALID_MODEL_MANIFEST');
     this.models={};this.versions={};
     await tf.setBackend('cpu');await tf.ready();
-    for(const role of kind==='pose'?[]:['Front','Back']) {
+    for(const role of kind==='pose'?[]:['Front','Back']) try {
       const spec=config[role], metadata=JSON.parse(verifiedFile(root,spec.metadata)), json=JSON.parse(verifiedFile(root,spec.model));
       checkLabels(role,metadata.labels);
       if(metadata.imageSize!==224) throw Error('MODEL_IMAGE_SIZE_MISMATCH');
@@ -137,6 +137,10 @@ class Inference {
         model.outputs.length!==1 || model.outputs[0].shape.at(-1)!==metadata.labels.length) throw Error('MODEL_SHAPE_MISMATCH');
       this.models[role]={model,labels:metadata.labels};
       this.versions[role]={weights_sha256:await weightsHash(model),labels:metadata.labels,asset_sha256:spec.model.sha256};
+    } catch(error) {
+      // Same error and message; the role only lets the model updater say whether Front or Back failed.
+      if(error && typeof error==='object' && !error.role)error.role=role;
+      throw error;
     }
     if(kind!=='pair') {
       const poseBytes=verifiedFile(root,config.pose);

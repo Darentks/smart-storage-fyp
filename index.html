@@ -1012,14 +1012,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <label for="bridgeUrlInput">Local Bridge URL:</label>
         <input type="text" id="bridgeUrlInput" value="http://localhost:8008" placeholder="http://localhost:8008" />
         <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
-        <a class="btn-action" href="smartstorage://start">Start local bridge</a>
-        <a class="btn-action" href="smartstorage://restart">Restart local bridge</a>
-        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Back up and download both exports configured in the local staging script, then restart the bridge">Get latest TM models</a>
+        <a class="btn-action" href="smartstorage://restart" title="Starts the local bridge if it is stopped, or restarts it after confirmation. Restarting clears RAM counts.">Restart local bridge</a>
+        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Downloads and checks the Front and Back models from deploy/tm-model-sources.json while the bridge keeps running. The bridge restarts (clearing counts) only if a model changed.">Get latest TM models</a>
         <span id="tmModelUpdateStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted)">Model updates run on this PC through the Windows launcher.</span>
         <span id="tmLoadedModelVersions" style="font-size:12px;color:var(--text-muted)">Loaded TM versions: waiting for bridge.</span>
         <button type="button" class="btn-action" onclick="setNativeCctv(true)">Start CCTV</button>
         <button type="button" class="btn-action" onclick="setNativeCctv(false)">Stop CCTV</button>
-        <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart clears counts and scans again.</span>
+        <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart also starts a stopped bridge; restarting clears counts and scans again.</span>
       </div>
       <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
         <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front model URL (6 classes):</label>
@@ -2176,15 +2175,50 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         }
       }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
     }
+    // Seconds (bridge clock = this PC) when Get latest TM models was clicked; only newer results are shown.
+    let tmUpdateRequestedAt=0;
+    function setTmUpdateStatus(text,isError=false){
+      const status=document.getElementById('tmModelUpdateStatus');
+      if(!status)return;
+      status.textContent=text;
+      if(typeof markStatusError==='function')markStatusError(status,isError);
+    }
     function beginLocalTmUpdate(){
-      document.getElementById('tmModelUpdateStatus').textContent='Windows update requested. Confirm the launcher; it shows backup/download progress and the final result. The bridge reconnects afterward.';
+      tmUpdateRequestedAt=Date.now()/1000;
+      setTmUpdateStatus('Launcher opened — waiting for result. Confirm the Windows prompt; the verified result appears here.');
+    }
+    function renderModelUpdateResult(update){
+      if(!tmUpdateRequestedAt)return;
+      if(!update || !(Number(update.at)>=tmUpdateRequestedAt-5)){
+        if(Date.now()/1000-tmUpdateRequestedAt>600)setTmUpdateStatus('No result from the launcher yet. If the Windows prompt was cancelled, nothing changed.');
+        return;
+      }
+      const roles=['Front','Back'].map(role=>{
+        const row=update.roles?.[role] || {};
+        return row.changed?`${role} ${row.old || 'none'} → ${row.new || 'unknown'}`:`${role} ${row.new || 'unknown'} unchanged`;
+      }).join(' · ');
+      if(update.outcome==='failed'){
+        const failure=update.failure || {};
+        const stage={settings:'settings check',download:'download',check:'model check',install:'install',launcher:'launcher'}[failure.stage] || 'update';
+        setTmUpdateStatus(`Model update failed (${failure.role?failure.role+' ':''}${stage}): ${failure.message || 'unknown error'}. Current models kept.`,true);
+      }
+      else if(update.outcome==='unchanged')setTmUpdateStatus(`Already up to date: ${roles}. Bridge not restarted; counts unchanged.`);
+      else if(update.outcome==='prepared')setTmUpdateStatus('New models downloaded and checked; installing them and restarting the bridge…');
+      else if(update.outcome==='installed'){
+        if(update.loaded==='verified')setTmUpdateStatus(`Models updated and verified: ${roles}.`);
+        else if(update.loaded==='mismatch')setTmUpdateStatus(`Models installed, but the bridge loaded different versions (${roles}). Restart the bridge or run the update again.`,true);
+        else setTmUpdateStatus(`Models installed (${roles}); waiting for the bridge to load them…`);
+      }
     }
     function renderLoadedTmVersions(data){
       const label=document.getElementById('tmLoadedModelVersions');
       if(!label)return;
       if(!data){label.textContent='Bridge disconnected; loaded TM versions are not confirmed.';return;}
       const version=role=>{const hash=data.model_versions?.[role]?.weights_sha256;return typeof hash==='string' && /^[a-f0-9]{64}$/i.test(hash)?hash.slice(0,12):'not loaded';};
-      label.textContent=`Loaded TM versions: Front ${version('Front')} · Back ${version('Back')}`;
+      const sources=data.model_sources;
+      const links=!sources?'':sources.error?` · Update links (${sources.file}): ${sources.error}`:` · Update links (${sources.file}): Front ${sources.Front} · Back ${sources.Back}`;
+      label.textContent=`Loaded TM versions: Front ${version('Front')} · Back ${version('Back')}${links}`;
+      renderModelUpdateResult(data.model_update);
     }
     function nativeProcessorLabel(data) {
       if(data.setup_issue)return `Native processor · setup needed: ${data.setup_issue}`;
