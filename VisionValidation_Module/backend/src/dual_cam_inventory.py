@@ -53,6 +53,10 @@ MAX_CAPTURE_DURATION_MS = 2000
 HTTP_CAPTURE_BUDGET_SECONDS = 1.8
 HTTP_FIRST_ATTEMPT_SECONDS = 0.8
 HTTP_RETRY_DELAY_SECONDS = 0.1
+# Read-only diagnostic previews and training captures only (never inventory evidence): slow cameras get
+# more time instead of failing. Inventory captures keep HTTP_CAPTURE_BUDGET_SECONDS above.
+DIAGNOSTIC_CAPTURE_BUDGET_SECONDS = 5.0
+DIAGNOSTIC_FIRST_ATTEMPT_SECONDS = 2.5
 
 
 class CaptureTiming(NamedTuple):

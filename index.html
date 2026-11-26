@@ -1193,10 +1193,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </button>
               <button type="button" id="tmPreprocessingCompareButton" class="btn-action" disabled title="Run Diagnostic Preview first" onclick="compareTMPreprocessing()">Compare TM Preprocessing (Read-Only)</button>
               <pre id="tmPreprocessingComparison" style="display:none;white-space:pre-wrap;font-size:12px;" aria-live="polite"></pre>
-              <label>Training batch pairs: <select id="tmBatchCount"><option>8</option><option>16</option><option>24</option><option>32</option></select></label>
-              <label>Verified back label: <select id="tmBatchBack"><option value="">Choose physical scenario</option><option>Back_11X</option><option>Back_X01</option><option>Back_100</option><option>Back_000</option></select></label>
-              <label>Verified front label: <select id="tmBatchFront"><option value="">Choose physical scenario</option><option>Front_111</option><option>Front_110</option><option>Front_100</option><option>Front_011</option><option>Front_010</option><option>Front_000</option></select></label>
-              <small>8 pairs = 16 training pictures. Keep the arrangement unchanged. Raw lighting, boost OFF, full-frame 224 x 224; no inventory write.</small>
+              <label>Training batch pairs: <select id="tmBatchCount" onchange="updateTrainingBatchPlan()"><option>8</option><option>16</option><option>24</option><option>32</option></select></label>
+              <label>Verified back label: <select id="tmBatchBack" onchange="updateTrainingBatchPlan()"><option value="">Choose physical scenario</option><option>Back_11X</option><option>Back_X01</option><option>Back_100</option><option>Back_000</option></select></label>
+              <label>Verified front label: <select id="tmBatchFront" onchange="updateTrainingBatchPlan()"><option value="">Choose physical scenario</option><option>Front_111</option><option>Front_110</option><option>Front_100</option><option>Front_011</option><option>Front_010</option><option>Front_000</option></select></label>
+              <small id="tmBatchPlan">8 pairs = 16 training pictures, about 26 seconds. Keep the arrangement unchanged. Raw lighting, boost OFF, full-frame 224 x 224; no inventory write.</small>
+              <div id="tmBatchLabelCheck" role="status" aria-live="polite"></div>
               <button type="button" id="tmBatchButton" class="btn-action" disabled title="Checking bridge" onclick="captureTMTrainingBatch()">Capture Training Batch (Back + Front ZIPs)</button>
               <button type="button" id="tmBatchCancel" class="btn-action" disabled onclick="cancelTMTrainingBatch()">Cancel Batch</button>
               <div id="tmBatchAvailability" role="status" aria-live="polite">Waiting for bridge status before training capture.</div>
@@ -2162,7 +2163,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const label=document.getElementById('edgeProcessorStatus');
       try {
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-        if(!response.ok)throw Error('Unavailable');const data=await response.json();panelState(data);renderLiveActivity(data);renderLoadedTmVersions(data);
+        if(!response.ok)throw Error('Unavailable');const data=await response.json();bridgeMissedPolls=0;panelState(data);renderLiveActivity(data);renderLoadedTmVersions(data);
         if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?nativeProcessorLabel(data):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
         if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
         if(bridgeStatus.authoritative_processor==='native' && !(typeof lastManualPreviewAt!=='undefined' && Date.now()-lastManualPreviewAt<60000)) {
@@ -2173,7 +2174,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           if(payload.observation)renderPanelObservation(payload.observation,true);
           else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='Waiting for fresh native observation';}
         }
-      }catch(_){panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+      }catch(_){bridgeMissedPolls++;panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
     }
     // Seconds (bridge clock = this PC) when Get latest TM models was clicked; only newer results are shown.
     let tmUpdateRequestedAt=0;
@@ -2840,6 +2841,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     let bridgeStatus={online:false,authoritative_processor:'none',state:'Disconnected'};
+    let bridgeMissedPolls=0;  // consecutive failed /edge_status polls; a training batch tolerates one
     let diagnosticRunning=false,previewGeneration=0;
     let tmBatchRunning=false,tmBatchCancelled=false,tmBatchController=null,tmBatchUrls=[];
     let tmComparisonRunning=false,tmComparisonFrames=null;
@@ -2896,7 +2898,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     function panelState(data,online=true) {
       const processor=data.state==='Disabled'?'none':data.authoritative_processor==='service'?'native':data.authoritative_processor;
-      if(bridgeStatus.online!==online || bridgeStatus.authoritative_processor!==processor || bridgeStatus.startup_id!==data.startup_id){previewGeneration++;trainingPreviewCheck=null;clearPanelFrames();}
+      if(bridgeStatus.online!==online || bridgeStatus.authoritative_processor!==processor || bridgeStatus.startup_id!==data.startup_id){previewGeneration++;if(online && bridgeStatus.online && bridgeStatus.authoritative_processor!==processor)trainingPreviewCheck=null;clearPanelFrames();}
       bridgeStatus={...data,online,authoritative_processor:processor};
       const native=online && processor==='native';
       const button=document.getElementById('diagnosticPreviewButton');
@@ -2995,9 +2997,34 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function trainingBatchFeedback(message,completed,total){
       const status=document.getElementById('tmBatchStatus');
       status.textContent=message;
-      if(typeof markStatusError==='function')markStatusError(status,/^(Batch failed|Batch unavailable|Please run Diagnostic Preview|Select both)/.test(message));
+      if(typeof markStatusError==='function')markStatusError(status,/^(Batch failed|Batch unavailable|Batch not started: the|Please run Diagnostic Preview|Select both)/.test(message));
       const progress=document.getElementById('tmBatchProgress');
       progress.hidden=!total;progress.max=total || 1;progress.value=completed || 0;
+    }
+    // Slot states per label: the same tables as the native decoder (edge_service/inference.cjs pair(),
+    // backend/src/dual_cam_inventory.py). Front = (F1, M1, M2); Back = (B1, B2, observed M2), null = hidden.
+    const TRAINING_FRONT_STATES={Front_000:[0,0,0],Front_010:[0,1,0],Front_011:[0,1,1],Front_100:[1,0,0],Front_110:[1,1,0],Front_111:[1,1,1]};
+    const TRAINING_BACK_STATES={Back_000:[0,0,0],Back_100:[1,0,0],Back_X01:[null,0,1],Back_11X:[1,1,null]};
+    const TRAINING_PAIR_ATTEMPTS=3;          // a failed pair is tried at most this many times
+    const TRAINING_SECONDS_PER_CAPTURE=1.5;  // typical paired capture; the 2-second pause between pairs is kept
+    function trainingLabelConflict(backLabel,frontLabel){
+      const back=TRAINING_BACK_STATES[backLabel],front=TRAINING_FRONT_STATES[frontLabel];
+      if(!back || !front || back[2]===null || back[2]===front[2])return null;
+      const state=value=>value?'occupied':'empty';
+      return `${backLabel} and ${frontLabel} disagree on the shared M2 slot: the Back label says M2 is ${state(back[2])}, the Front label says it is ${state(front[2])}. One real arrangement cannot produce both pictures.`;
+    }
+    function trainingDuration(pairs){
+      const seconds=Math.round(pairs*TRAINING_SECONDS_PER_CAPTURE+Math.max(0,pairs-1)*2);
+      return seconds<90?`about ${seconds} seconds`:`about ${Math.round(seconds/60)} minutes`;
+    }
+    function updateTrainingBatchPlan(){
+      const count=Number(document.getElementById('tmBatchCount').value) || 8;
+      const backLabel=document.getElementById('tmBatchBack').value,frontLabel=document.getElementById('tmBatchFront').value;
+      document.getElementById('tmBatchPlan').textContent=`${count} pairs = ${count*2} training pictures, ${trainingDuration(count)} (longer if the shelf is busy). Keep the arrangement unchanged. Raw lighting, boost OFF, full-frame 224 x 224; no inventory write.`;
+      const labelCheck=document.getElementById('tmBatchLabelCheck'),conflict=trainingLabelConflict(backLabel,frontLabel);
+      labelCheck.textContent=conflict?conflict+' Check the boxes and both labels.':
+        backLabel==='Back_11X' && frontLabel?'Back_11X hides M2, so it cannot be cross-checked against the Front label; check M2 by eye.':'';
+      if(typeof markStatusError==='function')markStatusError(labelCheck,!!conflict);
     }
     function cancelTMTrainingBatch(){
       if(!tmBatchRunning)return;
@@ -3009,12 +3036,27 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if(diagnosticRunning || tmComparisonRunning || !bridgeStatus.online){trainingBatchFeedback('Batch unavailable: connect the bridge and wait for the current diagnostic to finish.');return;}
       if(trainingPreviewMissing()){trainingBatchFeedback(TRAINING_PREVIEW_REQUIRED);updateTrainingBatchAvailability();return;}
       const count=Number(document.getElementById('tmBatchCount').value),backLabel=document.getElementById('tmBatchBack').value,frontLabel=document.getElementById('tmBatchFront').value;
-      if(![8,16,24,32].includes(count) || !['Back_11X','Back_X01','Back_100','Back_000'].includes(backLabel) || !['Front_111','Front_110','Front_100','Front_011','Front_010','Front_000'].includes(frontLabel)){trainingBatchFeedback('Select both manually verified physical scenario labels first.');return;}
-      const shelf=refShelfSelect.value,ip=refEspIpInput.value.trim(),ip2=refEspIp2Input.value.trim(),owned=previewGeneration;
-      const check=()=>{if(tmBatchCancelled)throw Error('Cancelled; incomplete batch discarded.');if(owned!==previewGeneration || !bridgeStatus.online || shelf!==refShelfSelect.value || ip!==refEspIpInput.value.trim() || ip2!==refEspIp2Input.value.trim())throw Error('Camera, shelf or bridge changed; incomplete batch discarded.');};
-      tmBatchRunning=diagnosticRunning=true;tmBatchCancelled=false;panelState(bridgeStatus);
+      if(![8,16,24,32].includes(count) || !TRAINING_BACK_STATES[backLabel] || !TRAINING_FRONT_STATES[frontLabel]){trainingBatchFeedback('Select both manually verified physical scenario labels first.');return;}
+      const ask=message=>typeof confirm==='function'?confirm(message):false;
+      // Labels that contradict each other would teach the models wrong examples: blocked unless confirmed.
+      const conflict=trainingLabelConflict(backLabel,frontLabel);
+      if(conflict && !ask(conflict+'\n\nCapture with these labels anyway?')){trainingBatchFeedback('Batch not started: the Back and Front labels disagree on M2. Check the boxes and both labels.');return;}
+      const shelf=refShelfSelect.value,ip=refEspIpInput.value.trim(),ip2=refEspIp2Input.value.trim(),startId=bridgeStatus.startup_id;
+      if(!ask(`Capture ${count} training pairs on ${shelf} (${trainingDuration(count)})?\n\nWhile capturing, ${shelf} pauses its automatic checks and its current count is cleared; it is counted fresh after the batch. Other shelves keep counting.\n\nKeep the boxes unchanged until it finishes.`)){
+        trainingBatchFeedback('Batch not started.');return;
+      }
+      // Stops only for a real change: cancel, a different shelf or camera address, a restarted bridge, or a bridge
+      // that missed two status checks in a row (one missed check is tolerated).
+      const check=()=>{
+        if(tmBatchCancelled)throw Error('Cancelled; incomplete batch discarded.');
+        if(shelf!==refShelfSelect.value || ip!==refEspIpInput.value.trim() || ip2!==refEspIp2Input.value.trim())throw Error('The shelf or a camera address changed during the batch.');
+        if(bridgeStatus.online && bridgeStatus.startup_id!==startId)throw Error('The bridge restarted during the batch.');
+        if(!bridgeStatus.online && bridgeMissedPolls>=2)throw Error('The bridge stopped answering during the batch.');
+      };
+      const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+      tmBatchRunning=diagnosticRunning=true;tmBatchCancelled=false;panelState(bridgeStatus,bridgeStatus.online);
       document.getElementById('tmBatchCancel').disabled=false;
-      trainingBatchFeedback(`Preparing ${count} picture pairs (${count*2} images). Keep the boxes unchanged.`,0,count);
+      trainingBatchFeedback(`Preparing ${count} picture pairs (${count*2} images, ${trainingDuration(count)}). Keep the boxes unchanged.`,0,count);
       const host=document.getElementById('tmBatchDownload');host.replaceChildren();
       tmBatchUrls.forEach(url=>URL.revokeObjectURL(url));tmBatchUrls=[];
       const session=new Date().toISOString().replace(/[:.]/g,'-'),files={Back:[],Front:[]};
@@ -3032,6 +3074,18 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           return result;
         }finally{clearTimeout(timer);}
       };
+      // The operator clicks the download links (no automatic downloads that a browser may block).
+      const offerZips=async(pairs,partial)=>{
+        const archives=await Promise.all(['Back','Front'].map(role=>buildTMTrainingZip(files[role].slice(0,pairs))));
+        try{for(const zip of archives)tmBatchUrls.push(URL.createObjectURL(zip));}
+        catch(error){tmBatchUrls.forEach(url=>URL.revokeObjectURL(url));tmBatchUrls=[];throw error;}
+        for(const [i,role,label] of [[0,'Back',backLabel],[1,'Front',frontLabel]]){
+          const link=document.createElement('a');link.href=tmBatchUrls[i];link.className='btn-action';link.style.display='inline-block';link.style.margin='4px 8px 4px 0';
+          link.download=partial?`TM_${role}_${label}_${shelf}_${session}_PARTIAL_${pairs}of${count}.zip`:`TM_${role}_${label}_${shelf}_${session}.zip`;
+          link.textContent=partial?`Download PARTIAL ${role} ZIP (${pairs} of ${count} pairs, ${label})`:`Download ${role} ZIP (${pairs} training images, ${label})`;
+          host.appendChild(link);
+        }
+      };
       try{
         for(let wait=0;;wait++){
           check();
@@ -3040,51 +3094,66 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           if(reservation.state==='ready')break;
           if(wait>=60)throw Error('The check running on this shelf has not finished. Cancel or retry after it completes.');
           trainingBatchFeedback(`Waiting for the check running on this shelf to finish (${wait+1}/60)...`,0,count);
-          await new Promise(resolve=>setTimeout(resolve,2000));
+          await pause(2000);
         }
         check();trainingBatchFeedback('Shelf reserved. Its automatic checks are paused (other shelves keep counting); capturing training pictures.',0,count);
         for(let i=1;i<=count;i++){
           check();trainingBatchFeedback(`Capturing pair ${i}/${count}: waiting for Back and Front cameras...`,i-1,count);
-          let row;
-          for(let busyRetries=0;;busyRetries++){
+          let images=null,failures=0,busyRetries=0;
+          while(!images){
             check();tmBatchController=new AbortController();
             const timer=setTimeout(()=>tmBatchController?.abort(),15000);
-            let response;
+            let response=null,row=null,problem='';
             try{
               const query=new URLSearchParams({run_mode:'diagnostic',purpose:'training',shelf_id:shelf,ip,ip2});
               response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',headers:{'X-Training-Session':trainingToken},signal:tmBatchController.signal});
               row=await response.json();
+            }catch(error){
+              if(tmBatchCancelled)throw error;
+              problem=error.name==='AbortError'?'camera capture timed out after 15 seconds':response?'the bridge sent an unreadable reply':'the bridge did not answer';
             }finally{clearTimeout(timer);tmBatchController=null;}
             check();
-            if(row.code==='TRAINING_SESSION_UNAVAILABLE')throw Error('Training reservation expired or unavailable. Retry the batch.');
-            if(response.status===409){
-              if(busyRetries>=30)throw Error('Automatic checks are still using the cameras. Retry the batch after they finish.');
-              trainingBatchFeedback(`Waiting for automatic camera checks; retrying pair ${i}/${count} (${busyRetries+1}/30)...`,i-1,count);
-              await new Promise(resolve=>setTimeout(resolve,2000));continue;
+            if(row){
+              if(row.code==='TRAINING_SESSION_UNAVAILABLE')throw Error('Training reservation expired or unavailable. Retry the batch.');
+              if(response.status===409){
+                if(++busyRetries>30)throw Error('Automatic checks are still using the cameras. Retry the batch after they finish.');
+                trainingBatchFeedback(`Waiting for automatic camera checks; retrying pair ${i}/${count} (${busyRetries}/30)...`,i-1,count);
+                await pause(2000);continue;
+              }
+              if(response.ok){
+                if(row.purpose!=='training' || row.authorizes_write!==false)throw Error('Restart the updated local bridge to enable read-only training capture.');
+                try{images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);break;}
+                catch(error){problem=error.message || 'a picture could not be decoded';}
+              }else problem=row.error || `capture failed (HTTP ${response.status})`;
             }
-            if(!response.ok)throw Error(row.error || 'Capture failed');
-            if(row.purpose!=='training' || row.authorizes_write!==false)throw Error('Restart the updated local bridge to enable read-only training capture.');
-            break;
+            if(++failures>=TRAINING_PAIR_ATTEMPTS)throw Error(`pair ${i} failed ${failures} times (last: ${problem})`);
+            trainingBatchFeedback(`Pair ${i}/${count} failed (${problem}); retrying (attempt ${failures+1} of ${TRAINING_PAIR_ATTEMPTS})...`,i-1,count);
+            await pause(2000);
           }
           check();
-          const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
-          for(const [role,image,label] of [['Back',images[0],backLabel],['Front',images[1],frontLabel]]){
-            const name=`${label}_${shelf}_${session}_${String(i).padStart(2,'0')}.png`;
-            files[role].push({name,blob:await tmCanvasPNG(preprocessForTM(image,'off'))});
-          }
-          trainingBatchFeedback(`Captured ${i}/${count} pairs (${i*2} images).${i<count?' Waiting for the next capture...':''}`,i,count);
-          if(i<count)await new Promise(resolve=>setTimeout(resolve,2000));
+          const pngs=[];
+          for(const [image,label] of [[images[0],backLabel],[images[1],frontLabel]])pngs.push({name:`${label}_${shelf}_${session}_${String(i).padStart(2,'0')}.png`,blob:await tmCanvasPNG(preprocessForTM(image,'off'))});
+          files.Back.push(pngs[0]);files.Front.push(pngs[1]);  // a pair is kept only when both pictures are ready
+          trainingBatchFeedback(`Captured ${i}/${count} pairs (${i*2} images).${i<count?` ${trainingDuration(count-i)} left.`:''}`,i,count);
+          if(i<count)await pause(2000);
         }
         check();trainingBatchFeedback('Preparing Back and Front ZIP downloads...',count,count);
-        const archives=await Promise.all(['Back','Front'].map(role=>buildTMTrainingZip(files[role])));check();
-        try{for(const zip of archives)tmBatchUrls.push(URL.createObjectURL(zip));}
-        catch(error){tmBatchUrls.forEach(url=>URL.revokeObjectURL(url));tmBatchUrls=[];throw error;}
-        for(const [i,role,label] of [[0,'Back',backLabel],[1,'Front',frontLabel]]){
-          const link=document.createElement('a');link.href=tmBatchUrls[i];link.download=`TM_${role}_${label}_${shelf}_${session}.zip`;link.textContent=`Download ${role} ZIP (${count} training images for ${label})`;link.style.display='block';host.appendChild(link);link.click();
-        }
-        trainingBatchFeedback(`Ready: Back ZIP and Front ZIP, ${count} training PNGs each. Browser downloads requested; this page cannot confirm files were saved. If blocked, use the links below. Extract each ZIP and upload to the named TM class. No inventory write.`,count,count);
+        await offerZips(count,false);check();
+        trainingBatchFeedback(`Ready: Back ZIP and Front ZIP, ${count} training PNGs each. Click both links below to save them. Extract each ZIP and upload it to the named TM class. No inventory write.`,count,count);
         console.info('[Diagnostic] Skipping inventory write');
-      }catch(error){trainingBatchFeedback(tmBatchCancelled?'Batch cancelled; incomplete batch discarded.':error.name==='AbortError'?'Batch failed: camera capture timed out after 15 seconds. Check both ESP32 cameras and retry.':'Batch failed: '+error.message);}
+      }catch(error){
+        if(tmBatchCancelled)trainingBatchFeedback('Batch cancelled; incomplete batch discarded.');
+        else{
+          const done=Math.min(files.Back.length,files.Front.length);
+          let partial='';
+          if(done>0){
+            try{await offerZips(done,true);partial=` ${done} of ${count} pairs were captured; the PARTIAL ZIPs below contain only those pairs.`;}
+            catch(_){partial=' The completed pairs could not be packaged.';}
+          }
+          const reason=String(error.message || 'unknown error').replace(/\.?$/,'.');
+          trainingBatchFeedback('Batch failed: '+reason+partial,done,count);
+        }
+      }
       finally{
         if(trainingToken){
           try{await sessionRequest('end');}

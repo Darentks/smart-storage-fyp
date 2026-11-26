@@ -376,6 +376,8 @@ class ESP32ReferenceManager:
         flash: Optional[int] = None,
         duty: Optional[int] = None,
         boost_mode: Optional[str] = None,
+        budget: Optional[float] = None,
+        first_attempt: Optional[float] = None,
     ) -> Tuple[Any, str, Optional[str], Optional[str]]:
         """
         Fetches Back Cam (esp32_ip1) and Front Cam (esp32_ip2) with &flash=0,
@@ -383,7 +385,15 @@ class ESP32ReferenceManager:
         Returns (combined_bgr, combined_data_url, url1, url2).
         Stitches the two images side-by-side horizontally for logging & comparison.
         """
-        deadline = time.monotonic() + min(timeout, HTTP_CAPTURE_BUDGET_SECONDS)
+        # budget: explicit longer limit for read-only diagnostic/training captures only (at most 10 s).
+        # Without it, inventory captures keep the HTTP_CAPTURE_BUDGET_SECONDS contract.
+        if budget is None:
+            deadline = time.monotonic() + min(timeout, HTTP_CAPTURE_BUDGET_SECONDS)
+            first_limit = HTTP_FIRST_ATTEMPT_SECONDS
+        else:
+            budget = max(0.1, min(float(budget), 10.0))
+            deadline = time.monotonic() + budget
+            first_limit = min(budget, float(first_attempt)) if first_attempt else budget / 2
 
         def _fetch_single_with_retry(ip: str) -> Tuple[Optional[Any], Optional[str]]:
             clean = ip.replace("http://", "").replace("/", "").strip()
@@ -395,7 +405,7 @@ class ESP32ReferenceManager:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
-                req_timeout = min(remaining, HTTP_FIRST_ATTEMPT_SECONDS) if attempt == 0 else remaining
+                req_timeout = min(remaining, first_limit) if attempt == 0 else remaining
                 try:
                     req = urllib.request.Request(
                         f_url,

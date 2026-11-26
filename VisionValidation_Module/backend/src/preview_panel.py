@@ -5,6 +5,7 @@ import os
 import threading
 import time
 from .shelves import SHELF_IDS, SHELF_SET
+from .dual_cam_inventory import DIAGNOSTIC_CAPTURE_BUDGET_SECONDS, DIAGNOSTIC_FIRST_ATTEMPT_SECONDS
 
 # One bright capture setting shared by the native scanner and the quick diagnostic preview: ESP32 flash on,
 # LED duty 140, raw image (no brightness boost). This is the dashboard's original first capture round and the
@@ -60,7 +61,9 @@ def diagnostic_preview(query,manager,coordinator,native,training_token=None):
                     # cameras, so their scans must not wait behind this capture.
                     coordinator.global_lock.release();locked=False
             elif coordinator.busy(shelf):return 409,{'error':'This shelf is being scanned right now; try again in a few seconds'}
-            _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=LIVE_CAPTURE_DUTY,boost_mode=LIVE_CAPTURE_BOOST)
+            # Training captures get the longer read-only budget (slow cameras retry instead of failing).
+            extra=dict(budget=DIAGNOSTIC_CAPTURE_BUDGET_SECONDS,first_attempt=DIAGNOSTIC_FIRST_ATTEMPT_SECONDS) if purpose=='training' else {}
+            _,combined,back,front=manager.fetch_dual_esp32_frame(esp32_ip1=ips[0],esp32_ip2=ips[1],mode='live',flash=1,duty=LIVE_CAPTURE_DUTY,boost_mode=LIVE_CAPTURE_BOOST,**extra)
         finally:
             if locked:coordinator.global_lock.release()
         if not back or not front:return 502,{'error':'Both camera frames required'}
