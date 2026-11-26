@@ -73,7 +73,7 @@ from src.config_loader import (  # type: ignore
     list_comparison_logs,
     SupabaseRestFallback,
 )
-from src.periodic_recheck import RecheckCoordinator
+from src.periodic_recheck import RecheckCoordinator, TrainingUnavailable
 from src.bridge_runtime import InstanceLock, configure_logs, event
 from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
@@ -1377,7 +1377,8 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                     except OSError:event(READINESS.run_id,'local_metadata_failure',code='VALIDATION_REJECTED')
                     AUTONOMOUS.reset_scan_budget(sid)
             self._send_json(200,result)
-        except (ValueError,TypeError):self._send_json(409,{'error':'Training reservation unavailable, expired or camera assignment changed; retry the batch'})
+        except TrainingUnavailable as exc:self._send_json(409,{'code':'TRAINING_RESERVED','error':str(exc)})
+        except (ValueError,TypeError):self._send_json(409,{'error':'Select a shelf and two different private camera addresses, then retry the batch'})
 
     def _runtime_validate(self, body):
         status_code, payload = validate_runtime_request(

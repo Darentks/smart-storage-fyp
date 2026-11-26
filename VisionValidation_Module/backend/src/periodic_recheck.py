@@ -3,6 +3,10 @@ import threading
 import time
 import uuid
 
+class TrainingUnavailable(ValueError):
+    """A training reservation refusal whose message is safe and specific enough to show the operator."""
+
+
 class RecheckCoordinator:
     """One expiring lease across this bridge; bounded priority/FIFO waiters."""
     def __init__(self):
@@ -66,12 +70,12 @@ class RecheckCoordinator:
         with self.global_lock:
             self._prune()
             if self.training is None:
-                if token:raise ValueError('Training session expired; start a new batch')
+                if token:raise TrainingUnavailable('The training reservation expired; start the batch again')
                 self.training=dict(token=str(uuid.uuid4()),shelf=shelf,ips=tuple(ips),ready=False,
                     deadline=time.monotonic()+600,expires=time.monotonic()+30)
             elif not token or token!=self.training['token']:
-                raise ValueError('Another training session owns the cameras')
-            if self.training['shelf']!=shelf or self.training['ips']!=tuple(ips):raise ValueError('Training camera assignment changed')
+                raise TrainingUnavailable(f"Another training batch is running on {self.training['shelf']}. Only one batch can run at a time; wait for it to finish or cancel it first")
+            if self.training['shelf']!=shelf or self.training['ips']!=tuple(ips):raise TrainingUnavailable('The shelf or camera addresses changed during the batch; start the batch again')
             self.training['expires']=min(time.monotonic()+30,self.training['deadline'])
             newly_ready=not self.training['ready'] and shelf not in self.leases and idle
             self.training['ready']=self.training['ready'] or newly_ready
@@ -82,7 +86,7 @@ class RecheckCoordinator:
         with self.global_lock:
             self._prune()
             if self.training is None:return False
-            if token!=self.training['token']:raise ValueError('Training session does not match')
+            if token!=self.training['token']:raise TrainingUnavailable('This training reservation belongs to another batch')
             self.training=None
             return True
 

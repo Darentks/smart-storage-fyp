@@ -2761,6 +2761,32 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     let diagnosticRunning=false,previewGeneration=0;
     let tmBatchRunning=false,tmBatchCancelled=false,tmBatchController=null,tmBatchUrls=[];
     let tmComparisonRunning=false,tmComparisonFrames=null;
+    // Training needs proof that both cameras of the selected shelf answer: a successful diagnostic preview
+    // for this shelf, these two camera addresses and this bridge run, with both pictures still on screen.
+    let trainingPreviewCheck=null;
+    function trainingPreviewMissing(){
+      const shown=img=>img && img.style && img.style.display==='block';
+      const check=trainingPreviewCheck;
+      return !(check && check.shelf===refShelfSelect.value && check.ip===refEspIpInput.value.trim() && check.ip2===refEspIp2Input.value.trim()
+        && check.startup_id===bridgeStatus.startup_id && shown(backPreviewImg) && shown(frontPreviewImg));
+    }
+    // Re-check straight away when the operator changes the shelf or a camera address.
+    if(typeof document!=='undefined' && typeof document.addEventListener==='function')for(const type of ['input','change'])
+      document.addEventListener(type,event=>{if(['refShelfSelect','refEspIpInput','refEspIp2Input','cam1IpSelect','cam2IpSelect'].includes(event.target?.id))setTimeout(updateTrainingBatchAvailability,0);});
+    const TRAINING_PREVIEW_REQUIRED='Please run Diagnostic Preview first: both camera pictures for the selected shelf must be showing before training capture.';
+    function updateTrainingBatchAvailability(){
+      const batchButton=document.getElementById('tmBatchButton');
+      const online=bridgeStatus.online,native=online && bridgeStatus.authoritative_processor==='native',needsPreview=!tmBatchRunning && trainingPreviewMissing();
+      batchButton.disabled=!online || diagnosticRunning || tmComparisonRunning || needsPreview;
+      batchButton.title=!online?'Bridge unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':needsPreview?TRAINING_PREVIEW_REQUIRED:'Read-only training session; only the selected shelf pauses automatic checks, and it is counted fresh afterwards';
+      batchButton.textContent=tmBatchRunning?'Capturing training data...':'Capture Training Batch (Back + Front ZIPs)';
+      document.getElementById('tmBatchAvailability').textContent=tmBatchRunning?'Training capture in progress. Keep the boxes unchanged.':
+        !online?'Training capture unavailable: bridge disconnected.':
+        diagnosticRunning || tmComparisonRunning?'Training capture waiting: another diagnostic is running.':
+        needsPreview?TRAINING_PREVIEW_REQUIRED:
+        native?'Ready for training capture. Other shelves keep counting; the selected shelf pauses and is counted fresh afterwards.':
+        'Ready for training capture. Select both verified labels; capture takes several seconds per pair.';
+    }
     function updateTMComparisonButton(){
       const button=document.getElementById('tmPreprocessingCompareButton');
       const reason=!bridgeStatus.online?'Bridge unavailable':bridgeStatus.authoritative_processor==='native'?'Native processor active; browser comparison is paused':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Comparison running':!tmComparisonFrames?'Run Diagnostic Preview first':'';
@@ -2775,10 +2801,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       for(const placeholder of [backPlaceholder,frontPlaceholder,previewPlaceholder])placeholder.style.display='flex';
       backPredBadge.style.display=frontPredBadge.style.display='none';
       document.getElementById('previewModeBadge').textContent='No fresh observation';
+      updateTrainingBatchAvailability();
     }
     function panelState(data,online=true) {
       const processor=data.state==='Disabled'?'none':data.authoritative_processor==='service'?'native':data.authoritative_processor;
-      if(bridgeStatus.online!==online || bridgeStatus.authoritative_processor!==processor || bridgeStatus.startup_id!==data.startup_id){previewGeneration++;clearPanelFrames();}
+      if(bridgeStatus.online!==online || bridgeStatus.authoritative_processor!==processor || bridgeStatus.startup_id!==data.startup_id){previewGeneration++;trainingPreviewCheck=null;clearPanelFrames();}
       bridgeStatus={...data,online,authoritative_processor:processor};
       const native=online && processor==='native';
       const button=document.getElementById('diagnosticPreviewButton');
@@ -2787,21 +2814,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       button.title=!online?'Bridge unavailable':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Preprocessing comparison running':native?'Quick bright capture using the same native models as initial counts. Diagnostic only; the native processor keeps counting.':'Read-only capture; inventory is unchanged';
       updateTMComparisonButton();
       document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active \u2014 Displaying authoritative observations.':'Native Processor Disabled \u2014 Automated validation is paused.';
-      const batchButton=document.getElementById('tmBatchButton');
-      batchButton.disabled=!online || diagnosticRunning || tmComparisonRunning;
-      batchButton.title=!online?'Bridge unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':'Read-only training session; only the selected shelf pauses automatic checks, and it is counted fresh afterwards';
-      batchButton.textContent=tmBatchRunning?'Capturing training data...':'Capture Training Batch (Back + Front ZIPs)';
-      document.getElementById('tmBatchAvailability').textContent=tmBatchRunning?'Training capture in progress. Keep the boxes unchanged.':
-        !online?'Training capture unavailable: bridge disconnected.':
-        diagnosticRunning || tmComparisonRunning?'Training capture waiting: another diagnostic is running.':
-        native?'Ready for training capture. Other shelves keep counting; the selected shelf pauses and is counted fresh afterwards.':
-        'Ready for training capture. Select both verified labels; capture takes several seconds per pair.';
+      updateTrainingBatchAvailability();
       if(!native && !diagnosticRunning){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
     }
     function renderPanelFrames(row){
       for(const [img,placeholder,url] of [[backPreviewImg,backPlaceholder,row.image_back],[frontPreviewImg,frontPlaceholder,row.image_front],[livePreviewImg,previewPlaceholder,row.image]]){
         if(url){img.src=url;img.style.display='block';placeholder.style.display='none';}
       }
+      updateTrainingBatchAvailability();
     }
     function renderPanelObservation(row,native=false) {
       tmComparisonFrames=!native && row.image_back && row.image_front?{back:row.image_back,front:row.image_front,shelf:refShelfSelect.value}:null;
@@ -2829,6 +2849,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',signal:AbortSignal.timeout(10000)});
         const row=await response.json();if(!response.ok)throw Error(row.error || 'Diagnostic capture failed');
         if(owned!==previewGeneration || !bridgeStatus.online || refShelfSelect.value!==shelf)return;
+        // Both pictures arrived, so both cameras answer; classification may still fail below.
+        trainingPreviewCheck=row.image_back && row.image_front?{shelf,ip:query.get('ip'),ip2:query.get('ip2'),startup_id:bridgeStatus.startup_id}:null;
         renderPanelFrames(row);
         if(bridgeStatus.authoritative_processor==='native'){
           if(row.inference_source!=='native' || !row.candidate)throw Error('Restart the updated bridge to use matching native diagnostic models.');
@@ -2849,6 +2871,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         if(owned===previewGeneration && bridgeStatus.online && refShelfSelect.value===shelf){lastManualPreviewAt=Date.now();renderPanelObservation({...row,candidate},false);}
       } catch(error){if(owned===previewGeneration){
         lastManualPreviewAt=0;
+        if(!tmBatchRunning && refShelfSelect.value===shelf)trainingPreviewCheck=null;  // the cameras did not answer this time
         previewOverlayText.textContent='Diagnostic preview did not complete';
         tmLivePredictionBanner.style.display='block';
         tmLivePredictionBanner.textContent=String(error.message).includes('Native service owns cameras')?
@@ -2891,6 +2914,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     async function captureTMTrainingBatch(){
       if(tmBatchRunning)return;
       if(diagnosticRunning || tmComparisonRunning || !bridgeStatus.online){trainingBatchFeedback('Batch unavailable: connect the bridge and wait for the current diagnostic to finish.');return;}
+      if(trainingPreviewMissing()){trainingBatchFeedback(TRAINING_PREVIEW_REQUIRED);updateTrainingBatchAvailability();return;}
       const count=Number(document.getElementById('tmBatchCount').value),backLabel=document.getElementById('tmBatchBack').value,frontLabel=document.getElementById('tmBatchFront').value;
       if(![8,16,24,32].includes(count) || !['Back_11X','Back_X01','Back_100','Back_000'].includes(backLabel) || !['Front_111','Front_110','Front_100','Front_011','Front_010','Front_000'].includes(frontLabel)){trainingBatchFeedback('Select both manually verified physical scenario labels first.');return;}
       const shelf=refShelfSelect.value,ip=refEspIpInput.value.trim(),ip2=refEspIp2Input.value.trim(),owned=previewGeneration;
