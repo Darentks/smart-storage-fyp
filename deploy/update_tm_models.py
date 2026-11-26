@@ -50,7 +50,7 @@ def load_sources(root):
     if not isinstance(data,dict) or data.get('version')!=1:raise UpdateFailure('settings',f'{SOURCES_FILE} must contain "version": 1')
     for role in ROLES:
         if not isinstance(data.get(role),str) or not SOURCE_RULE.fullmatch(data[role]):
-            raise UpdateFailure('settings',f'{role} link in {SOURCES_FILE} must look like https://teachablemachine.withgoogle.com/models/<id>/',role)
+            raise UpdateFailure('settings',f'Please input the correct Teachable Machine link for the {role} model in {SOURCES_FILE} (https://teachablemachine.withgoogle.com/models/<id>/)',role)
     if data['Front']==data['Back']:raise UpdateFailure('settings','Front and Back links must be different models')
     return {role:data[role] for role in ROLES}
 

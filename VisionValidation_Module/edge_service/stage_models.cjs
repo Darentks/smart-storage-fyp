@@ -20,7 +20,7 @@ function loadSources(file) {
   if(!data || data.version!==1)throw new StageError('settings','Model settings file must have "version": 1');
   for(const role of ['Front','Back'])
     if(typeof data[role]!=='string' || !SOURCE_RULE.test(data[role]))
-      throw new StageError('settings',`${role} link must look like https://teachablemachine.withgoogle.com/models/<id>/`,role);
+      throw new StageError('settings',`Please input the correct Teachable Machine link for the ${role} model (https://teachablemachine.withgoogle.com/models/<id>/)`,role);
   if(data.Front===data.Back)throw new StageError('settings','Front and Back links must be different models');
   return {Front:data.Front,Back:data.Back};
 }

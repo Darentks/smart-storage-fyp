@@ -116,7 +116,7 @@ def read_model_sources(path):
     if not isinstance(data,dict) or data.get('version')!=1:return dict(row,error='Settings file needs "version": 1')
     for role in ('Front','Back'):
         match=TM_SOURCE_RULE.fullmatch(data.get(role)) if isinstance(data.get(role),str) else None
-        if not match:return dict(row,error=role+' link is not a Teachable Machine model link')
+        if not match:return dict(row,error='Please input the correct Teachable Machine link for the '+role+' model')
         row[role]=match.group(1)
     if row['Front']==row['Back']:return dict(row,error='Front and Back links are the same model')
     return row
