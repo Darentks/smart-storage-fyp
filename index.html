@@ -765,6 +765,52 @@
       border-color: var(--primary);
     }
 
+    /* One shared style for inline error messages: soft red panel, red edge, readable red text, warning icon. */
+    .status-error {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 1px solid rgba(244, 63, 94, 0.35);
+      border-left: 4px solid var(--danger);
+      border-radius: 8px;
+      background: var(--danger-bg);
+      color: #fda4af;
+      font-weight: 500;
+      line-height: 1.45;
+    }
+
+    .status-error::before {
+      content: "\26A0";
+      flex: none;
+      color: var(--danger);
+      font-weight: 700;
+    }
+
+    pre.status-error {
+      display: block;
+    }
+
+    /* These banners carry inline colours for their normal state; the error state must win over them. */
+    #tmLivePredictionBanner.status-error,
+    #processorSetupIssue.status-error {
+      display: flex !important;
+      background: var(--danger-bg) !important;
+      border: 1px solid rgba(244, 63, 94, 0.35) !important;
+      border-left: 4px solid var(--danger) !important;
+      color: #fda4af !important;
+      box-shadow: none !important;
+    }
+
+    #processorSetupIssue.status-error[hidden] {
+      display: none !important;
+    }
+
+    pre.status-error::before {
+      content: "\26A0  ";
+    }
+
     @keyframes slideIn {
       from {
         transform: translateY(20px);
@@ -2151,6 +2197,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if(issue){
         issue.hidden=!(native && (data.setup_issue || data.actions_paused_reason));
         issue.textContent=data.setup_issue?`Setup needed: ${data.setup_issue}`:data.actions_paused_reason?`Counting continues; actions paused: ${data.actions_paused_reason}.`:'';
+        // A setup problem is an error (red); paused actions stay an amber notice.
+        if(typeof markStatusError==='function')markStatusError(issue,!!data.setup_issue);
       }
       if(!native){cams.textContent='Camera agreement is shown when the native processor is running.';if(stage)stage.textContent='';return;}
       const ids=data.camera_ids?.length?data.camera_ids:['CCTV_01','CCTV_02','CCTV_03'],consensus=data.consensus || {votes:{},pending:[]};
@@ -2765,6 +2813,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // and this bridge run, so the operator has seen the scene before labelling it. The pictures need not stay
     // on screen: the panel may later swap or clear them without the cameras having changed.
     let trainingPreviewCheck=null;
+    // Show or clear the shared red error style on a message element (safe on elements without classList).
+    function markStatusError(element,isError){
+      if(element && element.classList)element.classList.toggle('status-error',!!isError);
+    }
     function trainingPreviewMissing(){
       const check=trainingPreviewCheck;
       return !(check && check.shelf===refShelfSelect.value && check.ip===refEspIpInput.value.trim() && check.ip2===refEspIp2Input.value.trim()
@@ -2780,12 +2832,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       batchButton.disabled=!online || diagnosticRunning || tmComparisonRunning || needsPreview;
       batchButton.title=!online?'Bridge unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':needsPreview?TRAINING_PREVIEW_REQUIRED:'Read-only training session; only the selected shelf pauses automatic checks, and it is counted fresh afterwards';
       batchButton.textContent=tmBatchRunning?'Capturing training data...':'Capture Training Batch (Back + Front ZIPs)';
-      document.getElementById('tmBatchAvailability').textContent=tmBatchRunning?'Training capture in progress. Keep the boxes unchanged.':
+      const availability=document.getElementById('tmBatchAvailability');
+      availability.textContent=tmBatchRunning?'Training capture in progress. Keep the boxes unchanged.':
         !online?'Training capture unavailable: bridge disconnected.':
         diagnosticRunning || tmComparisonRunning?'Training capture waiting: another diagnostic is running.':
         needsPreview?TRAINING_PREVIEW_REQUIRED:
         native?'Ready for training capture. Other shelves keep counting; the selected shelf pauses and is counted fresh afterwards.':
         'Ready for training capture. Select both verified labels; capture takes several seconds per pair.';
+      markStatusError(availability,!tmBatchRunning && (!online || needsPreview));
     }
     function updateTMComparisonButton(){
       const button=document.getElementById('tmPreprocessingCompareButton');
@@ -2834,7 +2888,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       frontPredBadge.textContent=`${candidate.front_class || candidate.frontClass || 'Unknown'} (${candidate.front_confidence ?? candidate.frontConfidence ?? '?'}%)`;
       document.getElementById('previewModeBadge').textContent=native?'Native Authoritative':'Diagnostic Only (No Inventory Write)';
       previewOverlayText.textContent=new Date(row.timestamp*1000).toLocaleTimeString();
-      tmLivePredictionBanner.style.display='block';
+      tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,false);
       tmLivePredictionBanner.textContent=native?'Native observation; inventory acceptance is shown separately in shelf status.':`Diagnostic Only (No Inventory Write): ${candidate.scenarioLabel || candidate.hold || 'Prediction complete'}`;
     }
     let lastManualPreviewAt=0;  // a fresh manual preview is not overwritten by the automatic native observation poll
@@ -2863,7 +2917,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         document.getElementById('previewModeBadge').textContent='Diagnostic images (No Inventory Write) — classifying';
         previewOverlayText.textContent='Pictures received; classifying...';
         tmLivePredictionBanner.textContent='Fresh pictures received. Running browser Teachable Machine classification...';
-        tmLivePredictionBanner.style.display='block';
+        tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,false);
         const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
         if(owned!==previewGeneration || !bridgeStatus.online)return;
         const candidate=await predictDualCamerasWithTM(images[0],images[1],document.getElementById('visionBoostSelect')?.value || 'off');
@@ -2873,7 +2927,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         lastManualPreviewAt=0;
         if(!tmBatchRunning && refShelfSelect.value===shelf)trainingPreviewCheck=null;  // the cameras did not answer this time
         previewOverlayText.textContent='Diagnostic preview did not complete';
-        tmLivePredictionBanner.style.display='block';
+        tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,true);
         tmLivePredictionBanner.textContent=String(error.message).includes('Native service owns cameras')?
           'The running bridge has the older preview restriction. Restart the updated bridge, then retry. Native processing remains responsible for inventory.':
           'Diagnostic failed: '+error.message;
@@ -2902,7 +2956,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       return new Blob([...chunks,...central,end],{type:'application/zip'});
     }
     function trainingBatchFeedback(message,completed,total){
-      document.getElementById('tmBatchStatus').textContent=message;
+      const status=document.getElementById('tmBatchStatus');
+      status.textContent=message;
+      if(typeof markStatusError==='function')markStatusError(status,/^(Batch failed|Batch unavailable|Please run Diagnostic Preview|Select both)/.test(message));
       const progress=document.getElementById('tmBatchProgress');
       progress.hidden=!total;progress.max=total || 1;progress.value=completed || 0;
     }
@@ -3007,11 +3063,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const frames=tmComparisonFrames;
       if(!bridgeStatus.online || bridgeStatus.authoritative_processor==='native' || diagnosticRunning || !frames || frames.shelf!==refShelfSelect.value){
         output.textContent='Comparison unavailable. Use Run Diagnostic Preview for the selected shelf while the native processor is disabled.';
+        markStatusError(output,true);
         return;
       }
       const owned=previewGeneration;
       tmComparisonRunning=true;panelState(bridgeStatus);
-      output.textContent='Comparing the same captured images with boost off...';
+      output.textContent='Comparing the same captured images with boost off...';markStatusError(output,false);
       try {
         if(!window.tmBackModel || !window.tmFrontModel)throw Error('Load both Teachable Machine models, then retry.');
         const images=await Promise.all([decodeTMImage(frames.back),decodeTMImage(frames.front)]);
@@ -3031,8 +3088,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         reports.push('', 'Square source images should show little or no geometry difference. A higher score alone does not prove better accuracy.');
         console.info('[Diagnostic] Skipping inventory write');
         if(owned===previewGeneration && tmComparisonFrames===frames && frames.shelf===refShelfSelect.value && bridgeStatus.online && bridgeStatus.authoritative_processor!=='native')output.textContent=reports.join('\n');
-        else output.textContent='Preview changed during comparison. Run Diagnostic Preview and compare again.';
-      }catch(error){output.textContent='Comparison failed: '+error.message;}
+        else {output.textContent='Preview changed during comparison. Run Diagnostic Preview and compare again.';markStatusError(output,true);}
+      }catch(error){output.textContent='Comparison failed: '+error.message;markStatusError(output,true);}
       finally{tmComparisonRunning=false;panelState(bridgeStatus,bridgeStatus.online);}
     }
     async function fetchLiveAnglePreviewLocked(shelfId, assignedIp1, assignedIp2, selectedBoost) {
