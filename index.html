@@ -1184,6 +1184,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 onclick="saveAssignedShelfIps()">
                 &#128190; Save Assigned IPs to Shelf
               </button>
+              <div id="camIpSaveStatus" role="status" aria-live="polite" style="font-size:12px"></div>
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 10px;">
@@ -2762,88 +2763,96 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
+    // Back (CAM1, angle 1) and Front (CAM2, angle 2) addresses are saved as one operation: both change or neither does.
+    // The database has no multi-row update here, so a failed second write undoes the first (compensating rollback).
+    // The bridge is updated only after both database rows are confirmed.
+    function camIpSaveReport(text,isError){
+      const line=document.getElementById('camIpSaveStatus');
+      if(line){line.textContent=text;if(typeof markStatusError==='function')markStatusError(line,isError);}
+      showToast(text,isError?'error':'success');
+    }
     async function saveAssignedShelfIps() {
       const shelfId = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
       const ip1 = cleanCameraHost(refEspIpInput ? refEspIpInput.value : '');
       const ip2 = cleanCameraHost(refEspIp2Input ? refEspIp2Input.value : '');
 
       if (!ip1 || !ip2) {
-        showToast('Please enter or select valid IP addresses for both CAM 1 and CAM 2.', 'error');
+        camIpSaveReport('Please enter or select valid IP addresses for both the Back (CAM1) and Front (CAM2) cameras.', true);
         return;
       }
-
-      if (saveCamIpsBtn) {
-        saveCamIpsBtn.disabled = true;
-        saveCamIpsBtn.textContent = 'Saving...';
+      if (ip1 === ip2) {
+        camIpSaveReport('The Back and Front cameras need different IP addresses. Nothing was saved.', true);
+        return;
       }
+      const resetButton = () => { if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf'; } };
+      if (saveCamIpsBtn) { saveCamIpsBtn.disabled = true; saveCamIpsBtn.textContent = 'Saving...'; }
+      const roles = { 1: 'Back (CAM1)', 2: 'Front (CAM2)' }, wanted = { 1: ip1, 2: ip2 };
+      const outcome = { 1: 'not saved', 2: 'not saved' };
+      const summary = () => `${shelfId}: ${roles[1]} ${outcome[1]}; ${roles[2]} ${outcome[2]}.`;
+      const patch = async (angle, ip) => {
+        const rows = await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.${angle}`, { ip_address: ip }, 'return=representation');
+        if (!Array.isArray(rows) || rows.length !== 1 || rows[0].shelf_id !== shelfId || Number(rows[0].angle_index) !== angle || cleanCameraHost(rows[0].ip_address) !== ip)
+          throw Error(`expected exactly one saved ${roles[angle]} row; check the camera registration and permissions`);
+      };
 
-      let savedCloud = false;
-      let savedBridge = false;
-
-      // Confirm both persisted bindings before changing the running bridge.
-      let confirmed = 0;
+      // 1. Read both current rows, so a failure can restore exactly what was there.
+      let original;
       try {
-        for (const [angle, ip] of [[1, ip1], [2, ip2]]) {
-          const rows = await sbRest('esp32_cameras', 'PATCH', `?shelf_id=eq.${encodeURIComponent(shelfId)}&angle_index=eq.${angle}`, { ip_address: ip }, 'return=representation');
-          if (!Array.isArray(rows) || rows.length !== 1 || rows[0].shelf_id !== shelfId || Number(rows[0].angle_index) !== angle || cleanCameraHost(rows[0].ip_address) !== ip) throw Error(`CAM${angle}: expected one saved camera row; check registration and permissions`);
-          confirmed++;
-        }
-        savedCloud = true;
+        const rows = await sbRest('esp32_cameras', 'GET', `?select=shelf_id,angle_index,ip_address&shelf_id=eq.${encodeURIComponent(shelfId)}&order=angle_index.asc`);
+        original = {};
+        for (const row of Array.isArray(rows) ? rows : []) if (row.shelf_id === shelfId && [1, 2].includes(Number(row.angle_index))) original[Number(row.angle_index)] = cleanCameraHost(row.ip_address || '');
+        if (!(1 in original) || !(2 in original) || rows.length !== 2) throw Error(`${shelfId} needs exactly one registered Back (angle 1) and one Front (angle 2) camera`);
       } catch (error) {
-        if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.textContent = 'Save Assigned IPs to Shelf'; }
-        showToast(`${confirmed ? 'CAM1 saved; CAM2 was not confirmed. ' : ''}Bridge unchanged. ${deviceSaveError(error)}`, 'error');
+        resetButton();
+        camIpSaveReport(`Nothing was saved. ${deviceSaveError(error)}`, true);
         return;
       }
 
-      // 2. Update in Local Python Bridge
+      // 2. Write only the cameras that change; undo earlier writes if a later one fails.
+      const applied = [];
+      for (const angle of [1, 2]) {
+        if (original[angle] === wanted[angle]) { outcome[angle] = `unchanged (${wanted[angle]})`; continue; }
+        try {
+          await patch(angle, wanted[angle]);
+          applied.push(angle); outcome[angle] = `saved (${original[angle] || 'none'} → ${wanted[angle]})`;
+        } catch (error) {
+          outcome[angle] = `not saved: ${deviceSaveError(error)}`;
+          let rollbackFailed = false;
+          for (const done of applied.reverse()) {
+            try { await patch(done, original[done]); outcome[done] = `not saved (restored to ${original[done] || 'none'})`; }
+            catch (_) { rollbackFailed = true; outcome[done] = `SAVED as ${wanted[done]} but could not be restored to ${original[done] || 'none'}`; }
+          }
+          resetButton();
+          camIpSaveReport(rollbackFailed
+            ? `${summary()} The shelf now has mismatched cameras in the database; press Save again or correct it in the 12-Node Manager. Bridge unchanged.`
+            : `${summary()} Both cameras keep their previous addresses. Bridge unchanged.`, true);
+          return;
+        }
+      }
+
+      // 3. Both database rows are confirmed: update the running bridge (it also re-reads the database).
+      let bridgeNote = '';
       try {
         const resp = await fetch(`${getBridgeUrl()}/esp32_assign_ips`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            shelf_id: shelfId,
-            ip_address: ip1,
-            secondary_ip_address: ip2
-          })
+          body: JSON.stringify({ shelf_id: shelfId, ip_address: ip1, secondary_ip_address: ip2 })
         });
-        if (resp.ok) savedBridge = true;
+        if (!resp.ok) { let detail = ''; try { detail = (await resp.json()).error || ''; } catch (_) {} throw Error(detail || `HTTP ${resp.status}`); }
       } catch (brErr) {
-        console.warn('[Save IPs] Local bridge POST warning:', brErr);
+        console.warn('[Save IPs] Local bridge update failed:', brErr);
+        bridgeNote = ` Bridge not updated (${brErr.message || 'no reply'}); it picks up the saved addresses within 5 minutes or after Restart local bridge.`;
       }
 
-      // 3. Update compartmentsData in memory & clear dirty flags
-      compartmentsData = (compartmentsData || []).map(c => {
-        if (c.shelf_id === shelfId) {
-          return { ...c, ip_address: ip1, secondary_ip_address: ip2 };
-        }
-        return c;
-      });
-      // 4. Sync Panel 4 (esp32CameraNodesList) so all panels reflect the assigned IPs (DB already patched in step 1)
-      esp32CameraNodesList = (esp32CameraNodesList || []).map(cam => {
-        if (cam.shelf_id === shelfId) {
-          return {
-            ...cam,
-            ip_address: Number(cam.angle_index) === 2 ? ip2 : ip1
-          };
-        }
-        return cam;
-      });
+      // 4. Reflect the saved addresses in every panel.
+      compartmentsData = (compartmentsData || []).map(c => c.shelf_id === shelfId ? { ...c, ip_address: ip1, secondary_ip_address: ip2 } : c);
+      esp32CameraNodesList = (esp32CameraNodesList || []).map(cam => cam.shelf_id === shelfId ? { ...cam, ip_address: Number(cam.angle_index) === 2 ? ip2 : ip1 } : cam);
       renderEsp32CameraManager();
-
       userEditedCamIp = { 1: false, 2: false };
       populateAssignedIpDropdowns();
       renderCompartments(compartmentsData);
-
-      if (saveCamIpsBtn) {
-        saveCamIpsBtn.disabled = false;
-        saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf';
-      }
-
-      if (savedCloud && savedBridge) {
-        showToast(`Saved ${shelfId} IPs: CAM1=${ip1}, CAM2=${ip2}`, 'success');
-      } else {
-        showToast('Camera IPs saved to database; bridge update failed. Check Bridge and retry.', 'error');
-      }
+      resetButton();
+      camIpSaveReport(`${summary()}${bridgeNote || ' Bridge updated.'}`, !!bridgeNote);
     }
 
     let bridgeStatus={online:false,authoritative_processor:'none',state:'Disconnected'};
