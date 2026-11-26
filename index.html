@@ -2166,13 +2166,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         if(!response.ok)throw Error('Unavailable');const data=await response.json();bridgeMissedPolls=0;panelState(data);renderLiveActivity(data);renderLoadedTmVersions(data);
         if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?nativeProcessorLabel(data):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
         if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
-        if(bridgeStatus.authoritative_processor==='native' && !(typeof lastManualPreviewAt!=='undefined' && Date.now()-lastManualPreviewAt<60000)) {
-          const shelf=refShelfSelect.value,epoch=previewGeneration;
-          const result=await fetch(`${getBridgeUrl()}/native_observation?shelf_id=${encodeURIComponent(shelf)}`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-          if(!result.ok)throw Error('Native observations unavailable');const payload=await result.json();
-          if(epoch!==previewGeneration || bridgeStatus.authoritative_processor!=='native' || refShelfSelect.value!==shelf)return;
-          if(payload.observation)renderPanelObservation(payload.observation,true);
-          else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='Waiting for fresh native observation';}
+        if(bridgeStatus.authoritative_processor==='native'){
+          // A pinned manual preview stays (its age is refreshed); otherwise show the shelf's latest automatic picture.
+          if(manualPreviewPinned())showManualPreviewAge();
+          else if(!previewCapturing){
+            const shelf=refShelfSelect.value,seq=manualPreviewSeq;
+            const result=await fetch(`${getBridgeUrl()}/native_observation?shelf_id=${encodeURIComponent(shelf)}`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
+            if(!result.ok)throw Error('Native observations unavailable');const payload=await result.json();
+            if(seq!==manualPreviewSeq || previewCapturing || manualPreviewPinned() || bridgeStatus.authoritative_processor!=='native' || refShelfSelect.value!==shelf)return;
+            if(payload.observation)renderPanelObservation(payload.observation,true);
+            else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='No recent picture of this shelf yet';}
+          }
         }
       }catch(_){bridgeMissedPolls++;panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
     }
@@ -2681,6 +2685,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function onTargetShelfChange() {
+      // A different shelf: drop the pinned preview so the panel shows this shelf's own latest picture.
+      if (typeof clearManualPreview === 'function') { clearManualPreview(); clearPanelFrames(); }
       userEditedCamIp = { 1: false, 2: false };
       lastSyncedShelfId = null;
       syncSelectedShelfTelemetry(true);
@@ -2896,9 +2902,32 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       document.getElementById('previewModeBadge').textContent='No fresh observation';
       updateTrainingBatchAvailability();
     }
+    // The panel keeps the operator's own Diagnostic Preview (with its capture time) until a new preview, a different
+    // shelf or a bridge restart. Otherwise it shows the latest automatic picture of the shelf: a scan, a count check or
+    // a training capture, with its age. Display only; nothing here is inventory evidence.
+    let manualPreview=null,manualPreviewSeq=0,previewCapturing=false,lastBridgeRunId=null;
+    const PREVIEW_BUSY_RETRIES=15;
+    function manualPreviewPinned(){
+      return !!(manualPreview && manualPreview.shelf===refShelfSelect.value && manualPreview.startup_id===bridgeStatus.startup_id);
+    }
+    function clearManualPreview(){manualPreview=null;manualPreviewSeq++;}
+    function pictureAge(seconds){
+      const s=Math.max(0,Math.round(seconds));
+      return s<60?`${s} s ago`:s<3600?`${Math.round(s/60)} min ago`:`${Math.round(s/3600)} h ago`;
+    }
+    function showManualPreviewAge(){
+      if(!manualPreviewPinned())return;
+      previewOverlayText.textContent=`Diagnostic preview · captured ${new Date(manualPreview.at*1000).toLocaleTimeString()} (${pictureAge(Date.now()/1000-manualPreview.at)})`;
+    }
     function panelState(data,online=true) {
       const processor=data.state==='Disabled'?'none':data.authoritative_processor==='service'?'native':data.authoritative_processor;
-      if(bridgeStatus.online!==online || bridgeStatus.authoritative_processor!==processor || bridgeStatus.startup_id!==data.startup_id){previewGeneration++;if(online && bridgeStatus.online && bridgeStatus.authoritative_processor!==processor)trainingPreviewCheck=null;clearPanelFrames();}
+      // A brief disconnect keeps the pictures; a restarted bridge (new run ID) or another processor clears them.
+      const processorChanged=online && bridgeStatus.online && bridgeStatus.authoritative_processor!==processor;
+      const restarted=online && !!data.startup_id && !!lastBridgeRunId && data.startup_id!==lastBridgeRunId;
+      if(bridgeStatus.online!==online || processorChanged || (online && bridgeStatus.startup_id!==data.startup_id))previewGeneration++;
+      if(processorChanged)trainingPreviewCheck=null;
+      if(processorChanged || restarted){manualPreview=null;manualPreviewSeq++;clearPanelFrames();}
+      if(online && data.startup_id)lastBridgeRunId=data.startup_id;
       bridgeStatus={...data,online,authoritative_processor:processor};
       const native=online && processor==='native';
       const button=document.getElementById('diagnosticPreviewButton');
@@ -2906,9 +2935,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       button.textContent='Run Diagnostic Preview (Read-Only)';
       button.title=!online?'Bridge unavailable':diagnosticRunning?'Diagnostic capture running':tmComparisonRunning?'Preprocessing comparison running':native?'Quick bright capture using the same native models as initial counts. Diagnostic only; the native processor keeps counting.':'Read-only capture; inventory is unchanged';
       updateTMComparisonButton();
-      document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active \u2014 Displaying authoritative observations.':'Native Processor Disabled \u2014 Automated validation is paused.';
+      document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active — Displaying authoritative observations.':'Native Processor Disabled — Automated validation is paused.';
       updateTrainingBatchAvailability();
-      if(!native && !diagnosticRunning){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
+      if(!native && !diagnosticRunning && !manualPreviewPinned()){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
     }
     function renderPanelFrames(row){
       for(const [img,placeholder,url] of [[backPreviewImg,backPlaceholder,row.image_back],[frontPreviewImg,frontPlaceholder,row.image_front],[livePreviewImg,previewPlaceholder,row.image]]){
@@ -2921,57 +2950,111 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       document.getElementById('tmPreprocessingComparison').style.display='none';
       updateTMComparisonButton();
       renderPanelFrames(row);
+      const sources={scan:'Automatic scan picture',count_check:'Automatic count check picture',training:'Training capture picture'};
+      const label=native?(sources[row.source] || 'Native Authoritative'):'Diagnostic Only (No Inventory Write)';
+      document.getElementById('previewModeBadge').textContent=label;
+      const time=new Date(row.timestamp*1000).toLocaleTimeString();
+      previewOverlayText.textContent=native && Number.isFinite(row.age_seconds)?`${label} · ${time} · last picture ${pictureAge(row.age_seconds)}`:time;
+      tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,false);
+      if(row.candidate===null){
+        backPredBadge.style.display=frontPredBadge.style.display='none';
+        tmLivePredictionBanner.textContent='Training capture picture: no prediction is made for training pictures. Display only.';
+        return;
+      }
       const candidate=row.candidate || {};
       backPredBadge.style.display=frontPredBadge.style.display='block';
       backPredBadge.textContent=`${candidate.back_class || candidate.backClass || 'Unknown'} (${candidate.back_confidence ?? candidate.backConfidence ?? '?'}%)`;
       frontPredBadge.textContent=`${candidate.front_class || candidate.frontClass || 'Unknown'} (${candidate.front_confidence ?? candidate.frontConfidence ?? '?'}%)`;
-      document.getElementById('previewModeBadge').textContent=native?'Native Authoritative':'Diagnostic Only (No Inventory Write)';
-      previewOverlayText.textContent=new Date(row.timestamp*1000).toLocaleTimeString();
-      tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,false);
       tmLivePredictionBanner.textContent=native?'Native observation; inventory acceptance is shown separately in shelf status.':`Diagnostic Only (No Inventory Write): ${candidate.scenarioLabel || candidate.hold || 'Prediction complete'}`;
     }
-    let lastManualPreviewAt=0;  // a fresh manual preview is not overwritten by the automatic native observation poll
+    function previewBanner(text,isError=false){
+      tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,isError);tmLivePredictionBanner.textContent=text;
+    }
+    // Native classification of preview pictures. When an automatic check is using the model the bridge defers it;
+    // the same pictures are then classified later (no new capture), so a scan never waits behind a preview.
+    async function showNativeClassification(row,current){
+      const show=result=>{
+        renderPanelObservation({...row,candidate:result.candidate},false);showManualPreviewAge();
+        previewBanner(`Diagnostic Only (No Inventory Write): same native models and preprocessing as initial counts. ${result.candidate.hold || 'Pair verified; initial counts require two matching pairs.'}`);
+      };
+      if(row.classification==='done' || (!row.classification && row.inference_source==='native' && row.candidate)){show(row);return;}
+      if(!row.classification)throw Error('Restart the updated bridge to use matching native diagnostic models.');
+      backPredBadge.style.display=frontPredBadge.style.display='none';
+      document.getElementById('previewModeBadge').textContent='Diagnostic images (No Inventory Write)';
+      if(row.classification==='unavailable'){previewBanner('Pictures captured. '+row.classification_message);return;}
+      if(row.classification==='failed'){previewBanner('Pictures captured, but classification failed: '+row.classification_message,true);return;}
+      for(let attempt=1;attempt<=30;attempt++){
+        previewBanner(`Pictures captured. ${row.classification_message} Waiting (${attempt}/30)...`);
+        await new Promise(resolve=>setTimeout(resolve,2000));
+        if(!current())return;
+        let result;
+        try{
+          const response=await fetch(`${getBridgeUrl()}/diagnostic_classify?preview_id=${encodeURIComponent(row.preview_id)}`,{cache:'no-store',signal:AbortSignal.timeout(10000)});
+          result=await response.json();if(!response.ok)throw Error(result.error || 'Classification unavailable');
+        }catch(error){if(current())previewBanner('Pictures captured, but classification could not be retried: '+error.message,true);return;}
+        if(!current())return;
+        if(result.classification==='done'){show({...row,...result});return;}
+        if(result.classification==='failed'){previewBanner('Pictures captured, but classification failed: '+result.classification_message,true);return;}
+        if(result.classification==='unavailable'){previewBanner('Pictures captured. '+result.classification_message);return;}
+      }
+      previewBanner('Pictures captured, but automatic checks kept the model busy for a minute. Run Diagnostic Preview again to classify.',true);
+    }
     async function fetchLiveAnglePreview({runMode='diagnostic'}={}) {
       if(runMode!=='diagnostic')throw Error('Browser preview requires explicit diagnostic mode');
       if(!bridgeStatus.online || diagnosticRunning || tmComparisonRunning)return;
-      diagnosticRunning=true;lastManualPreviewAt=Date.now();const shelf=refShelfSelect.value;
-      panelState(bridgeStatus);const owned=previewGeneration;
+      const shelf=refShelfSelect.value,seq=++manualPreviewSeq,run=bridgeStatus.startup_id;
+      // A result still belongs on screen if no newer preview started, the shelf is unchanged and the bridge was not restarted.
+      const current=()=>seq===manualPreviewSeq && refShelfSelect.value===shelf && (!bridgeStatus.online || bridgeStatus.startup_id===run);
+      diagnosticRunning=previewCapturing=true;panelState(bridgeStatus,bridgeStatus.online);
       previewOverlayText.textContent='Capturing diagnostic frames...';
+      const query=new URLSearchParams({run_mode:runMode,shelf_id:shelf,ip:refEspIpInput.value.trim(),ip2:refEspIp2Input.value.trim()});
+      let row=null;
       try {
-        const query=new URLSearchParams({run_mode:runMode,shelf_id:shelf,ip:refEspIpInput.value.trim(),ip2:refEspIp2Input.value.trim()});
-        const response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',signal:AbortSignal.timeout(10000)});
-        const row=await response.json();if(!response.ok)throw Error(row.error || 'Diagnostic capture failed');
-        if(owned!==previewGeneration || !bridgeStatus.online || refShelfSelect.value!==shelf)return;
-        // Both pictures arrived, so both cameras answer; classification may still fail below.
-        trainingPreviewCheck=row.image_back && row.image_front?{shelf,ip:query.get('ip'),ip2:query.get('ip2'),startup_id:bridgeStatus.startup_id}:null;
-        renderPanelFrames(row);
-        if(bridgeStatus.authoritative_processor==='native'){
-          if(row.inference_source!=='native' || !row.candidate)throw Error('Restart the updated bridge to use matching native diagnostic models.');
-          lastManualPreviewAt=Date.now();
-          renderPanelObservation(row,false);
-          tmLivePredictionBanner.textContent=`Diagnostic Only (No Inventory Write): same native models and preprocessing as initial counts. ${row.candidate.hold || 'Pair verified; initial counts require two matching pairs.'}`;
-          return;
+        for(let attempt=1;;attempt++){
+          let response;
+          try{
+            // Server worst case: about 5 s capture plus about 5 s classification.
+            response=await fetch(`${getBridgeUrl()}/diagnostic_preview?${query}`,{cache:'no-store',signal:AbortSignal.timeout(20000)});
+            row=await response.json();
+          }catch(error){throw Error(error.name==='TimeoutError' || error.name==='AbortError'?'No reply from the bridge within 20 seconds.':'The bridge did not answer.');}
+          if(!current())return;
+          if(response.status===409 && row.code==='BUSY'){
+            if(attempt>=PREVIEW_BUSY_RETRIES)throw Error('The cameras stayed busy with automatic checks. Try again in a moment.');
+            previewOverlayText.textContent='Waiting for the cameras...';
+            previewBanner(`Waiting: ${row.error} (${attempt}/${PREVIEW_BUSY_RETRIES}).`);
+            await new Promise(resolve=>setTimeout(resolve,2000));
+            if(!current())return;
+            continue;
+          }
+          if(!response.ok)throw Error(row.error || 'Diagnostic capture failed');
+          break;
         }
+      } catch(error){
+        if(current()){
+          if(!tmBatchRunning)trainingPreviewCheck=null;  // the cameras did not answer this time
+          previewOverlayText.textContent='Diagnostic preview did not complete';
+          previewBanner(String(error.message).includes('Native service owns cameras')?
+            'The running bridge has the older preview restriction. Restart the updated bridge, then retry. Native processing remains responsible for inventory.':
+            'Diagnostic failed: '+error.message,true);
+        }
+        return;
+      } finally{diagnosticRunning=previewCapturing=false;panelState(bridgeStatus,bridgeStatus.online);}
+      // Both pictures arrived, so both cameras answer. They stay on screen whatever happens to classification.
+      trainingPreviewCheck={shelf,ip:query.get('ip'),ip2:query.get('ip2'),startup_id:run};
+      manualPreview={shelf,startup_id:run,at:Number(row.timestamp) || Date.now()/1000};
+      renderPanelFrames(row);showManualPreviewAge();
+      try{
+        if(bridgeStatus.authoritative_processor==='native'){await showNativeClassification(row,current);return;}
         backPredBadge.style.display=frontPredBadge.style.display='none';
         document.getElementById('previewModeBadge').textContent='Diagnostic images (No Inventory Write) — classifying';
         previewOverlayText.textContent='Pictures received; classifying...';
-        tmLivePredictionBanner.textContent='Fresh pictures received. Running browser Teachable Machine classification...';
-        tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,false);
+        previewBanner('Fresh pictures received. Running browser Teachable Machine classification...');
         const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
-        if(owned!==previewGeneration || !bridgeStatus.online)return;
+        if(!current())return;
         const candidate=await predictDualCamerasWithTM(images[0],images[1],document.getElementById('visionBoostSelect')?.value || 'off');
         console.info('[Diagnostic] Skipping inventory write');
-        if(owned===previewGeneration && bridgeStatus.online && refShelfSelect.value===shelf){lastManualPreviewAt=Date.now();renderPanelObservation({...row,candidate},false);}
-      } catch(error){if(owned===previewGeneration){
-        lastManualPreviewAt=0;
-        if(!tmBatchRunning && refShelfSelect.value===shelf)trainingPreviewCheck=null;  // the cameras did not answer this time
-        previewOverlayText.textContent='Diagnostic preview did not complete';
-        tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,true);
-        tmLivePredictionBanner.textContent=String(error.message).includes('Native service owns cameras')?
-          'The running bridge has the older preview restriction. Restart the updated bridge, then retry. Native processing remains responsible for inventory.':
-          'Diagnostic failed: '+error.message;
-      }}
-      finally{diagnosticRunning=false;panelState(bridgeStatus,bridgeStatus.online);}
+        if(current()){renderPanelObservation({...row,candidate},false);showManualPreviewAge();}
+      }catch(error){if(current())previewBanner('Pictures captured, but classification failed: '+error.message,true);}
     }
     // Uncompressed ZIP: one download avoids browser multiple-download blocking.
     async function buildTMTrainingZip(files){

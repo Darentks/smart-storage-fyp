@@ -17,10 +17,15 @@ class RecheckCoordinator:
         # One training reservation for one shelf. Other shelves keep counting. The reserved shelf loses its
         # count authority when capture starts (see camera_service), so ending/expiry needs no resume step.
         self.training=None
+        # A diagnostic preview briefly reserves one shelf's cameras (no lease, no inventory effect) so a scan of
+        # that shelf does not capture from the same ESP32s at the same moment. Self-expiring.
+        self.preview=None
 
     def _prune(self):
         if self.training and time.monotonic()>=self.training['expires']:
             self.training=None
+        if self.preview and time.monotonic()>=self.preview['expires']:
+            self.preview=None
         now = time.time()
         self.leases = {s: lease for s, lease in self.leases.items() if lease[1] > now}
         self.waiting = {key: job for key, job in self.waiting.items() if job["expires"] > now}
@@ -47,6 +52,7 @@ class RecheckCoordinator:
         with self.global_lock:
             self._prune()
             if self.training and self.training['shelf']==shelf:return None
+            if self.preview and self.preview['shelf']==shelf:return None
             request_id = request_id or shelf
             if not self.enqueue(shelf, source, request_id, created_at):
                 return None
@@ -90,9 +96,33 @@ class RecheckCoordinator:
             self.training=None
             return True
 
+    def begin_preview(self,shelf,seconds):
+        """Reserve one shelf for a diagnostic preview capture only if no scan holds, waits for or trains on it."""
+        with self.global_lock:
+            self._prune()
+            if self.preview or shelf in self.leases or any(job.get('shelf')==shelf for job in self.waiting.values()):return False
+            if self.training and self.training['shelf']==shelf:return False
+            self.preview=dict(shelf=shelf,token=str(uuid.uuid4()),expires=time.monotonic()+seconds)
+            return self.preview['token']
+
+    def end_preview(self,token):
+        with self.global_lock:
+            if self.preview and self.preview['token']==token:self.preview=None
+
+    def preview_shelf(self):
+        with self.global_lock:
+            self._prune()
+            return self.preview['shelf'] if self.preview else None
+
+    def scans_idle(self):
+        """No scan holds a lease and none is queued: safe to classify a diagnostic preview."""
+        with self.global_lock:
+            self._prune()
+            return not self.leases and not self.waiting
+
     def clear_training(self):
         """Bridge (re)start boundary: no reservation survives."""
-        with self.global_lock:self.training=None
+        with self.global_lock:self.training=None;self.preview=None
 
     def training_shelf(self):
         """The shelf reserved for training (waiting or capturing), else None."""

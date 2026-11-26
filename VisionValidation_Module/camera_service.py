@@ -77,7 +77,7 @@ from src.periodic_recheck import RecheckCoordinator, TrainingUnavailable
 from src.bridge_runtime import InstanceLock, configure_logs, event, write_process_record, remove_process_record, model_update_status, read_model_sources
 from src.edge_shadow import EdgeShadow
 from src.runtime_inventory import RuntimeInventory, runtime_enabled
-from src.preview_panel import diagnostic_preview
+from src.preview_panel import diagnostic_preview, diagnostic_classify
 from src.model_assets import ModelAssets
 from src.runtime_validation import validate_runtime_request, discard_runtime_attempt, reset_runtime_evidence, prepare_runtime_retry, reset_shelf_evidence
 RUNTIME_INVENTORY = None
@@ -1394,6 +1394,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == '/diagnostic_preview':
             code,payload=diagnostic_preview(urllib.parse.parse_qs(parsed.query),esp32_ref_manager,RECHECKS,AUTONOMOUS,training_token=getattr(self,'headers',{}).get('X-Training-Session'))
+            self._send_json(code,payload)
+            return
+        if path == '/diagnostic_classify':
+            code,payload=diagnostic_classify(urllib.parse.parse_qs(parsed.query),RECHECKS,AUTONOMOUS)
             self._send_json(code,payload)
             return
         if path == '/native_observation':
@@ -2783,7 +2787,7 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                 AUTONOMOUS=AutonomousProcessor(READINESS.run_id,
                     NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node')),
                     cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event,
-                    pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'),cctv_busy=cctv_busy,training_paused=RECHECKS.training_shelf,training_capturing=RECHECKS.training_capturing)
+                    pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'),cctv_busy=cctv_busy,training_paused=RECHECKS.training_shelf,training_capturing=RECHECKS.training_capturing,preview_shelf=RECHECKS.preview_shelf)
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
                 AUTONOMOUS.acceptance='ACCEPTED' if accepted else 'NOT_FIELD_ACCEPTED'
                 if setup_issue:AUTONOMOUS.calibration_issue=setup_issue

@@ -19,7 +19,7 @@ import uuid
 
 from .edge_shadow import EdgeShadow
 from .runtime_inventory import RuntimeInventory, runtime_enabled
-from .preview_panel import NativeObservations, LIVE_CAPTURE_BOOST, LIVE_CAPTURE_DUTY
+from .preview_panel import NativeObservations, InferenceBusy, LIVE_CAPTURE_BOOST, LIVE_CAPTURE_DUTY
 from .validation_diagnostics import failure_code
 from .shelves import SHELF_IDS, SHELF_SET
 from .dual_cam_inventory import REQUIRED_MATCHING_PAIRS, MAX_PAIRS_PER_ATTEMPT, MAX_CAPTURE_DURATION_MS
@@ -244,12 +244,16 @@ def _accepted_reports(acceptance_path,manifest_path,calibration_path,code_paths)
     return reports
 
 
+PREVIEW_INFERENCE_TTL=5  # seconds a diagnostic preview may hold the model (one pair takes about 2.4 s)
+
+
 class NativeClient:
     def __init__(self, root, run_id, manifest, node='node', kind='pair'):
         self.owner=EdgeShadow(root,run_id,'shadow',manifest=manifest,node=node)
         self.owner.worker_kind=kind
         self.lock=threading.Lock();self.replies=None;self.versions={};self.failures=0;self.accepted_versions=None
         self.restart_count=0;self.retry_at=0
+        self.holder=None  # 'scan' or 'preview' while the model is in use
 
     def _load(self):
         if time.monotonic()<self.retry_at:raise RuntimeError('Native worker restart cooling down')
@@ -274,9 +278,16 @@ class NativeClient:
                 if time.monotonic()>=self.retry_at:self._failed()
                 raise
 
-    def infer(self, job, ttl=15):
+    def infer(self, job, ttl=15, preview=False):
+        """Scans have priority: a diagnostic preview never waits (InferenceBusy), and a scan that finds a preview
+        using the model waits for that one bounded preview instead of timing out."""
         started=time.monotonic()
-        if not self.lock.acquire(timeout=min(ttl,2)):raise TimeoutError('Inference busy')
+        if preview:
+            if not self.lock.acquire(blocking=False):raise InferenceBusy('Box-reading model in use by an automatic check')
+            ttl=min(ttl,PREVIEW_INFERENCE_TTL)
+        elif not self.lock.acquire(timeout=min(ttl,2)):
+            if self.holder!='preview' or not self.lock.acquire(timeout=PREVIEW_INFERENCE_TTL+1):raise TimeoutError('Inference busy')
+        self.holder='preview' if preview else 'scan'
         attempted=False
         try:
             if self.replies is None:
@@ -293,7 +304,9 @@ class NativeClient:
         except Exception:
             if attempted:self._failed()
             raise
-        finally:self.lock.release()
+        finally:
+            self.holder=None
+            self.lock.release()
 
     def close(self):
         self.owner.stop_event.set()
@@ -303,7 +316,7 @@ class NativeClient:
 class AutonomousProcessor:
     """One shared native coordinator: counts each shelf, watches the three CCTVs, confirms actions with fresh ESP32 pairs."""
 
-    def __init__(self, run_id, native, cameras, reports, request, capture, shelves, pending, invalidate, log, pose_native=None, cctv_busy=None,training_paused=None,training_capturing=None):
+    def __init__(self, run_id, native, cameras, reports, request, capture, shelves, pending, invalidate, log, pose_native=None, cctv_busy=None,training_paused=None,training_capturing=None,preview_shelf=None):
         self.run_id=run_id;self.native=native;self.cameras=cameras;self.reports=reports
         self.request=request;self.capture=capture;self.shelves=shelves;self.pending=pending
         self.cctv_busy=cctv_busy if cctv_busy is not None else lambda:bool(self.pending())
@@ -326,6 +339,7 @@ class AutonomousProcessor:
         # training_capturing(): shelf whose capture has started; its CCTV votes are staged handling, not actions.
         self.training_paused=training_paused or (lambda:None);self.training_shelf=None
         self.training_capturing=training_capturing or (lambda:None)
+        self.preview_shelf=preview_shelf or (lambda:None)  # shelf briefly reserved by a diagnostic preview
 
     # ---- setup / lifecycle -------------------------------------------------
     @property
@@ -578,7 +592,8 @@ class AutonomousProcessor:
                         trail=[];failure='STALE_CAPTURE'
                         if number<MAX_PAIRS_PER_ATTEMPT-1 and self.stop.wait(2):raise RuntimeError('Stopping')
                         continue
-                    if not count_check:self.panel_observations.put(sid,preview,candidate)
+                    # Display only (no inventory effect): the panel shows the latest picture of each shelf.
+                    self.panel_observations.put(sid,preview,candidate,source='count_check' if count_check else 'scan')
                     if runtime is not None:runtime.observe(sid,candidate,preview['capture'])
                     valid_range=runtime is not None and candidate.get('hold')=='UNKNOWN_B1'
                     if candidate.get('hold') and not valid_range:
@@ -685,7 +700,7 @@ class AutonomousProcessor:
                 actions=[];scans=[];checks=[];pending=self.pending()
                 for sid,status in statuses.items():
                     shelf=shelves.get(sid)
-                    if shelf is None or sid==self.training_shelf:continue
+                    if shelf is None or sid==self.training_shelf or sid==self.preview_shelf():continue
                     runtime=status.get('runtime') or {}
                     ready=status['state']=='Ready'
                     if ready and self.runtime is not None:
