@@ -2828,18 +2828,21 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     const TRAINING_PREVIEW_REQUIRED='Please run Diagnostic Preview first: check both camera pictures for the selected shelf before training capture.';
     function updateTrainingBatchAvailability(){
       const batchButton=document.getElementById('tmBatchButton');
-      const online=bridgeStatus.online,native=online && bridgeStatus.authoritative_processor==='native',needsPreview=!tmBatchRunning && trainingPreviewMissing();
-      batchButton.disabled=!online || diagnosticRunning || tmComparisonRunning || needsPreview;
-      batchButton.title=!online?'Bridge unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':needsPreview?TRAINING_PREVIEW_REQUIRED:'Read-only training session; only the selected shelf pauses automatic checks, and it is counted fresh afterwards';
+      const online=bridgeStatus.online,native=online && bridgeStatus.authoritative_processor==='native';
+      // The button stays clickable without a preview: clicking it explains what to do (captureTMTrainingBatch).
+      batchButton.disabled=!online || diagnosticRunning || tmComparisonRunning;
+      batchButton.title=!online?'Bridge unavailable':diagnosticRunning || tmComparisonRunning?'Another diagnostic is running':'Read-only training session; run Diagnostic Preview for this shelf first. Only the selected shelf pauses automatic checks, and it is counted fresh afterwards';
       batchButton.textContent=tmBatchRunning?'Capturing training data...':'Capture Training Batch (Back + Front ZIPs)';
       const availability=document.getElementById('tmBatchAvailability');
       availability.textContent=tmBatchRunning?'Training capture in progress. Keep the boxes unchanged.':
         !online?'Training capture unavailable: bridge disconnected.':
         diagnosticRunning || tmComparisonRunning?'Training capture waiting: another diagnostic is running.':
-        needsPreview?TRAINING_PREVIEW_REQUIRED:
         native?'Ready for training capture. Other shelves keep counting; the selected shelf pauses and is counted fresh afterwards.':
         'Ready for training capture. Select both verified labels; capture takes several seconds per pair.';
-      markStatusError(availability,!tmBatchRunning && (!online || needsPreview));
+      markStatusError(availability,!tmBatchRunning && !online);
+      // Once a valid preview exists, an earlier "run Diagnostic Preview first" error no longer applies.
+      const status=document.getElementById('tmBatchStatus');
+      if(!tmBatchRunning && !trainingPreviewMissing() && status.textContent===TRAINING_PREVIEW_REQUIRED){status.textContent='';markStatusError(status,false);}
     }
     function updateTMComparisonButton(){
       const button=document.getElementById('tmPreprocessingCompareButton');
