@@ -2761,19 +2761,19 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     let diagnosticRunning=false,previewGeneration=0;
     let tmBatchRunning=false,tmBatchCancelled=false,tmBatchController=null,tmBatchUrls=[];
     let tmComparisonRunning=false,tmComparisonFrames=null;
-    // Training needs proof that both cameras of the selected shelf answer: a successful diagnostic preview
-    // for this shelf, these two camera addresses and this bridge run, with both pictures still on screen.
+    // Training needs a successful diagnostic preview (both pictures) for this shelf, these two camera addresses
+    // and this bridge run, so the operator has seen the scene before labelling it. The pictures need not stay
+    // on screen: the panel may later swap or clear them without the cameras having changed.
     let trainingPreviewCheck=null;
     function trainingPreviewMissing(){
-      const shown=img=>img && img.style && img.style.display==='block';
       const check=trainingPreviewCheck;
       return !(check && check.shelf===refShelfSelect.value && check.ip===refEspIpInput.value.trim() && check.ip2===refEspIp2Input.value.trim()
-        && check.startup_id===bridgeStatus.startup_id && shown(backPreviewImg) && shown(frontPreviewImg));
+        && check.startup_id===bridgeStatus.startup_id);
     }
     // Re-check straight away when the operator changes the shelf or a camera address.
     if(typeof document!=='undefined' && typeof document.addEventListener==='function')for(const type of ['input','change'])
       document.addEventListener(type,event=>{if(['refShelfSelect','refEspIpInput','refEspIp2Input','cam1IpSelect','cam2IpSelect'].includes(event.target?.id))setTimeout(updateTrainingBatchAvailability,0);});
-    const TRAINING_PREVIEW_REQUIRED='Please run Diagnostic Preview first: both camera pictures for the selected shelf must be showing before training capture.';
+    const TRAINING_PREVIEW_REQUIRED='Please run Diagnostic Preview first: check both camera pictures for the selected shelf before training capture.';
     function updateTrainingBatchAvailability(){
       const batchButton=document.getElementById('tmBatchButton');
       const online=bridgeStatus.online,native=online && bridgeStatus.authoritative_processor==='native',needsPreview=!tmBatchRunning && trainingPreviewMissing();
