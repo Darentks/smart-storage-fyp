@@ -25,6 +25,21 @@ class RuntimeInventory:
         self.cctv_enabled=True
         self.changes=deque(maxlen=5)  # Images and quantities are current-run RAM only.
         self.movement_gaps={};self.movement_epoch=0
+        self.maintenance=set();self.recovery_threads={}
+
+    def enter_maintenance(self,shelf):
+        with self.guard:
+            self.maintenance.add(shelf)
+            self.recovery_threads.pop(shelf,None)
+            self.reset_shelf(shelf)
+            self._state(shelf).update(baseline=None,observation=None,retained_history=None,baseline_images={},side_count_deferred=False,count_check=None)
+
+    def maintenance_allowed(self,shelf):
+        return shelf not in self.maintenance or self.recovery_threads.get(shelf)==threading.get_ident()
+
+    def leave_maintenance(self,shelf):
+        with self.guard:
+            self.maintenance.discard(shelf);self.recovery_threads.pop(shelf,None)
 
     def _state(self,shelf):
         if shelf not in SHELF_SET:raise ValueError('Unknown shelf')
@@ -37,6 +52,10 @@ class RuntimeInventory:
         with self.guard:
             row=self._state(shelf)
             with row['lock']:
+                if shelf in self.maintenance:
+                    return dict(shelf_id=shelf,state='Maintenance',display_state='Maintenance',authoritative=False,
+                        action_capable=False,version=row['version'],baseline=None,current_quantity=None,
+                        count_range=[0,5],slots=[None]*5,precision='UNKNOWN',observed_at=None,run_id=self.run_id)
                 baseline=copy.deepcopy(row['baseline'])
                 # A baseline that is no longer authoritative stays visible only as a clearly historical count.
                 historical=dict(total=baseline['total'],count_range=baseline['count_range'],precision=baseline['precision'],
@@ -104,6 +123,7 @@ class RuntimeInventory:
 
     def observe(self,shelf,candidate,capture):
         with self.guard:
+            if not self.maintenance_allowed(shelf):return
             self._state(shelf)['observation']=dict(candidate=copy.deepcopy(candidate),capture=copy.deepcopy(capture),accepted=False)
 
     def event_terminal(self,shelf,event_id):
@@ -239,6 +259,7 @@ class RuntimeInventory:
         with self.guard:
             row=self._state(shelf)
             with row['lock']:
+                if not self.maintenance_allowed(shelf) or (shelf in self.maintenance and source!='STARTUP'):raise ValueError('Replacement maintenance')
                 if run_id!=self.run_id or type(expected_version) is not int or expected_version!=row['version']:raise ValueError('Stale run or inventory version')
                 if not isinstance(lease,str) or not lease:raise ValueError('Lease identity required')
                 if not isinstance(event_id,str) or not event_id or event_id in row['events']:raise ValueError('Duplicate/invalid event')

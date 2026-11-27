@@ -136,6 +136,8 @@ class MQTTClientNode:
             if device_id:
                 payload["last_seen_at"] = now_iso
                 payload["last_seen_ts"] = time.time()
+                payload["mqtt_observed_at"] = payload["last_seen_ts"]
+                payload["mqtt_mac_address"] = payload.get("mac_address")
                 payload["mqtt_client_id"] = device_id
                 self.edge_nodes[device_id] = payload
                 print(

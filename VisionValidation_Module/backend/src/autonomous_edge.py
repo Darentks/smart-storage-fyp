@@ -335,6 +335,7 @@ class AutonomousProcessor:
         self.scan={};self.attempts={};self.exhausted=set();self.scan_lock=threading.Lock()
         self.active_shelf=None
         self.count_check_due={}
+        self.replacement_recovery=set();self.replacement_finished=None
         # training_paused(): shelf reserved for training capture (or None); only that shelf stops automatic checks.
         # training_capturing(): shelf whose capture has started; its CCTV votes are staged handling, not actions.
         self.training_paused=training_paused or (lambda:None);self.training_shelf=None
@@ -431,6 +432,9 @@ class AutonomousProcessor:
             if not self.models_loaded:scan['message']='Waiting for the box-reading models to load'
             elif active and active!=sid:scan['message']=f'Waiting for {active} to finish its camera check'
         paused=self.actions_blocker()
+        if isinstance(self.runtime,RuntimeInventory) and sid in self.runtime.maintenance:
+            scan.update(state='Maintenance',message='Replacement maintenance; verify camera, then Retry scan if required')
+            paused='Replacement maintenance'
         if sid==self.training_shelf:
             scan.update(state='Waiting',message='Training capture on this shelf; it is counted fresh afterwards')
             paused='Training capture on this shelf'
@@ -460,6 +464,7 @@ class AutonomousProcessor:
     def reset_scan_budget(self,sid=None):
         """Fresh evidence boundary (retry request, camera/MQTT/calibration change): count scans may try again."""
         for shelf in ([sid] if sid else list(SHELF_IDS)):
+            if sid is None and isinstance(self.runtime,RuntimeInventory) and shelf in self.runtime.maintenance:continue
             self.attempts.pop(shelf,None);self.exhausted.discard(shelf);self.retry_at.pop(shelf,None)
             with self.scan_lock:
                 if self.scan.get(shelf,{}).get('state') in ('Needs retry','Retrying'):self.scan.pop(shelf,None)
@@ -536,7 +541,9 @@ class AutonomousProcessor:
     # ---- one scan / confirmation attempt ----------------------------------
     def validate(self, shelf, trigger=None, *, count_check=False):
         """Take at most MAX_PAIRS_PER_ATTEMPT fresh pairs; submit once REQUIRED_MATCHING_PAIRS consecutive pairs agree."""
-        sid=shelf['shelf_id'];source='COUNT_CHECK' if count_check else trigger.get('source','CCTV') if trigger else 'STARTUP'
+        sid=shelf['shelf_id']
+        if isinstance(self.runtime,RuntimeInventory) and not self.runtime.maintenance_allowed(sid):raise ValueError('Replacement maintenance')
+        source='COUNT_CHECK' if count_check else trigger.get('source','CCTV') if trigger else 'STARTUP'
         action=trigger['expected_action'] if trigger else 'RECHECK';request_id=str(uuid.uuid4());token=None
         if not shelf.get('ip_address'):raise ScanFailure('BACK_CAMERA_NOT_CONFIGURED')
         if not shelf.get('secondary_ip_address'):raise ScanFailure('FRONT_CAMERA_NOT_CONFIGURED')
@@ -639,7 +646,16 @@ class AutonomousProcessor:
             n=self.attempts[sid]=self.attempts.get(sid,0)+1
             self._set_scan(sid,'Scanning',message='Scanning: keep hands clear of the rack',attempt=n)
         try:
-            result=self.validate(shelf,trigger)
+            recovery=sid in self.replacement_recovery and trigger is None
+            if recovery:
+                with self.runtime.guard:self.runtime.recovery_threads[sid]=threading.get_ident()
+            try:result=self.validate(shelf,trigger)
+            finally:
+                if recovery:
+                    with self.runtime.guard:self.runtime.recovery_threads.pop(sid,None)
+            if recovery and isinstance(result,dict) and result.get('status')=='success':
+                self.replacement_finished(sid)
+                self.replacement_recovery.discard(sid)
             if isinstance(result,dict) and result.get('status')=='retry_pending':
                 self._set_scan(sid,'Waiting',message='Nonterminal validation; waiting for one fresh retry')
                 return
@@ -653,6 +669,9 @@ class AutonomousProcessor:
             self.attempts.pop(sid,None);self.exhausted.discard(sid);self.retry_at.pop(sid,None)
             self._set_scan(sid,'Count ready',message='Count ready',attempt=0)
         except Exception as exc:
+            if isinstance(self.runtime,RuntimeInventory) and sid in self.runtime.maintenance and not recovery:
+                self._set_scan(sid,'Maintenance',message='Replacement maintenance; stale attempt discarded')
+                return
             code=reason_code(exc)
             self.log(self.run_id,'native_validation_held',shelf_id=sid,code='VALIDATION_PENDING')
             if trigger is not None:
@@ -700,6 +719,12 @@ class AutonomousProcessor:
                 actions=[];scans=[];checks=[];pending=self.pending()
                 for sid,status in statuses.items():
                     shelf=shelves.get(sid)
+                    if isinstance(self.runtime,RuntimeInventory) and sid in self.runtime.maintenance:
+                        if sid in self.replacement_recovery and shelf and sid not in self.exhausted and now>=self.retry_at.get(sid,0):
+                            from .camera_slots import SLOTS
+                            pair=[slot for slot in SLOTS if slot['shelf_id']==sid]
+                            scans.append((dict(shelf,ip_address=pair[0]['ip_address'],secondary_ip_address=pair[1]['ip_address']),None))
+                        continue
                     if shelf is None or sid==self.training_shelf or sid==self.preview_shelf():continue
                     runtime=status.get('runtime') or {}
                     ready=status['state']=='Ready'
