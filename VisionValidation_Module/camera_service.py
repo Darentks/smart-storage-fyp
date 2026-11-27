@@ -1396,10 +1396,10 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path.startswith('/replacement/'):
             self._replacement_route(path);return
-        if path=='/camera_replacement.js':
-            data=(Path(__file__).resolve().parent.parent/'camera_replacement.js').read_bytes()
+        if path in ('/camera_replacement.js','/dashboard_pages.js'):
+            data=(Path(__file__).resolve().parent.parent/path.lstrip('/')).read_bytes()
             self.send_response(200);self.send_header('Content-Type','application/javascript; charset=utf-8');self.end_headers();self.wfile.write(data);return
-        if path=='/local-dashboard':
+        if path.rstrip('/') in ('/local-dashboard','/local-dashboard/cctv-configuration','/local-dashboard/esp32-cams'):
             if self.client_address[0]!='127.0.0.1':
                 self._send_json(403,{'error':'Open this page on the bridge laptop'});return
             data=(Path(__file__).resolve().parent.parent/'index.html').read_bytes()

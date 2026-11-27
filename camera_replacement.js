@@ -44,9 +44,9 @@ async function probeAllEsp32CameraNodes(){
   }));renderEsp32CameraManager();
 }
 let replacementTimer=null;
-const replacementLocal=()=>location.hostname==='127.0.0.1' && location.pathname==='/local-dashboard';
+const replacementLocal=()=>location.hostname==='127.0.0.1' && /^\/local-dashboard(?:\/esp32-cams)?\/?$/.test(location.pathname);
 async function replacementFetch(operation,body){
-  if(!replacementLocal())throw Error('Open http://127.0.0.1:8008/local-dashboard on the bridge laptop (use its configured port).');
+  if(!replacementLocal())throw Error('Open http://127.0.0.1:8008/local-dashboard/esp32-cams on the bridge laptop (use its configured port).');
   const response=await fetch(`${location.origin}/replacement/${operation}`,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{cache:'no-store'});
   const data=await response.json();if(!response.ok)throw Error(data.error||'Replacement request failed');return data;
 }
@@ -68,7 +68,7 @@ async function replacementStatus(){
   }catch(error){document.getElementById('replacementProgress').textContent=error.message;}
 }
 async function openReplacement(){
-  if(!replacementLocal()){showToast('Open http://127.0.0.1:8008/local-dashboard on the bridge laptop (or its configured port) for wired replacement.','info');return;}
+  if(!replacementLocal()){showToast('Open http://127.0.0.1:8008/local-dashboard/esp32-cams on the bridge laptop (or its configured port) for wired replacement.','info');return;}
   const dialog=document.getElementById('replacementDialog'),select=document.getElementById('replacementSlot');select.replaceChildren();
   for(const slot of FIXED_CAMERA_SLOTS){const option=document.createElement('option');option.value=slot.label;option.textContent=`${slot.label} ${slot.shelf_id} ${slot.role}`;select.append(option);}
   replacementPreview();dialog.showModal();await replacementStatus();await refreshReplacementPorts();
@@ -81,6 +81,6 @@ async function replacementAction(operation){
 }
 if(!replacementLocal()){
   const button=document.getElementById('wiredReplacementButton');
-  if(button){button.disabled=true;button.insertAdjacentText('afterend',' Wired replacement: open http://127.0.0.1:8008/local-dashboard on the bridge laptop (use its configured port).');}
+  if(button){button.disabled=true;button.insertAdjacentText('afterend',' Wired replacement: open http://127.0.0.1:8008/local-dashboard/esp32-cams on the bridge laptop (use its configured port).');}
 }
 renderEsp32CameraManager();

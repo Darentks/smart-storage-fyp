@@ -5,11 +5,21 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Smart Storage &bull; Shelf Counts &amp; ESP32-CAM Inventory Monitor</title>
+  <script src="/dashboard_pages.js"></script>
   <!-- Supabase JS Client via CDN -->
   <!-- TensorFlow.js & Google Teachable Machine Image Library -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
   <style>
+    /* Keep shared control dependencies mounted, but show only the requested page. */
+    html[data-dashboard-page="dashboard"] [data-dashboard-view]:not([data-dashboard-view="dashboard"]),
+    html[data-dashboard-page="cctv"] [data-dashboard-view]:not([data-dashboard-view="cctv"]),
+    html[data-dashboard-page="esp32"] [data-dashboard-view]:not([data-dashboard-view="esp32"]),
+    [data-dashboard-view][hidden] { display: none !important; }
+    .dashboard-nav { display:flex;flex-wrap:wrap;gap:8px;margin:16px 0; }
+    .dashboard-nav a { text-decoration:none; }
+    .dashboard-nav a[aria-current="page"] { border-color:var(--primary);color:var(--primary);background:rgba(56,189,248,.1); }
+
     :root {
       --bg: #090d16;
       --surface: #111827;
@@ -888,10 +898,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     <header>
       <div>
         <div class="brand-title">
-          <span>Smart Storage</span> &bull; Shelf Counts &amp; ESP32-CAM Monitor
+          <span>Smart Storage</span> &bull; <span id="dashboardPageTitle">Inventory Dashboard</span>
         </div>
         <div class="brand-subtitle">
-          Continuous Resting Baseline Comparison &bull; Scenario Reference Calibration &bull; Real-time Inventory Logs
+          Shelf inventory &bull; CCTV Configuration &bull; ESP32 CAMs
         </div>
       </div>
       <div class="status-group">
@@ -908,8 +918,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       </div>
     </header>
 
-    <p style="padding:0 24px;color:var(--text-muted)">Active vision layout: 5 slots. Bottom: F1, M1, B1. Top: M2, B2. Front camera: F1, M1, M2. Back camera: B1, B2; conditional M2 cross-check. Existing database capacities require an explicit layout migration.</p>
-    <p style="padding:0 24px;color:var(--text-muted)">Recommended loading practice: Fill B2 before placing M2 to reduce B1 occlusion. This is advice, not a validity rule.</p>
+    <nav class="dashboard-nav" aria-label="Main navigation">
+      <a class="btn-action" data-dashboard-link="dashboard" href="/">Inventory Dashboard</a>
+      <a class="btn-action" data-dashboard-link="cctv" href="/cctv-configuration">CCTV Configuration</a>
+      <a class="btn-action" data-dashboard-link="esp32" href="/esp32-cams">ESP32 CAMs</a>
+    </nav>
+    <p data-dashboard-view="dashboard" style="padding:0 24px;color:var(--text-muted)">Active vision layout: 5 slots. Bottom: F1, M1, B1. Top: M2, B2. Front camera: F1, M1, M2. Back camera: B1, B2; conditional M2 cross-check. Existing database capacities require an explicit layout migration.</p>
+    <p data-dashboard-view="dashboard" style="padding:0 24px;color:var(--text-muted)">Recommended loading practice: Fill B2 before placing M2 to reduce B1 occlusion. This is advice, not a validity rule.</p>
     <!-- Bridge Config & Quick Action Bar -->
     <div class="config-bar" style="flex-wrap: wrap; gap: 12px;">
       <div class="config-bar-left" style="flex-wrap: wrap; gap: 8px;">
@@ -924,7 +939,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <button type="button" class="btn-action" onclick="setNativeCctv(false)">Stop CCTV</button>
         <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart also starts a stopped bridge; restarting clears counts and scans again.</span>
       </div>
-      <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <div data-dashboard-view="dashboard" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
         <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front model URL (6 classes):</label>
         <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
@@ -935,16 +950,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           Load Both TM Models</button>
       </div>
       <div style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
-        <button type="button" class="btn-action" style="border-color: var(--primary); color: var(--primary);"
-          onclick="document.getElementById('esp32CameraManagerPanel').scrollIntoView({ behavior: 'smooth' })">&#128225;
-          ESP32 nodes &amp; OTA Manager</button>
-        <button type="button" class="btn-action"
-          onclick="document.getElementById('cctvCameraManagerPanel').scrollIntoView({ behavior: 'smooth' }); toggleRoiCalibrationMode(true);">&#127919;
-          Calibrate CCTV ROIs</button>
+        <a class="btn-action" data-dashboard-link="esp32" href="/esp32-cams">ESP32 CAMs</a>
+        <a class="btn-action" data-dashboard-link="cctv" data-calibrate href="/cctv-configuration?calibrate=1">Calibrate CCTV ROIs</a>
         <button type="button" class="btn-action" onclick="refreshAllData()">&circlearrowright; Refresh All</button>
       </div>
     </div>
 
+    <div data-dashboard-view="dashboard">
     <!-- Panel 1: Compartment Inventory Grid & Count Checks -->
     <section class="panel">
       <div class="panel-header">
@@ -1156,14 +1168,16 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       </div>
     </section>
 
+    </div>
+    <div data-dashboard-view="cctv">
     <!-- Panel 4A: YOLO11n-Pose ONNX (Vercel Web) CCTV Manager -->
     <section class="panel" id="cctvCameraManagerPanel" style="margin-top: 24px;">
       <div id="cctvCamerasSection"></div>
       <div class="panel-header"
         style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px;">
         <div>
-          <h2 class="panel-title">&#128249; Panel 4A &bull; YOLO11n-Pose ONNX (Vercel Web) CCTV Manager (<code>public.cctv_cameras</code>)</h2>
-          <p class="panel-desc">Run 100% client-side YOLO11n-Pose ONNX (Vercel Web) in-browser on Vercel without desktop Python. Tracks wrist keypoints, detects sustained ROI dwell (&ge; 1.2s), and triggers dual-camera AI verification.</p>
+          <h2 class="panel-title">CCTV Configuration</h2>
+          <p class="panel-desc">Manage CCTV cameras, calibrate shelf regions and review native camera agreement. Browser pose and replay tools are diagnostic only.</p>
         </div>
         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
           <button type="button" class="btn-action" onclick="loadCctvCameras()">
@@ -1464,9 +1478,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       </div>
     </section>
 
-    <section class="panel" id="esp32CameraManagerPanel" style="margin-top:24px">
-      <h2 class="panel-title">Panel 4 &middot; ESP32-CAM nodes (6 cameras)</h2>
-      <p>Fixed Back/Front slots for C1?C3. Configure registrations in Panel 2.</p>
+    </div>
+    <section class="panel" data-dashboard-view="esp32" id="esp32CameraManagerPanel" style="margin-top:24px">
+      <h2 class="panel-title">ESP32 CAMs</h2>
+      <p>Six fixed Back/Front cameras for C1?C3. Configure registrations in Panel 2 on the Inventory Dashboard.</p>
       <button class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">Probe all 6 cameras</button>
       <button class="btn-action" id="wiredReplacementButton" onclick="openReplacement()">Wired Flash / Replace Camera</button>
       <p id="ignoredCameraRows"></p>
@@ -2196,7 +2211,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     // Get current local bridge base (supports HTTPS / Cloudflare Tunnel / env vars / query param)
     function getBridgeUrl() {
-      if(location.hostname==='127.0.0.1' && location.pathname==='/local-dashboard')return location.origin;
+      if(location.hostname==='127.0.0.1' && /^\/local-dashboard(?:\/(?:cctv-configuration|esp32-cams))?\/?$/.test(location.pathname))return location.origin;
       try {
         const params = new URLSearchParams(window.location.search);
         const queryBridge = params.get('bridge') || params.get('bridge_url');
@@ -2274,10 +2289,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     // In-Browser YOLO ROI Calibrator Launcher
     function launchLocalCalibrator() {
-      const panel = document.getElementById('cctvCameraManagerPanel');
-      if (panel) panel.scrollIntoView({ behavior: 'smooth' });
-      toggleRoiCalibrationMode(true);
-      showToast('Switched to In-Browser YOLO ROI Calibrator!', 'info');
+      navigateToDashboardPage('cctv',{calibrate:true});
     }
 
     // =========================================================================
