@@ -33,11 +33,11 @@ function cachedShelfPicture(bridge,shelf){
   }
   return esp32PendingPictures.get(key);
 }
-async function loadCachedCameraPicture(slot,refresh=false){
+async function loadCachedCameraPicture(slot){
   const bridge=getBridgeUrl(),key=bridge+'|'+slot.device_id;
   const previous=esp32CachedPictures.get(slot.device_id);
-  if(!refresh && previous?.key===key)return;
   if(previous?.key===key && previous.loading)return;
+  const minimumLoading=new Promise(resolve=>setTimeout(resolve,1000));
   const record={key,loading:true,image:previous?.key===key?previous.image:'',timestamp:previous?.key===key?previous.timestamp:null,message:'Loading cached picture…'};
   esp32CachedPictures.set(slot.device_id,record);
   try{
@@ -47,6 +47,7 @@ async function loadCachedCameraPicture(slot,refresh=false){
     record.image=image;record.timestamp=observation.timestamp;record.message='Cached picture';
   }catch(error){record.message=error.message;}
   finally{
+    await minimumLoading;
     record.loading=false;
     if(esp32CachedPictures.get(slot.device_id)===record && getBridgeUrl()===bridge)renderEsp32CameraManager();
   }
@@ -54,7 +55,7 @@ async function loadCachedCameraPicture(slot,refresh=false){
 async function refreshCachedCameraPicture(deviceId){
   const slot=fixedCameraRegistrations(esp32CameraNodesList).find(s=>s.device_id===deviceId);
   if(!slot || slot.status!=='Registered')return;
-  const pending=loadCachedCameraPicture(slot,true);
+  const pending=loadCachedCameraPicture(slot);
   renderEsp32CameraManager();await pending;
 }
 function renderEsp32CameraManager(){
@@ -66,14 +67,15 @@ function renderEsp32CameraManager(){
   const markup=slots.map(slot=>{
     const valid=slot.status==='Registered',record=esp32CachedPictures.get(slot.device_id);
     const cached=valid && record?.key===bridge+'|'+slot.device_id?record:null;
-    const image=cached?.image||'';
-    const timestamp=Number.isFinite(cached?.timestamp)?new Date(cached.timestamp*1000).toLocaleString():'';
+    const image=cached?.loading?'':cached?.image||'';
+    const timestamp=!cached?.loading && Number.isFinite(cached?.timestamp)?new Date(cached.timestamp*1000).toLocaleString():'';
     return `<article style="padding:14px;border:1px solid #475569;border-radius:8px"><h3>${slot.label} · ${slot.shelf_id} ${slot.role}</h3>
       <p>${slot.device_id}<br>${slot.ip_address}</p><p>${slot.status} ${escape(slot.errors.join('; '))}</p>
       <p>${escape(slot.row?.status||'OFFLINE')} ${escape(slot.row?.probe_issue||'')}</p>
       ${image?`<img data-camera-id="${slot.device_id}" src="${escape(image)}" alt="${slot.label} ${slot.role} cached picture" style="width:100%;height:140px;object-fit:contain">`:''}
-      <p role="status">${escape(cached?.message||'No cached picture loaded')}${timestamp?' · '+escape(timestamp):''}</p>
-      <button class="btn-action" ${valid && !cached?.loading?'':'disabled'} onclick="refreshCachedCameraPicture('${slot.device_id}')">Refresh cached picture</button>
+      ${cached?.loading?'<div role="status" aria-busy="true" style="height:140px;display:grid;place-items:center;color:var(--text-muted)">Loading cached picture…</div>':''}
+      <p role="status">${escape(cached?.loading?'Loading…':cached?.message||'Click Show cached picture to view this camera.')}${timestamp?' · '+escape(timestamp):''}</p>
+      <button class="btn-action" ${valid && !cached?.loading?'':'disabled'} onclick="refreshCachedCameraPicture('${slot.device_id}')">${cached?.loading?'Loading…':cached?.image?'Refresh cached picture':'Show cached picture'}</button>
       </article>`;
   }).join('');
   if(grid.innerHTML!==markup){
@@ -84,12 +86,7 @@ function renderEsp32CameraManager(){
       if(previous && previous.getAttribute('src')===image.getAttribute('src'))image.replaceWith(previous);
     }
   }
-  if(typeof DASHBOARD_PAGE!=='undefined' && DASHBOARD_PAGE==='esp32'){
-    for(const slot of slots){
-      if(slot.status==='Registered')void loadCachedCameraPicture(slot);
-      else esp32CachedPictures.delete(slot.device_id);
-    }
-  }
+  for(const slot of slots)if(slot.status!=='Registered')esp32CachedPictures.delete(slot.device_id);
 }
 async function probeAllEsp32CameraNodes(){
   await Promise.all(fixedCameraRegistrations(esp32CameraNodesList).filter(s=>s.status==='Registered').map(async slot=>{
