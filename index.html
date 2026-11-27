@@ -184,15 +184,9 @@
     }
 
     .cctv-tools {display:grid;gap:12px;margin:12px 0;}
-    .cctv-tool-status,.cctv-tool-group {padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(15,23,42,.55);}
-    .cctv-tool-status {border-left:3px solid var(--primary);background:linear-gradient(135deg,rgba(56,189,248,.08),rgba(15,23,42,.6));}
-    .cctv-tool-status h3,.cctv-tool-group h3 {font-size:14px;font-weight:600;letter-spacing:.01em;margin:0 0 8px;color:var(--text-primary);}
-    .cctv-tool-status p,.cctv-tool-group p {font-size:12px;color:var(--text-secondary);line-height:1.5;margin:6px 0 12px;}
-    #edgeProcessorStatus {display:inline-flex;align-items:center;gap:8px;padding:4px 10px;border-radius:999px;background:rgba(56,189,248,.1);border:1px solid rgba(56,189,248,.25);font-size:12px;font-weight:600;color:var(--primary);margin-bottom:4px;}
-    #processorSetupIssue,#cameraAgreementStatus,#liveActivityStage {margin-top:8px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:rgba(0,0,0,.2);font-size:12px;}
-    #processorSetupIssue {border-color:var(--warning);color:var(--warning);}
-    #confirmedActionBanner {margin-top:10px;padding:10px 12px;border-radius:8px;background:rgba(0,0,0,.28);border:1px solid var(--border);font-size:12px;color:var(--text-primary);}
-    #localOperationsStatus {margin-top:8px;font-size:12px;color:var(--text-secondary);line-height:1.5;}
+    .cctv-tool-group {padding:14px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(15,23,42,.55);}
+    .cctv-tool-group h3 {font-size:14px;font-weight:600;letter-spacing:.01em;margin:0 0 8px;color:var(--text-primary);}
+    .cctv-tool-group p {font-size:12px;color:var(--text-secondary);line-height:1.5;margin:6px 0 12px;}
     .cctv-tool-grid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px;}
     .cctv-tool-grid .btn-action {white-space:normal;text-align:left;align-items:flex-start;justify-content:flex-start;padding:12px 14px;min-height:78px;display:flex;flex-direction:column;gap:5px;border-radius:10px;background:rgba(15,23,42,.7);transition:border-color .15s ease,background .15s ease,transform .15s ease;}
     .cctv-tool-grid .btn-action:hover {border-color:var(--primary);background:rgba(56,189,248,.08);transform:translateY(-1px);}
@@ -201,7 +195,6 @@
     .cctv-tools .btn-action:focus-visible,.cctv-tools summary:focus-visible {outline:2px solid var(--primary);outline-offset:3px;}
     .cctv-tools summary {cursor:pointer;padding:2px 0;font-weight:600;font-size:13px;color:var(--text-primary);}
     #threeCameraEvents {padding:10px 12px;border-radius:8px;background:rgba(7,11,20,.75);border:1px solid var(--border);font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);}
-    #confirmedActionBanner {padding:12px;border-left:3px solid var(--primary);border-radius:6px;background:rgba(56,189,248,.06);line-height:1.5;margin:12px 0;}
     .btn-action:hover {
       background: var(--surface-card-hover);
       border-color: var(--primary);
@@ -708,8 +701,7 @@
     }
 
     /* These banners carry inline colours for their normal state; the error state must win over them. */
-    #tmLivePredictionBanner.status-error,
-    #processorSetupIssue.status-error {
+    #tmLivePredictionBanner.status-error {
       display: flex !important;
       background: var(--danger-bg) !important;
       border: 1px solid rgba(244, 63, 94, 0.35) !important;
@@ -718,9 +710,6 @@
       box-shadow: none !important;
     }
 
-    #processorSetupIssue.status-error[hidden] {
-      display: none !important;
-    }
 
     pre.status-error::before {
       content: "\26A0  ";
@@ -1312,19 +1301,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
           <div id="cctvConsensusResult" role="status" style="font-size:13px;"></div>
           <section class="cctv-tools" aria-label="CCTV monitoring and setup">
-          <div class="cctv-tool-status">
-            <h3>Processor &amp; live activity</h3>
-            <div id="edgeProcessorStatus" role="status">Checking local processor...</div>
-            <div id="processorSetupIssue" role="alert" hidden></div>
-            <div id="cameraAgreementStatus" role="status" aria-live="polite">Camera agreement is shown when the native processor is running.</div>
-            <div id="liveActivityStage" role="status" aria-live="polite"></div>
-            <button type="button" class="btn-action" onclick="requestNativeScan()"><span>Scan counts</span><small>Ask the shared processor to recount shelves that have no current count.</small></button>
-            <p>All application users share the running bridge processor. Signed-in users can configure cameras and install calibration without an owner/admin role. On other computers, use this bridge host's shared URL instead of localhost. Dashboard controls do not start or stop the host service.</p>
-            <button type="button" class="btn-action" onclick="showLocalOperations()">Refresh latest activity</button>
-          <div id="confirmedActionBanner" role="status" aria-live="polite">No confirmed action received.</div>
-          <div id="localOperationsStatus" style="max-height:420px;overflow:auto;"></div>
-          <div id="cctvDiagnosticActivity" style="max-height:280px;overflow:auto;" aria-live="polite">No preview gestures observed in this page session yet.</div>
-          </div>
           <div class="cctv-tool-group">
             <h3>Camera calibration</h3>
             <p>Calibrate and save each camera's regions first. Export prepares a file for the bridge; Install uploads it directly; loading reads calibrations already installed there.</p>
@@ -1924,7 +1900,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='No recent picture of this shelf yet';}
           }
         }
-      }catch(_){bridgeMissedPolls++;panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+      }catch(_){bridgeMissedPolls++;panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';{const banner=document.getElementById('confirmedActionBanner');if(banner)banner.textContent='Action status unavailable — reconnect the local bridge for fresh results.';}}
     }
     // Seconds (bridge clock = this PC) when Get latest TM models was clicked; only newer results are shown.
     let tmUpdateRequestedAt=0;
@@ -2107,7 +2083,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       return {location,action,status,explanation,time:Number.isFinite(record.timestamp)?new Date(record.timestamp*1000).toLocaleString():'Time unavailable'};
     }
     function renderLocalOperations(data,{notify=false}={}){
-      const host=document.getElementById('localOperationsStatus');host.replaceChildren();
+      const host=document.getElementById('localOperationsStatus');if(!host)return;host.replaceChildren();
       const add=(parent,tag,text)=>{const node=document.createElement(tag);node.textContent=text;parent.appendChild(node);return node;};
       const records=[...(data.intents || [])].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
       const sameRun=localIntentRun===data.run_id;
@@ -2163,13 +2139,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const pre=add(details,'pre',JSON.stringify({...data,browser_device_rest:{...cloudRequestMetrics}},null,2));pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;';
     }
     async function refreshLocalOperations({notify=false}={}){
-      if(localOperationsBusy)return;
+      if(!document.getElementById('localOperationsStatus') || localOperationsBusy)return;
       localOperationsBusy=true;const epoch=previewGeneration,url=getBridgeUrl();
       try{
         const response=await fetch(`${url}/local_operations`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
         if(!response.ok)throw Error('Local diagnostics unavailable');const data=await response.json();
         if(epoch===previewGeneration && url===getBridgeUrl())renderLocalOperations(data,{notify});
-      }catch(error){document.getElementById('localOperationsStatus').textContent='Could not refresh diagnostics. Check the local bridge connection.';document.getElementById('confirmedActionBanner').textContent='Action status unavailable — reconnect the local bridge for fresh results.';}
+      }catch(error){{const host=document.getElementById('localOperationsStatus');if(host)host.textContent='Could not refresh diagnostics. Check the local bridge connection.';}{const banner=document.getElementById('confirmedActionBanner');if(banner)banner.textContent='Action status unavailable — reconnect the local bridge for fresh results.';}}
       finally{localOperationsBusy=false;}
     }
     async function showLocalOperations(){await refreshLocalOperations();}
