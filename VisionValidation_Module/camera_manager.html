@@ -1210,7 +1210,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         </div>
       </div>
 
-      <!-- CCTV diagnostic viewer; camera editing opens from the cards below. -->
+      <!-- CCTV diagnostic viewer; pick, edit and calibrate cameras from the toolbar. -->
       <div class="tester-grid" style="margin-bottom: 20px; grid-template-columns: minmax(0, 1fr);">
         <!-- Right Column: In-Browser YOLO11n-Pose ONNX CCTV Wrist-ROI Dwell Detector -->
         <div id="cctvViewerColumn"
@@ -1241,6 +1241,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <option value="CCTV_02">CCTV_02</option>
                 <option value="CCTV_03">CCTV_03</option>
               </select>
+              <button type="button" class="btn-action" id="cctvEditSelectedBtn" disabled
+                title="Edit the selected camera's registration" onclick="editSelectedCctvCamera()">&#9998; Edit</button>
               <!-- Internal mode: live bridge feed or recorded-video replay (entered from Diagnostics). -->
               <select id="cctvPoseSourceSelect" hidden aria-hidden="true" tabindex="-1" onchange="onCctvSourceChanged()">
                 <option value="cctv_bridge" selected>CCTV camera (local bridge)</option>
@@ -1255,7 +1257,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </button>
               <button type="button" class="btn-action" id="cctvCalibrateRoiBtn"
                 style="border-color: var(--primary); color: var(--primary);"
-                onclick="toggleRoiCalibrationMode()">
+                onclick="onCalibrateRoiClicked()">
                 &#127919; Calibrate ROI
               </button>
               <button type="button" class="btn-action cctv-icon-btn" id="cctvFullscreenBtn"
@@ -1266,7 +1268,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
 
           <div id="cctvActiveSourceText" class="cctv-source-text" aria-live="polite">
-            No camera selected. Choose one from the <strong>Camera</strong> list, or click <strong>Calibrate ROI</strong> on a camera card below.
+            No camera selected. Choose one from the <strong>Camera</strong> list to show its feed, then use <strong>Edit</strong> or <strong>Calibrate ROI</strong>.
           </div>
 
           <!-- Interactive ROI Calibration Bar (Shown when Calibrate ROI is active) -->
@@ -1361,7 +1363,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <h3>Camera calibration</h3>
             <p>Do these steps once for each of the three cameras, then install. The bridge reuses the installed file on every restart.</p>
             <ol class="cctv-steps">
-              <li class="cctv-step"><span class="cctv-step-num" aria-hidden="true">1</span><div><strong>Calibrate</strong><small>Click <em>Calibrate ROI</em> on a camera card and draw each shelf region.</small></div></li>
+              <li class="cctv-step"><span class="cctv-step-num" aria-hidden="true">1</span><div><strong>Calibrate</strong><small>Pick a camera in the <em>Camera</em> list, click <em>Calibrate ROI</em> and draw each shelf region.</small></div></li>
               <li class="cctv-step"><span class="cctv-step-num" aria-hidden="true">2</span><div><strong>Save</strong><small>Click <em>Save ROIs &amp; Finish Calibration</em>. Repeat for every camera.</small></div></li>
               <li class="cctv-step cctv-step-primary"><span class="cctv-step-num" aria-hidden="true">3</span><div><strong>Install</strong><button type="button" class="btn-action btn-primary-solid" onclick="installEdgeCalibrations()">Install to Bridge</button><small>Uploads saved regions and re-verifies every shelf.</small></div></li>
             </ol>
@@ -1384,13 +1386,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         </div>
       </div>
 
-      <!-- Bottom Table / Cards: All Configured CCTV Cameras -->
-      <div id="cctvCamerasListGrid"
-        style="display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 14px;">
-        <div style="grid-column: 1 / -1; text-align: center; padding: 24px; color: var(--text-muted);">
-          Loading CCTV cameras...
-        </div>
-      </div>
     </section>
 
     </div>
@@ -5738,7 +5733,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
-    // Toolbar Camera list: same binding path as the camera cards' Start button.
+    // Toolbar Camera list: binds and starts the picked camera's feed. The pick is kept even when
+    // binding fails so Edit can still open that camera's registration to fix it.
+    let cctvPickedId = null;
     function onCctvCameraPicked(cctvId) {
       const cam = cctvCamerasList.find(c => c.cctv_id === cctvId);
       if (!cam) {
@@ -5746,20 +5743,54 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         syncCctvCameraPicker();
         return;
       }
+      cctvPickedId = cctvId;
       if (!useCctvAsTrackerSource(cam.rtsp_url, cctvId)) syncCctvCameraPicker();
+    }
+
+    function pickedCctvCamera() {
+      const id = cctvPickedId || (activeCctvSourceUrl ? activeCctvId : null);
+      return cctvCamerasList.find(c => c.cctv_id === id) || null;
+    }
+
+    function focusCctvCameraPicker() {
+      const picker = document.getElementById('cctvCameraPicker');
+      if (!picker) return;
+      picker.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      picker.focus();
     }
 
     function syncCctvCameraPicker() {
       const picker = document.getElementById('cctvCameraPicker');
       if (!picker) return;
       for (const option of picker.options) {
-        if (!option.value) continue;
+        if (!option.value) {
+          option.textContent = cctvLoadError ? 'CCTV configuration unavailable – click Refresh CCTVs'
+            : cctvConfigLoaded && !cctvCamerasList.length ? 'No CCTV cameras registered' : 'Choose a camera…';
+          continue;
+        }
         const cam = cctvCamerasList.find(c => c.cctv_id === option.value);
         option.disabled = !cam;
         option.textContent = !cam ? `${option.value} (not registered)`
           : `${cam.cctv_id}${cam.camera_name ? ' · ' + cam.camera_name : ''}${cam.is_active === false ? ' (inactive)' : ''}`;
       }
-      picker.value = activeCctvSourceUrl && cctvCamerasList.some(c => c.cctv_id === activeCctvId) ? activeCctvId : '';
+      const picked = pickedCctvCamera();
+      picker.value = picked ? picked.cctv_id : '';
+      const editBtn = document.getElementById('cctvEditSelectedBtn');
+      if (editBtn) editBtn.disabled = !picked;
+    }
+
+    function editSelectedCctvCamera() {
+      const cam = pickedCctvCamera();
+      if (!cam) { showToast('Choose a camera from the Camera list first.', 'info'); focusCctvCameraPicker(); return; }
+      editCctvCamera(encodeURIComponent(JSON.stringify({ cctv_id: cam.cctv_id })));
+    }
+
+    // Toolbar Calibrate ROI: binds the picked camera first (as calibrateCctvRoi always did), or exits calibration.
+    function onCalibrateRoiClicked() {
+      if (isCalibratingRoi) { toggleRoiCalibrationMode(false); return; }
+      const cam = pickedCctvCamera();
+      if (!cam) { showToast('Choose a camera from the Camera list first.', 'info'); focusCctvCameraPicker(); return; }
+      calibrateCctvRoi(cam.cctv_id, cam.rtsp_url);
     }
 
     // Diagnostics: enter or leave recorded-video replay for the selected camera.
@@ -5773,7 +5804,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (on) document.getElementById('cctvReplayTools')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
-    // RTSP polling uses the selected camera card, independently of the editable form.
+    // RTSP polling uses the camera picked in the Camera list, independently of the editable form.
 
     function startCctvBridgePollingLoop() {
       const generation = trackingGeneration;
@@ -5787,7 +5818,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const source = (activeCctvSourceUrl || camera?.rtsp_url || '').trim();
       try {
         const binding = validateCctvBinding(cameraId, source, camera?.ip_address);
-        if (!camera || binding !== cctvSourceBinding(camera.rtsp_url)) throw new Error('Select the matching camera card before starting the bridge feed.');
+        if (!camera || binding !== cctvSourceBinding(camera.rtsp_url)) throw new Error('Pick the camera again in the Camera list before starting the bridge feed.');
       } catch (error) {
         stopMediaPipeTracker();
         showToast(error.message, 'error');
@@ -5898,7 +5929,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const camera = cctvCamerasList.find(cam => cam.cctv_id === activeCctvId);
         const binding = validateCctvBinding(activeCctvId, activeCctvSourceUrl, camera?.ip_address);
         if (!camera || binding !== cctvSourceBinding(camera.rtsp_url) || cameraRole(camera) !== activeCameraRole) {
-          throw new Error('Camera binding or role changed. Select Calibrate ROI on the matching camera card again.');
+          throw new Error('Camera binding or role changed. Pick the camera again in the Camera list, then click Calibrate ROI.');
         }
         localStorage.setItem(roiStorageKey(), JSON.stringify(activeCctvRois));
         localStorage.setItem(`${roiStorageKey()}_binding`, JSON.stringify({ source: binding, camera_role: activeCameraRole }));
@@ -6007,7 +6038,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             && new URL(cam.rtsp_url).hostname.toLowerCase() === new URL(source).hostname.toLowerCase());
         } catch (_) { return false; }
       })());
-      if (other) throw new Error(`${cameraId}: this stream is already assigned to ${other.cctv_id}. Select the matching camera card.`);
+      if (other) throw new Error(`${cameraId}: this stream is already assigned to ${other.cctv_id}. Pick the matching camera in the Camera list.`);
       return binding;
     }
 
@@ -6119,61 +6150,15 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function renderCctvCameras() {
-      const grid = document.getElementById('cctvCamerasListGrid');
       syncCctvCameraPicker();
-      if (!grid) return;
-
       if (!cctvCamerasList || cctvCamerasList.length === 0) {
         if (cctvConfigLoaded) syncCctvAlignmentConfig().catch(error => console.warn('[CCTV Alignment]', error.message));
-        grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--text-muted);">${cctvLoadError ? 'CCTV configuration unavailable. Check database access and retry.' : 'No CCTV cameras registered. Refresh after the existing device registrations are restored.'}</div>`;
         return;
       }
-
       const active = cctvCamerasList.find(cam => cam.cctv_id === activeCctvId);
       const nextRole = active ? cameraRole(active) : activeCameraRole;
       if (nextRole !== activeCameraRole) { activeCameraRole = nextRole; initCompartmentTrackers(); }
       if (cctvConfigLoaded) syncCctvAlignmentConfig().catch(error => console.warn('[CCTV Alignment]', error.message));
-      grid.innerHTML = cctvCamerasList.map(cam => {
-        const maskedRtsp = cam.rtsp_url && cam.rtsp_url.includes('@')
-          ? cam.rtsp_url.replace(/:[^:@]+@/, ':***@')
-          : (cam.rtsp_url || '0');
-
-        const encodedJson = encodeURIComponent(JSON.stringify(cam));
-        const role = cameraRole(cam);
-
-        return `
-          <div style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; justify-content: space-between; gap: 10px;">
-            <div>
-              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 6px;">
-                <div>
-                  <span style="font-size: 13px; font-weight: 700; color: var(--text-primary); font-family: var(--font-mono);">${cam.cctv_id}</span>
-                  <span style="font-size: 12px; color: var(--text-muted); margin-left: 6px;">${cam.camera_name || ''}</span>
-                </div>
-                <span class="badge" style="font-size: 10px;">${role}</span>
-                ${cam.is_active ? `<span class="badge badge-online" style="font-size: 10px;">Active</span>` : `<span class="badge badge-offline" style="font-size: 10px;">Inactive</span>`}
-              </div>
-
-              <div style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); margin-bottom: 6px; word-break: break-all;">
-                &#127760; ${maskedRtsp}
-              </div>
-            </div>
-
-            <div style="display: flex; flex-direction: column; gap: 6px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 10px;">
-               <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
-                <button type="button" class="btn-action" style="font-size: 11px; padding: 5px 8px; justify-content: center; border-color: var(--primary); color: var(--primary);" onclick="calibrateCctvRoi('${cam.cctv_id}', '${cam.rtsp_url}')">
-                  &#127919; Calibrate ROI
-                </button>
-                <div style="display: flex; gap: 4px;">
-                  <button type="button" class="btn-action" style="flex: 1; font-size: 11px; padding: 5px 4px; justify-content: center;" onclick="editCctvCamera('${encodedJson}')">&#9998; Edit</button>
-                </div>
-              </div>
-              <button type="button" class="btn-action" style="width: 100%; font-size: 11px; padding: 6px 8px; justify-content: center; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 700;" onclick="startCctvPipeline('${cam.cctv_id}', '${cam.rtsp_url}')">
-                &#9654; Start YOLO11n-Pose ONNX (Vercel Web)
-              </button>
-            </div>
-          </div>
-        `;
-      }).join('');
     }
 
     function toggleCctvFullscreen() {
@@ -6184,11 +6169,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function calibrateCctvRoi(cctvId, rtspUrl) {
-      const panel = document.getElementById('cctvCameraManagerPanel');
-      if (panel) panel.scrollIntoView({ behavior: 'smooth' });
       if (!useCctvAsTrackerSource(rtspUrl, cctvId)) return;
       toggleRoiCalibrationMode(true);
-      showToast(`Ready to calibrate ROI for ${cctvId} on its CCTV feed. Drag box on canvas above.`, 'info');
+      showToast(`Ready to calibrate ROI for ${cctvId} on its CCTV feed. Draw on the canvas.`, 'info');
     }
 
     // Point the tracker canvas at the selected CCTV (via local bridge) instead of the laptop webcam
@@ -6197,7 +6180,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       try {
         const binding = validateCctvBinding(cctvId, rtspUrl, camera?.ip_address);
         if (!camera || cctvSourceBinding(camera.rtsp_url) !== binding) {
-          throw new Error(`${cctvId}: camera card changed. Refresh CCTVs and select its card again.`);
+          throw new Error(`${cctvId}: camera registration changed. Refresh CCTVs and pick it again in the Camera list.`);
         }
       } catch (error) {
         showToast(error.message, 'error');
@@ -6233,18 +6216,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         if (generation === trackingGeneration && activeCctvId === cctvId) startMediaPipeTracker();
       }, 200);
       return true;
-    }
-
-    function startCctvPipeline(cctvId, rtspUrl) {
-      const panel = document.getElementById('cctvCameraManagerPanel');
-      if (panel) panel.scrollIntoView({ behavior: 'smooth' });
-      if (!useCctvAsTrackerSource(rtspUrl, cctvId)) return;
-      showToast(`Running YOLO11n-Pose ONNX (Vercel Web) on ${cctvId} CCTV feed`, 'success');
-    }
-
-    function stopCctvPipeline(cctvId) {
-      stopMediaPipeTracker();
-      showToast(`Stopped YOLO11n-Pose ONNX (Vercel Web) for ${cctvId}`, 'info');
     }
 
     function editCctvCamera(encodedJson) {
