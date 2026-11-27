@@ -4189,7 +4189,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function renderComparisonLogs() {} // Retained response adapter; Panel 3 is retired.
 
     // =========================================================================
-    // ESP32-CAM 6-CAMERA HARDWARE CRUD, WIRELESS NVS & OTA SERVICE (Panel 4)
+    // ESP32-CAM FIXED CAMERA MONITORING
     // =========================================================================
     const DEFAULT_ESP32_CAMERAS = ALL_SHELF_IDS.flatMap((shelfId, i) => [1, 2].map(a => {
       const s = i + 1, n = i * 2 + a - 1;
@@ -4204,7 +4204,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     let esp32CameraNodesList = [];
     let esp32NodeSnapshotModeMap = {};
     let esp32NodeCacheBustMap = {};
-    let esp32NodeOtaUploadingMap = {};
 
     function cleanCameraHost(ip) {
       return String(ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/\d+$/, '').replace(/\/+$/, '');
@@ -4212,15 +4211,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     function shouldProxyLanThroughBridge() {
       return window.location.protocol === 'https:';
-    }
-
-    function fileToBase64DataUrl(file) {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = (err) => reject(err);
-        reader.readAsDataURL(file);
-      });
     }
 
     async function probeCameraStatus(ip) {
@@ -4282,40 +4272,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       } finally {
         clearTimeout(timeoutId);
       }
-    }
-
-    async function uploadCameraFirmware(ip, binFile) {
-      const host = cleanCameraHost(ip);
-      if (!host) throw new Error('Camera IP address is required');
-      if (!binFile) throw new Error('Firmware .bin file is required');
-
-      if (shouldProxyLanThroughBridge()) {
-        const fileB64 = await fileToBase64DataUrl(binFile);
-        const res = await fetch(`${getBridgeUrl()}/esp32_ota_upload`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            ip: host,
-            filename: binFile.name || 'firmware.bin',
-            file_base64: fileB64
-          })
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.status === 'failed') {
-          throw new Error(data.error || `OTA upload via bridge failed (HTTP ${res.status})`);
-        }
-        return { ok: true, message: data.device_response || 'OK - Rebooting' };
-      }
-
-      const formData = new FormData();
-      formData.append('file', binFile, binFile.name || 'firmware.bin');
-      const res = await fetch(`http://${host}/update`, {
-        method: 'POST',
-        body: formData
-      });
-      const text = await res.text();
-      if (!res.ok) throw new Error(`OTA upload failed (HTTP ${res.status}): ${text}`);
-      return { ok: true, message: text || 'OK - Rebooting' };
     }
 
     function captureLiveSnapshotUrl(ip, mode = 'live', flash = 0) {
@@ -4450,31 +4406,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
-    async function uploadNodeOtaBin(event, deviceId, ipAddress) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      if(!confirm(`OTA requires firmware compiled specifically for ${deviceId}. Continue?`)){event.target.value='';return;}
-      if (!file.name.toLowerCase().endsWith('.bin')) {
-        showToast('Please select a compiled ESP32-CAM .bin firmware file.', 'error');
-        return;
-      }
-      esp32NodeOtaUploadingMap[deviceId] = true;
-      renderEsp32CameraManager();
-      try {
-        await uploadCameraFirmware(ipAddress, file);
-        showToast(`OTA firmware uploaded to ${deviceId} (${ipAddress})! Rebooting camera...`, 'success');
-      } catch (err) {
-        showToast(`OTA upload failed for ${deviceId}: ${err.message}`, 'error');
-      } finally {
-        esp32NodeOtaUploadingMap[deviceId] = false;
-        event.target.value = '';
-        renderEsp32CameraManager();
-      }
-    }
-
-    // =========================================================================
-    // REALTIME SUBSCRIPTIONS & POLLING FALLBACK
-    // =========================================================================
     function setupRealtimeSubscriptions() {
       // Normal monitoring uses the bridge. Do not subscribe to cloud inventory.
     }
@@ -6458,14 +6389,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       pollLocalBridgeOnly();
     }
 
-    // Unified esp32CameraService singleton exposed on window for shared CRUD + NVS + OTA parity
+    // Shared camera configuration and read-only preview helpers
     window.esp32CameraService = {
       DEFAULT_ESP32_CAMERAS,
       resolveBridgeUrl: getBridgeUrl,
       resolveBridgeWsUrl: getBridgeWsUrl,
       probeCameraStatus,
       pushCameraConfig,
-      uploadCameraFirmware,
       captureLiveSnapshotUrl,
       getCameras,
       upsertCamera,

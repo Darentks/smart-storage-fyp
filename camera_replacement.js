@@ -28,8 +28,7 @@ function renderEsp32CameraManager(){
       ${image?`<img src="${escape(image)}" alt="${slot.label} ${slot.role}" style="width:100%;height:140px;object-fit:contain">`:''}
       <button class="btn-action" ${valid?'':'disabled'} onclick="triggerSingleCameraNode('${slot.device_id}','${slot.ip_address}','${slot.shelf_id}')">Test Trigger</button>
       <button class="btn-action" ${valid?'':'disabled'} onclick="toggleNodeSnapshotMode('${slot.device_id}')">Baseline/Live: ${mode}</button>
-      <label class="btn-action">Wireless OTA (.bin)<input type="file" accept=".bin" ${valid?'':'disabled'} onchange="uploadNodeOtaBin(event,'${slot.device_id}','${slot.ip_address}')"></label>
-      <small>OTA requires firmware compiled for ${slot.device_id}.</small></article>`;
+      </article>`;
   }).join('');
 }
 async function probeAllEsp32CameraNodes(){
@@ -43,5 +42,5 @@ async function probeAllEsp32CameraNodes(){
     }catch(error){slot.row.status='OFFLINE';}
   }));renderEsp32CameraManager();
 }
-// Cameras retain their fixed registrations; firmware maintenance uses camera-specific OTA.
+// Fixed camera monitoring only: registration checks, probing and snapshots.
 renderEsp32CameraManager();
