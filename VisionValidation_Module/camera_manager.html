@@ -1086,7 +1086,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
         </div>
 
-        <!-- Right Column (Dual Camera Controls & Offline Home Photo Tester) -->
+        <!-- Right Column (Dual Camera Controls) -->
         <div class="tester-controls-col" style="display: flex; flex-direction: column; gap: 14px;">
           <!-- Dual Camera Controls Card -->
           <div
@@ -1160,7 +1160,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <div id="tmBatchStatus" role="status" aria-live="polite"></div>
               <div id="tmBatchDownload"></div>
               <button type="button" id="tmExportBtn" class="btn-action" style="justify-content:center;" onclick="downloadTMTrainingSnapshots()">Download TM Training Snapshots</button>
-              <button type="button" class="btn-action" onclick="exportEdgeTMFixture()">Download Service Comparison (Uploaded Photos)</button>
               <label style="color:var(--text-secondary);"><input type="checkbox" id="tmExportSweep"> Export Retry Sweep (3 lighting settings)</label>
               <div id="tmExportDownloads" style="font-size:12px;" aria-live="polite"></div>
               <button type="button" class="btn-action"
@@ -1171,37 +1170,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
           </div>
 
-          <!-- Offline Home Test Box (For Testing Without Physical ESP32-CAMs) -->
-          <div
-            style="background: rgba(14, 165, 233, 0.05); border: 1px dashed var(--primary); border-radius: 10px; padding: 16px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <h3 style="font-size: 13px; font-weight: 700; color: var(--primary); margin: 0;">&#127968; Offline Home
-                Photo Tester</h3>
-              <span id="homeTestModeBadge" class="badge badge-offline" style="font-size: 10px;">Hardware Stream</span>
-            </div>
-            <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.4;">
-              Test Teachable Machine classification and trigger +1 / -1 Supabase inventory updates without physical
-              ESP32-CAMs connected.
-            </p>
-
-            <div class="form-group" style="margin-bottom: 10px;">
-              <label for="testBackFileInput" style="font-size: 11px;">Upload CAM 1 Back Photo:</label>
-              <input type="file" id="testBackFileInput" accept="image/*" class="form-control"
-                style="font-size: 12px; padding: 6px 10px;" />
-            </div>
-
-            <div class="form-group" style="margin-bottom: 14px;">
-              <label for="testFrontFileInput" style="font-size: 11px;">Upload CAM 2 Front Photo:</label>
-              <input type="file" id="testFrontFileInput" accept="image/*" class="form-control"
-                style="font-size: 12px; padding: 6px 10px;" />
-            </div>
-
-            <button type="button" class="btn-action"
-              style="width: 100%; height: 38px; justify-content: center; font-weight: 700;"
-              onclick="runOfflinePhotoTest()">
-              &#127968; Test Teachable Machine with Uploaded Photos
-            </button>
-          </div>
         </div>
       </div>
     </section>
@@ -1586,9 +1554,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     const frontPlaceholder = document.getElementById('frontPlaceholder');
     const previewPlaceholder = document.getElementById('previewPlaceholder');
     const previewOverlayText = document.getElementById('previewOverlayText');
-    const testBackFileInput = document.getElementById('testBackFileInput');
-    const testFrontFileInput = document.getElementById('testFrontFileInput');
-    const homeTestModeBadge = document.getElementById('homeTestModeBadge');
 
     let compartmentsData = [];
     let discoveredCamerasList = [];
@@ -1596,8 +1561,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     let userEditedCamIp = { 1: false, 2: false };
     let comparisonLogsData = [];
     let currentPreviewDataUrl = null;
-    let homeTestBackDataUrl = null;
-    let homeTestFrontDataUrl = null;
 
     // =========================================================================
     // TEACHABLE MACHINE DUAL-CAMERA CLASSIFIER & 18 STABLE CONFIGURATIONS
@@ -1893,33 +1856,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
     async function edgeHash(bytes) {
       return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
-    }
-    async function edgeModelHash(model) {
-      if(!model?.model?.getWeights)throw Error('Loaded TM runtime does not expose model weights; comparison unavailable');
-      const weights=[];
-      for(const tensor of model.model.getWeights()) {const data=await tensor.data();weights.push(new Uint8Array(data.buffer,data.byteOffset,data.byteLength));}
-      const result=new Uint8Array(weights.reduce((sum,x)=>sum+x.length,0));
-      let offset=0;for(const bytes of weights){result.set(bytes,offset);offset+=bytes.length;}
-      return edgeHash(result);
-    }
-    async function exportEdgeTMFixture() {
-      try {
-        requireDualCamModel(window.tmFrontModel,'Front');requireDualCamModel(window.tmBackModel,'Back');
-        const read=file=>new Promise((resolve,reject)=>{if(!file)return reject(Error('Choose both photos in Offline Home Photo Tester first'));
-          const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(file);});
-        const back=await read(testBackFileInput?.files?.[0]),front=await read(testFrontFileInput?.files?.[0]);
-        const backImage=await decodeTMImage(back),frontImage=await decodeTMImage(front);
-        const models={Front:{weights_sha256:await edgeModelHash(window.tmFrontModel)},Back:{weights_sha256:await edgeModelHash(window.tmBackModel)}};
-        const samples=[];
-        for(const boost of ['off','auto','high']) {
-          const b=preprocessForTM(backImage,boost),f=preprocessForTM(frontImage,boost);
-          samples.push({kind:'pair',boost,image_back:back,image_front:front,
-            back:{rgb_base64:edgeRGB(b),predictions:await window.tmBackModel.predict(b)},
-            front:{rgb_base64:edgeRGB(f),predictions:await window.tmFrontModel.predict(f)}});
-        }
-        edgeDownload('edge-tm-browser-fixture.json',{version:1,created_at:new Date().toISOString(),runtime:{tfjs:tf.version.tfjs},models,samples});
-        showToast('Comparison fixture downloaded. Photos only; inventory unchanged.','success');
-      } catch(error){showToast(error.message||'Comparison export failed','error');}
     }
     async function pollEdgeProcessor() {
       const label=document.getElementById('edgeProcessorStatus');
@@ -2304,32 +2240,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // =========================================================================
     // DUAL-CAMERA IMAGE STITCHING & CALIBRATION HELPERS
     // =========================================================================
-    function stitchTwoImages(imgBack, imgFront) {
-      const canvas = document.createElement('canvas');
-      const w1 = imgBack.naturalWidth || imgBack.width || 320;
-      const h1 = imgBack.naturalHeight || imgBack.height || 240;
-      const w2 = imgFront.naturalWidth || imgFront.width || 320;
-      const h2 = imgFront.naturalHeight || imgFront.height || 240;
-      const targetH = Math.max(h1, h2, 240);
-      const targetW1 = Math.round(w1 * (targetH / (h1 || 1)));
-      const targetW2 = Math.round(w2 * (targetH / (h2 || 1)));
-      canvas.width = targetW1 + targetW2;
-      canvas.height = targetH;
-      const ctx = canvas.getContext('2d');
-      // Draw Cam 1 Back on Left
-      ctx.drawImage(imgBack, 0, 0, targetW1, targetH);
-      // Draw Cam 2 Front on Right
-      ctx.drawImage(imgFront, targetW1, 0, targetW2, targetH);
-
-      // Angle watermark labels
-      ctx.fillStyle = "#facc15";
-      ctx.font = "bold 16px sans-serif";
-      ctx.fillText("BACK CAM", 15, 25);
-      ctx.fillText("FRONT CAM", targetW1 + 15, 25);
-
-      return canvas.toDataURL('image/jpeg', 0.85);
-    }
-
     // =========================================================================
     // PANEL 2: DUAL-CAMERA SETUP, IP SELECTOR DROPDOWNS & LIVE PREVIEW
     // =========================================================================
@@ -3140,144 +3050,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     // =========================================================================
-    // OFFLINE HOME PHOTO TESTER
-    // =========================================================================
-    function runOfflinePhotoTest() {
-      return validationWorker.submit({shelfId:refShelfSelect.value, source:'MANUAL', kind:'PHOTO'});
-    }
-    async function runOfflinePhotoTestLocked(shelfId, validationToken) {
-      const file1 = testBackFileInput && testBackFileInput.files ? testBackFileInput.files[0] : null;
-      const file2 = testFrontFileInput && testFrontFileInput.files ? testFrontFileInput.files[0] : null;
-
-      if ((!file1 && !homeTestBackDataUrl) || (!file2 && !homeTestFrontDataUrl)) {
-        showToast('Select both a CAM1 Back photo and a CAM2 Front photo; each model requires its own view.', 'warning');
-        return;
-      }
-
-      showToast('Loading offline test photos & running Teachable Machine...', 'info');
-
-      const readFilePromise = (file) => new Promise((resolve) => {
-        if (!file) return resolve(null);
-        const reader = new FileReader();
-        reader.onload = (e) => resolve(e.target.result);
-        reader.onerror = () => resolve(null);
-        reader.readAsDataURL(file);
-      });
-
-      const [dataUrl1, dataUrl2] = await Promise.all([
-        file1 ? readFilePromise(file1) : Promise.resolve(homeTestBackDataUrl),
-        file2 ? readFilePromise(file2) : Promise.resolve(homeTestFrontDataUrl),
-      ]);
-
-      const backSrc = dataUrl1;
-      const frontSrc = dataUrl2;
-      if (!backSrc || !frontSrc) { showToast('Both camera photos must decode successfully.', 'error'); return; }
-
-      homeTestBackDataUrl = backSrc;
-      homeTestFrontDataUrl = frontSrc;
-
-      const loadImgPromise = (img, src) => new Promise(resolve => {
-        img.onload = () => resolve(img.naturalWidth > 0);
-        img.onerror = () => resolve(false);
-        img.src = src;
-      });
-
-      // Capture one mode for display, inference, and the validation payload.
-      const boostSelect = document.getElementById('visionBoostSelect');
-      const boostMode = boostSelect ? boostSelect.value : 'auto';
-      const rawBackImg = new Image();
-      const rawFrontImg = new Image();
-      const rawLoaded = await Promise.all([
-        loadImgPromise(rawBackImg, backSrc),
-        loadImgPromise(rawFrontImg, frontSrc)
-      ]);
-      if (!rawLoaded.every(Boolean) || !rawBackImg.naturalWidth || !rawFrontImg.naturalWidth) {
-        showToast('Offline test aborted: original photo failed to load.', 'error');
-        return;
-      }
-
-      // Display enhancement is independent of the untouched inference sources.
-      let displayBackSrc = backSrc;
-      let displayFrontSrc = frontSrc;
-      if (boostMode !== 'off') {
-        try {
-          const enhBack = enhanceCanvasLowLight(rawBackImg, boostMode, false);
-          const enhFront = enhanceCanvasLowLight(rawFrontImg, boostMode, false);
-          if (!(enhBack instanceof HTMLCanvasElement) || !(enhFront instanceof HTMLCanvasElement)) {
-            throw new Error('Full-frame enhancement failed');
-          }
-          displayBackSrc = enhBack.toDataURL('image/jpeg', 0.9);
-          displayFrontSrc = enhFront.toDataURL('image/jpeg', 0.9);
-        } catch (err) {
-          console.warn('[Offline] Display enhancement/serialization failed:', err);
-          showToast('Offline test aborted: photo enhancement or serialization failed.', 'error');
-          return;
-        }
-      }
-
-      backPreviewImg.style.display = 'block';
-      backPlaceholder.style.display = 'none';
-      frontPreviewImg.style.display = 'block';
-      frontPlaceholder.style.display = 'none';
-      const previewsLoaded = await Promise.all([
-        loadImgPromise(backPreviewImg, displayBackSrc),
-        loadImgPromise(frontPreviewImg, displayFrontSrc)
-      ]);
-      if (!previewsLoaded.every(Boolean) || !backPreviewImg.naturalWidth || !frontPreviewImg.naturalWidth) {
-        showToast('Offline test aborted: preview photo failed to load.', 'error');
-        return;
-      }
-
-      // Stitch only decoded full-frame previews, preserving each aspect ratio.
-      let stitchedDataUrl;
-      try {
-        stitchedDataUrl = stitchTwoImages(backPreviewImg, frontPreviewImg);
-        if (!stitchedDataUrl) throw new Error('Empty stitched image');
-      } catch (err) {
-        console.warn('[Offline] Photo stitching failed:', err);
-        showToast('Offline test aborted: photo stitching or serialization failed.', 'error');
-        return;
-      }
-      livePreviewImg.src = stitchedDataUrl;
-      livePreviewImg.style.display = 'block';
-      previewPlaceholder.style.display = 'none';
-      previewOverlayText.textContent = `Offline Test \u2022 ${refShelfSelect.value} \u2022 ${new Date().toLocaleTimeString()}`;
-
-      if (homeTestModeBadge) {
-        homeTestModeBadge.className = 'badge badge-online';
-        homeTestModeBadge.innerHTML = '<span class="pulse-dot"></span>Offline Home Test Active';
-      }
-
-      // 3. Run Teachable Machine Prediction
-      if (!window.tmModel) {
-        showToast('Teachable Machine model is still loading. Please wait...', 'warning');
-        return;
-      }
-
-      const tmRes = await predictDualCamerasWithTM(rawBackImg, rawFrontImg, boostMode);
-      if (!tmRes || tmRes.degraded || tmRes.totalBoxes === null || !Number.isFinite(tmRes.confidence) || tmRes.confidence < 80) {
-        const abortMsg = tmRes ? `${tmRes.status}: ${tmRes.scenarioLabel}` : 'Validation pending';
-        if (tmLivePredictionBanner) {
-          tmLivePredictionBanner.style.display = 'block';
-          tmLivePredictionBanner.innerHTML = `<span style="color:var(--warning);font-weight:700;">${abortMsg}</span>`;
-        }
-        showToast(abortMsg, 'error');
-        return;
-      }
-
-      // 4. Update individual camera badges & status banner
-      backPredBadge.style.display = 'block';
-      backPredBadge.textContent = `${tmRes.backClass} (${tmRes.backConfidence}%)`;
-      frontPredBadge.style.display = 'block';
-      frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
-
-      tmLivePredictionBanner.style.display = 'block';
-      tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
-
-      showToast(`Photo test only: ${tmRes.scenarioLabel}. Use live validation to update inventory.`, 'info');
-    }
-
-    // =========================================================================
     // DUAL-CAMERA TEACHABLE MACHINE VALIDATION PIPELINE
     // =========================================================================
     const validatingShelves = new Set();
@@ -3470,7 +3242,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           if(typeof threeCameraDashboard!=='undefined' && !threeCameraDashboard.diagnosticOnly)threeCameraDashboard.stop();
           if(typeof document!=='undefined') {
             for(const button of document.querySelectorAll('button[onclick]')) {
-              if(/runFullDualCamValidation|runOfflinePhotoTest|startThreeCameras|startCctv|runCctv|startPose/.test(button.getAttribute('onclick')||'')) {
+              if(/runFullDualCamValidation|startThreeCameras|startCctv|runCctv|startPose/.test(button.getAttribute('onclick')||'')) {
                 button.disabled=true;button.title='Native service owns processing; dashboard is monitoring-only';
               }
             }
@@ -3519,7 +3291,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       })).claimed,
       execute: (item, token) => item.kind === 'EXPORT' ? exportTMTrainingLocked(item, token)
         : item.kind === 'PREVIEW' ? fetchLiveAnglePreviewLocked(item.shelfId, item.ip1, item.ip2, item.boost)
-        : item.kind === 'PHOTO' ? runOfflinePhotoTestLocked(item.shelfId, token)
         : executeFullDualCamValidation(item.shelfId, item.action || 'BORROW', item.source === 'CCTV', token, item.trigger?.trigger_id, item.source),
       release: (item, token) => bridgePost('/validation_end', {
         shelf_id:item.shelfId, token, trigger_id:item.claimed ? item.trigger?.trigger_id : undefined
