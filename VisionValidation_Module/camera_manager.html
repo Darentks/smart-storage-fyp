@@ -11,6 +11,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
   <style>
+    #cctvEditDialog::backdrop { background: rgba(0,0,0,.7); }
     /* Keep shared control dependencies mounted, but show only the requested page. */
     html[data-dashboard-page="dashboard"] [data-dashboard-view]:not([data-dashboard-view="dashboard"]),
     html[data-dashboard-page="cctv"] [data-dashboard-view]:not([data-dashboard-view="cctv"]),
@@ -1186,108 +1187,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         </div>
       </div>
 
-      <!-- 2-Column Tester & CRUD Grid -->
-      <div class="tester-grid" style="margin-bottom: 20px;">
-        <!-- Left Column: Add / Edit Hikvision CCTV or Webcam Form -->
-        <div
-          style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h3 style="font-size: 14px; font-weight: 700; margin: 0; color: var(--text-primary);">&#128249; Add / Edit
-              CCTV Camera</h3>
-            <button type="button" class="btn-action" style="font-size: 11px; padding: 3px 8px;"
-              onclick="resetCctvForm()">Clear Form</button>
-          </div>
-
-          <form id="cctvCrudForm" onsubmit="saveCctvCamera(event)"
-            style="display: flex; flex-direction: column; gap: 10px;">
-            <div style="display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px;">
-              <div class="form-group">
-                <label for="cctvIdInput" style="font-size: 11px; font-weight: 600;">CCTV ID</label>
-                <input type="text" id="cctvIdInput" class="form-control" list="cctvIdPresets" placeholder="CCTV_01"
-                  value="CCTV_01" required />
-                <datalist id="cctvIdPresets">
-                  <option value="CCTV_01">CCTV 1 (Left Angle)</option>
-                  <option value="CCTV_02">CCTV 2 (Center Angle)</option>
-                  <option value="CCTV_03">CCTV 3 (Right Angle)</option>
-                </datalist>
-              </div>
-              <div class="form-group">
-                <label for="cctvNameInput" style="font-size: 11px; font-weight: 600;">Camera Name</label>
-                <input type="text" id="cctvNameInput" class="form-control"
-                  placeholder="Hikvision CCTV 1 - Left Angle (Column 1)"
-                  value="Hikvision CCTV 1 - Left Angle (Column 1)" required />
-              </div>
-            </div>
-
-            <!-- Quick RTSP Builder Helper Row -->
-            <div
-              style="background: rgba(0,0,0,0.25); border: 1px dashed var(--border); border-radius: 8px; padding: 10px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <span style="font-size: 11px; font-weight: 700; color: var(--primary);">&#9889; Quick RTSP Builder
-                  Helper</span>
-                <button type="button" class="btn-action"
-                  style="font-size: 10px; padding: 2px 7px; border-color: var(--primary); color: var(--primary);"
-                  onclick="buildCctvRtspFromInputs()">
-                  &#9889; Auto-Fill RTSP URL
-                </button>
-              </div>
-              <div style="display: grid; grid-template-columns: 1.2fr 0.8fr 0.8fr 1.2fr; gap: 6px;">
-                <div>
-                  <label for="cctvIpInput" style="font-size: 10px; color: var(--text-muted);">IP Address</label>
-                  <input type="text" id="cctvIpInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
-                    value="" />
-                </div>
-                <div>
-                  <label for="cctvUserInput" style="font-size: 10px; color: var(--text-muted);">User</label>
-                  <input type="text" id="cctvUserInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
-                    value="" />
-                </div>
-                <div>
-                  <label for="cctvPassInput" style="font-size: 10px; color: var(--text-muted);">Password</label>
-                  <input type="password" id="cctvPassInput" class="form-control"
-                    style="font-size: 11px; padding: 4px 6px;" value="" />
-                </div>
-                <div>
-                  <label for="cctvChannelSelect" style="font-size: 10px; color: var(--text-muted);">Channel /
-                    Stream</label>
-                  <select id="cctvChannelSelect" class="form-control" style="font-size: 11px; padding: 4px 4px;">
-                    <option value="102" selected>102 (Sub-Stream Fast)</option>
-                    <option value="101">101 (Main Stream HD)</option>
-                    <option value="0">0 (Laptop/USB Webcam)</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            <div class="form-group">
-              <label for="cctvRoleSelect">Camera Role</label>
-              <select id="cctvRoleSelect" class="form-control" required>
-                <option value="GRID_6_ROI">6-Compartment ROI Grid (Front / Oblique Angle ? CCTV_01, CCTV_02)</option>
-                <option value="SIDE_PRESENCE">Side-View Rack Presence &amp; Depth Entry Zone (Side Angle ? CCTV_03)</option>
-              </select>
-            </div>
-
-            <!-- Full RTSP URL Input -->
-            <div class="form-group">
-              <label for="cctvRtspInput" style="font-size: 11px; font-weight: 600;">Full RTSP URL or Webcam
-                Index</label>
-              <input type="text" id="cctvRtspInput" class="form-control"
-                placeholder="Enter the configured camera source"
-                value="" required />
-            </div>
-
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
-              <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
-                <input type="checkbox" id="cctvActiveCheck" checked />
-                <span>Camera Active (<code>is_active: true</code>)</span>
-              </label>
-              <button type="submit" class="btn-primary" style="height: 36px; padding: 0 16px; font-size: 12px;">
-                &#128190; Save / Upsert CCTV Camera to Supabase
-              </button>
-            </div>
-          </form>
-        </div>
-
+      <!-- CCTV diagnostic viewer; camera editing opens from the cards below. -->
+      <div class="tester-grid" style="margin-bottom: 20px; grid-template-columns: minmax(0, 1fr);">
         <!-- Right Column: In-Browser YOLO11n-Pose ONNX CCTV Wrist-ROI Dwell Detector -->
         <div id="cctvViewerColumn"
           style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow: hidden;">
@@ -1488,6 +1389,104 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     </section>
   </main>
 
+
+  <dialog id="cctvEditDialog" aria-labelledby="cctvEditTitle"
+    style="width:min(920px,calc(100% - 32px));max-height:90vh;overflow:auto;padding:0;border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);"
+    oncancel="if(cctvEditSaving)event.preventDefault()" onclose="resetCctvEditor()">
+        <div
+          style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+            <h3 id="cctvEditTitle" style="font-size: 14px; font-weight: 700; margin: 0; color: var(--text-primary);">Edit CCTV Camera</h3>
+            <button type="button" class="btn-action" style="font-size: 11px; padding: 3px 8px;"
+              onclick="closeCctvEditor()">Cancel</button>
+          </div>
+
+          <form id="cctvCrudForm" onsubmit="saveCctvCamera(event)"
+            style="display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: grid; grid-template-columns: 1fr 1.6fr; gap: 10px;">
+              <div class="form-group">
+                <label for="cctvIdInput" style="font-size: 11px; font-weight: 600;">CCTV ID</label>
+                <input type="text" id="cctvIdInput" class="form-control" readonly aria-readonly="true" required />
+
+              </div>
+              <div class="form-group">
+                <label for="cctvNameInput" style="font-size: 11px; font-weight: 600;">Camera Name</label>
+                <input type="text" id="cctvNameInput" class="form-control" autofocus
+                  placeholder="Hikvision CCTV 1 - Left Angle (Column 1)"
+                  value="" required />
+              </div>
+            </div>
+
+            <!-- Quick RTSP Builder Helper Row -->
+            <div
+              style="background: rgba(0,0,0,0.25); border: 1px dashed var(--border); border-radius: 8px; padding: 10px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <span style="font-size: 11px; font-weight: 700; color: var(--primary);">&#9889; Quick RTSP Builder
+                  Helper</span>
+                <button type="button" class="btn-action"
+                  style="font-size: 10px; padding: 2px 7px; border-color: var(--primary); color: var(--primary);"
+                  onclick="buildCctvRtspFromInputs()">
+                  &#9889; Auto-Fill RTSP URL
+                </button>
+              </div>
+              <div style="display: grid; grid-template-columns: 1.2fr 0.8fr 0.8fr 1.2fr; gap: 6px;">
+                <div>
+                  <label for="cctvIpInput" style="font-size: 10px; color: var(--text-muted);">IP Address</label>
+                  <input type="text" id="cctvIpInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
+                    value="" />
+                </div>
+                <div>
+                  <label for="cctvUserInput" style="font-size: 10px; color: var(--text-muted);">User</label>
+                  <input type="text" id="cctvUserInput" class="form-control" style="font-size: 11px; padding: 4px 6px;"
+                    value="" />
+                </div>
+                <div>
+                  <label for="cctvPassInput" style="font-size: 10px; color: var(--text-muted);">Password</label>
+                  <input type="password" id="cctvPassInput" class="form-control"
+                    style="font-size: 11px; padding: 4px 6px;" value="" />
+                </div>
+                <div>
+                  <label for="cctvChannelSelect" style="font-size: 10px; color: var(--text-muted);">Channel /
+                    Stream</label>
+                  <select id="cctvChannelSelect" class="form-control" style="font-size: 11px; padding: 4px 4px;">
+                    <option value="102" selected>102 (Sub-Stream Fast)</option>
+                    <option value="101">101 (Main Stream HD)</option>
+                    <option value="0">0 (Laptop/USB Webcam)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="cctvRoleSelect">Camera Role</label>
+              <select id="cctvRoleSelect" class="form-control" required>
+                <option value="GRID_6_ROI">Three-shelf ROI Grid (CCTV_01, CCTV_02)</option>
+                <option value="SIDE_PRESENCE">Side-View Rack Presence &amp; Depth Entry Zone (Side Angle ? CCTV_03)</option>
+              </select>
+            </div>
+
+            <!-- Full RTSP URL Input -->
+            <div class="form-group">
+              <label for="cctvRtspInput" style="font-size: 11px; font-weight: 600;">Full RTSP URL or Webcam
+                Index</label>
+              <input type="text" id="cctvRtspInput" class="form-control"
+                placeholder="Enter the configured camera source"
+                value="" required />
+            </div>
+
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 4px;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer;">
+                <input type="checkbox" id="cctvActiveCheck" checked />
+                <span>Camera Active (<code>is_active: true</code>)</span>
+              </label>
+              <button type="submit" id="cctvEditSaveBtn" class="btn-primary" style="height: 36px; padding: 0 16px; font-size: 12px;">
+                Save changes
+              </button>
+            </div>
+          </form>
+        </div>
+
+  </dialog>
 
   <!-- Toast Notification -->
   <div id="toast"></div>
@@ -6112,17 +6111,26 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       showToast(`Generated CCTV stream source: ${rtspEl.value.includes('@') ? rtspEl.value.replace(/:[^:@]+@/, ':***@') : rtspEl.value}`, 'info');
     }
 
-    function resetCctvForm() {
-      document.getElementById('cctvIdInput').value = 'CCTV_01';
-      document.getElementById('cctvNameInput').value = 'Hikvision CCTV 1 - Left Angle (Column 1)';
-      document.getElementById('cctvIpInput').value = '';
-      document.getElementById('cctvRtspInput').value = '';
-      document.getElementById('cctvActiveCheck').checked = true;
-      document.getElementById('cctvRoleSelect').value = 'GRID_6_ROI';
+    let cctvEditingId = null;
+    let cctvEditSaving = false;
+    function resetCctvEditor() {
+      cctvEditingId=null;
+      document.getElementById('cctvCrudForm').reset();
+      for(const id of ['cctvIdInput','cctvNameInput','cctvIpInput','cctvRtspInput','cctvUserInput','cctvPassInput'])document.getElementById(id).value='';
+    }
+    function closeCctvEditor() {
+      if(cctvEditSaving)return;
+      document.getElementById('cctvEditDialog').close();
+      resetCctvEditor();
     }
 
     async function saveCctvCamera(event) {
       if (event) event.preventDefault();
+      if(cctvEditSaving)return;
+      const matches=cctvCamerasList.filter(camera=>camera.cctv_id===cctvEditingId);
+      if(!cctvEditingId || matches.length!==1 || document.getElementById('cctvIdInput').value.trim()!==cctvEditingId){
+        showToast('CCTV was not saved. Open Edit on an existing camera; its ID cannot be changed.','error');return;
+      }
       const cctvId = (document.getElementById('cctvIdInput').value || '').trim();
       const cameraName = (document.getElementById('cctvNameInput').value || '').trim();
       const ipAddress = (document.getElementById('cctvIpInput').value || '').trim();
@@ -6142,7 +6150,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
 
       const payload = {
-        cctv_id: cctvId,
         camera_name: cameraName || cctvId,
         rack_id: 'RACK_01',
         ip_address: ipAddress,
@@ -6151,14 +6158,19 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         camera_role: document.getElementById('cctvRoleSelect').value
       };
 
+      const saveButton=document.getElementById('cctvEditSaveBtn');
+      cctvEditSaving=true;saveButton.disabled=true;saveButton.textContent='Saving?';
       try {
-        const rows = await sbRest('cctv_cameras', 'POST', '?on_conflict=cctv_id', payload, 'resolution=merge-duplicates,return=representation');
-        if (!Array.isArray(rows) || rows.length !== 1 || rows[0].cctv_id !== cctvId) throw Error('No saved camera row returned; check permissions');
+        const rows = await sbRest('cctv_cameras', 'PATCH', `?cctv_id=eq.${encodeURIComponent(cctvEditingId)}`, payload, 'return=representation');
+        if (!Array.isArray(rows) || rows.length !== 1 || rows[0].cctv_id !== cctvId) throw Error('No updated camera row returned; check registration and permissions');
       } catch (error) {
         showToast(`CCTV was not saved. ${deviceSaveError(error)}`, 'error');
         return;
+      } finally {
+        cctvEditSaving=false;saveButton.disabled=false;saveButton.textContent='Save changes';
       }
-      showToast(`Saved CCTV ${cctvId} to Supabase`, 'success');
+      closeCctvEditor();
+      showToast(`Updated CCTV ${cctvId}`, 'success');
       await loadCctvCameras();
     }
 
@@ -6190,7 +6202,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
       if (!cctvCamerasList || cctvCamerasList.length === 0) {
         if (cctvConfigLoaded) syncCctvAlignmentConfig().catch(error => console.warn('[CCTV Alignment]', error.message));
-        grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--text-muted);">${cctvLoadError ? 'CCTV configuration unavailable. Check database access and retry.' : 'No CCTV cameras configured. Use the form above to add one.'}</div>`;
+        grid.innerHTML = `<div style="grid-column: 1 / -1; text-align: center; padding: 20px; color: var(--text-muted);">${cctvLoadError ? 'CCTV configuration unavailable. Check database access and retry.' : 'No CCTV cameras registered. Refresh after the existing device registrations are restored.'}</div>`;
         return;
       }
 
@@ -6230,7 +6242,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 </button>
                 <div style="display: flex; gap: 4px;">
                   <button type="button" class="btn-action" style="flex: 1; font-size: 11px; padding: 5px 4px; justify-content: center;" onclick="editCctvCamera('${encodedJson}')">&#9998; Edit</button>
-                  <button type="button" class="btn-action" style="font-size: 11px; padding: 5px 6px; justify-content: center; color: var(--danger);" onclick="deleteCctvCamera('${cam.cctv_id}')">&#128465;</button>
                 </div>
               </div>
               <button type="button" class="btn-action" style="width: 100%; font-size: 11px; padding: 6px 8px; justify-content: center; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 700;" onclick="startCctvPipeline('${cam.cctv_id}', '${cam.rtsp_url}')">
@@ -6314,30 +6325,23 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function editCctvCamera(encodedJson) {
+      if(cctvEditSaving)return;
       try {
-        const cam = JSON.parse(decodeURIComponent(encodedJson));
-        document.getElementById('cctvIdInput').value = cam.cctv_id || 'CCTV_01';
-        document.getElementById('cctvNameInput').value = cam.camera_name || '';
-        document.getElementById('cctvIpInput').value = cleanCameraHost(cam.ip_address) || '';
-        document.getElementById('cctvRtspInput').value = cam.rtsp_url || '';
-        document.getElementById('cctvActiveCheck').checked = cam.is_active !== false;
-        document.getElementById('cctvRoleSelect').value = cameraRole(cam);
-        document.getElementById('cctvCameraManagerPanel').scrollIntoView({ behavior: 'smooth' });
-        showToast(`Loaded ${cam.cctv_id} into form`, 'info');
-      } catch (err) {
-        console.error('Failed to parse CCTV camera for edit:', err);
-      }
-    }
-
-    async function deleteCctvCamera(cctvId) {
-      if (!confirm(`Are you sure you want to delete ${cctvId} from public.cctv_cameras?`)) return;
-      try {
-        await sbRest('cctv_cameras', 'DELETE', `?cctv_id=eq.${encodeURIComponent(cctvId)}`);
-        cctvCamerasList = cctvCamerasList.filter(c => c.cctv_id !== cctvId);
-        renderCctvCameras();
-        showToast(`Deleted ${cctvId}`, 'info');
-      } catch (err) {
-        showToast(`Failed to delete ${cctvId}: ${err.message}`, 'error');
+        const requested=JSON.parse(decodeURIComponent(encodedJson));
+        const matches=cctvCamerasList.filter(camera=>camera.cctv_id===requested.cctv_id);
+        if(matches.length!==1)throw Error('Refresh CCTV configuration before editing this camera.');
+        const cam=matches[0];
+        resetCctvEditor();cctvEditingId=cam.cctv_id;
+        document.getElementById('cctvIdInput').value=cam.cctv_id;
+        document.getElementById('cctvNameInput').value=cam.camera_name || '';
+        document.getElementById('cctvIpInput').value=cleanCameraHost(cam.ip_address) || '';
+        document.getElementById('cctvRtspInput').value=cam.rtsp_url || '';
+        document.getElementById('cctvActiveCheck').checked=cam.is_active!==false;
+        document.getElementById('cctvRoleSelect').value=cameraRole(cam);
+        const dialog=document.getElementById('cctvEditDialog');
+        if(!dialog.open)dialog.showModal();
+      } catch (_) {
+        showToast('Cannot edit this camera. Refresh CCTV configuration and select an existing camera.','error');
       }
     }
 
