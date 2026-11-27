@@ -11,7 +11,16 @@
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
   <style>
-    #cctvEditDialog::backdrop { background: rgba(0,0,0,.7); }
+    /* Shared modal dialogs (CCTV edit, activity pictures). The global "* { margin:0 }" reset removes the
+       browser's centring margin, so restore it: fixed to the viewport, centred, scrolling inside itself. */
+    dialog {
+      position: fixed; inset: 0; margin: auto; height: fit-content;
+      max-width: calc(100% - 32px); max-height: 90vh; overflow-y: auto; overscroll-behavior: contain;
+      padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text);
+    }
+    dialog::backdrop { background: rgba(0,0,0,.7); }
+    html:has(dialog[open]) { overflow: hidden; }
+    #cctvEditDialog { width: calc(100% - 32px); max-width: 720px; padding: 0; }
     /* Keep shared control dependencies mounted, but show only the requested page. */
     html[data-dashboard-page="dashboard"] [data-dashboard-view]:not([data-dashboard-view="dashboard"]),
     html[data-dashboard-page="cctv"] [data-dashboard-view]:not([data-dashboard-view="cctv"]),
@@ -1400,7 +1409,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
 
   <dialog id="cctvEditDialog" aria-labelledby="cctvEditTitle"
-    style="width:min(920px,calc(100% - 32px));max-height:90vh;overflow:auto;padding:0;border:1px solid var(--border);border-radius:12px;background:var(--surface);color:var(--text);"
     oncancel="if(cctvEditSaving)event.preventDefault()" onclose="resetCctvEditor()">
         <div
           style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
