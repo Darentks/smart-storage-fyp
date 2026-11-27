@@ -1234,12 +1234,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <!-- Video Source & Tracker Controls Bar -->
           <div class="cctv-toolbar">
             <div class="cctv-toolbar-field">
-              <label for="cctvPoseSourceSelect">Source</label>
-              <select id="cctvPoseSourceSelect" class="form-control" onchange="onCctvSourceChanged()">
+              <label for="cctvCameraPicker">Camera</label>
+              <select id="cctvCameraPicker" class="form-control" onchange="onCctvCameraPicked(this.value)">
+                <option value="" selected disabled>Choose a camera&hellip;</option>
+                <option value="CCTV_01">CCTV_01</option>
+                <option value="CCTV_02">CCTV_02</option>
+                <option value="CCTV_03">CCTV_03</option>
+              </select>
+              <!-- Internal mode: live bridge feed or recorded-video replay (entered from Diagnostics). -->
+              <select id="cctvPoseSourceSelect" hidden aria-hidden="true" tabindex="-1" onchange="onCctvSourceChanged()">
                 <option value="cctv_bridge" selected>CCTV camera (local bridge)</option>
-                <option value="webcam">Laptop / USB webcam</option>
                 <option value="video_file">Recorded Video File (.mp4)</option>
-                <option value="simulation">Synthetic simulation</option>
               </select>
             </div>
             <div class="cctv-toolbar-actions">
@@ -1261,7 +1266,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
 
           <div id="cctvActiveSourceText" class="cctv-source-text" aria-live="polite">
-            No camera selected. On a camera card below, click <strong>Calibrate ROI</strong> or <strong>Start YOLO11n-Pose ONNX</strong>.
+            No camera selected. Choose one from the <strong>Camera</strong> list, or click <strong>Calibrate ROI</strong> on a camera card below.
           </div>
 
           <!-- Interactive ROI Calibration Bar (Shown when Calibrate ROI is active) -->
@@ -1334,10 +1339,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               style="position: absolute; inset: 0; pointer-events: none; background: rgba(11, 17, 32, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 20px;">
               <span style="font-size: 28px;" aria-hidden="true">&#128249;</span>
               <strong class="cctv-empty-title">No camera feed yet</strong>
-              <span class="cctv-empty-text">Pick a camera card below and click <strong>Calibrate ROI</strong> or <strong>Start YOLO11n-Pose ONNX</strong> to show its feed here.</span>
+              <span class="cctv-empty-text">Choose CCTV_01, CCTV_02 or CCTV_03 from the <strong>Camera</strong> list to show its feed here.</span>
               <div class="cctv-empty-actions">
-                <button type="button" class="btn-action" onclick="document.getElementById('cctvCamerasListGrid').scrollIntoView({behavior:'smooth'})">&#8595; Choose a camera</button>
-                <button type="button" class="btn-action" onclick="toggleMediaPipeTracker()">&#9654; Start Pose Tracker</button>
+                <button type="button" class="btn-action" onclick="const p=document.getElementById('cctvCameraPicker');p.scrollIntoView({behavior:'smooth',block:'center'});p.focus();">Choose a camera</button>
               </div>
             </div>
           </div>
@@ -1372,7 +1376,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <details class="cctv-tool-group">
             <summary>Diagnostics (not inventory evidence)</summary>
             <div class="cctv-tool-grid">
-              <button type="button" class="btn-action" id="cctvSimulateBtn" onclick="runSimulatedHandInteraction()"><span>&#9889; Test 1.3s Dwell (Sim)</span><small>Moves a simulated wrist into SHELF_R1_C1 to test the browser dwell path. Diagnostic only.</small></button>
+              <button type="button" class="btn-action" onclick="setCctvReplayMode(true)"><span>Use recorded clip (.mp4)</span><small>Replay a filmed clip for the selected camera to rehearse three-camera consensus. Never changes inventory.</small></button>
+              <button type="button" class="btn-action" onclick="setCctvReplayMode(false)"><span>Back to live CCTV</span><small>Leave replay and return to the selected camera's live bridge feed.</small></button>
             </div>
           </details>
           </section>
@@ -4453,11 +4458,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     let isDraggingRoi = false;
     let calibDragStart = null;
     let calibDragCurrent = null;
-    let simulationAnimId = null;
     let bridgeStreamInterval = null;
     let lastPoseFrameTime = performance.now();
     let poseFps = 0;
-    let activeMediaStream = null;
 
     function classifyTrajectoryAction() { return 'RECHECK'; }
 
@@ -5378,8 +5381,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           if(sourceSelect)sourceSelect.value='video_file';
           if(isPoseRunning)stopMediaPipeTracker();
         } else {
-          setCctvReplayStatus('Switch Source to Recorded Video File (.mp4) and choose an MP4 file first.');
-          showToast('Switch Source to Recorded Video File (.mp4) and choose an MP4 file first.','info');
+          setCctvReplayStatus('Open Diagnostics, click Use recorded clip (.mp4), then choose an MP4 file.');
+          showToast('Open Diagnostics, click Use recorded clip (.mp4), then choose an MP4 file.','info');
           return false;
         }
       }
@@ -5553,7 +5556,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const badge = document.getElementById('cctvPoseStatusBadge');
       const placeholder = document.getElementById('cctvTestPlaceholder');
       const sourceSelect = document.getElementById('cctvPoseSourceSelect');
-      const selectedSource = sourceSelect ? sourceSelect.value : 'webcam';
+      const selectedSource = sourceSelect ? sourceSelect.value : 'cctv_bridge';
 
       if (selectedSource === 'video_file' && !document.getElementById('cctvVideoFileInput').files[0]) {
         document.getElementById('cctvVideoFileInput').click();
@@ -5567,7 +5570,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
       if(selectedSource==='video_file')setCctvReplayStatus('Initializing YOLO model for the selected clip?');
       try {
-        if (selectedSource !== 'simulation') await getYoloPoseSession();
+        await getYoloPoseSession();
       } catch (error) {
         if(generation!==trackingGeneration)return;
         if(selectedSource==='video_file')setCctvReplayStatus('YOLO initialization failed: '+error.message);
@@ -5589,16 +5592,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         toggleBtn.style.background = 'rgba(244, 63, 94, 0.08)';
       }
 
-      if (selectedSource === 'simulation') {
-        runContinuousSimulationLoop();
-        if (badge) {
-          badge.className = 'badge badge-online';
-          badge.textContent = 'Simulation Active';
-        }
-        showToast('Started YOLO11n-Pose ONNX tracking (Simulation Mode)', 'success');
-        return;
-      }
-
       if (selectedSource === 'cctv_bridge') {
         startCctvBridgePollingLoop();
         if (badge) {
@@ -5609,38 +5602,24 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         return;
       }
 
-      // Webcam and recorded MP4 share the same inference loop.
+      // Recorded-video replay (the only non-bridge source) runs the inference loop on the clip.
       const videoEl = document.getElementById('cctvPoseVideo');
       try {
-        if (selectedSource === 'video_file') {
-          const file = document.getElementById('cctvVideoFileInput').files[0];
-          recordedVideoUrl = URL.createObjectURL(file);
-          videoEl.srcObject = null;
-          videoEl.src = recordedVideoUrl;
-          videoEl.loop = false;
-          videoEl.preload = 'auto';
-          videoEl.load();
-          setCctvReplayStatus('Loading video metadata and first frame?');
-          await waitForRecordedVideo(videoEl,generation);
-          if(generation!==trackingGeneration)return;
-          videoEl.pause();
-          videoEl.onended = () => { videoEl.pause(); initCompartmentTrackers(); };
-        } else {
-          const stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 480 } },
-            audio: false
-          });
-          if (generation !== trackingGeneration) { stream.getTracks().forEach(track => track.stop()); return; }
-          activeMediaStream = stream;
-          videoEl.srcObject = stream;
-        }
-        if (selectedSource === 'video_file') {
-          document.getElementById('cctvReplayTools').hidden=false;
-          if(!await prepareCctvReplay()) {
-            if(badge)badge.textContent='Clip loaded ? registration failed';
-          }
-        } else {
-          await videoEl.play();
+        const file = document.getElementById('cctvVideoFileInput').files[0];
+        recordedVideoUrl = URL.createObjectURL(file);
+        videoEl.srcObject = null;
+        videoEl.src = recordedVideoUrl;
+        videoEl.loop = false;
+        videoEl.preload = 'auto';
+        videoEl.load();
+        setCctvReplayStatus('Loading video metadata and first frame?');
+        await waitForRecordedVideo(videoEl,generation);
+        if(generation!==trackingGeneration)return;
+        videoEl.pause();
+        videoEl.onended = () => { videoEl.pause(); initCompartmentTrackers(); };
+        document.getElementById('cctvReplayTools').hidden=false;
+        if(!await prepareCctvReplay()) {
+          if(badge)badge.textContent='Clip loaded ? registration failed';
         }
         if (generation !== trackingGeneration) return;
 
@@ -5659,25 +5638,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
         if (badge) {
           badge.className = 'badge badge-online';
-          badge.textContent = selectedSource === 'video_file' ? (cctvReplayRegistration ? 'Recorded Replay Ready (Test Only)' : 'Clip loaded ? click Ready to retry') : 'Webcam Tracking Active';
+          badge.textContent = cctvReplayRegistration ? 'Recorded Replay Ready (Test Only)' : 'Clip loaded ? click Ready to retry';
         }
-        if(selectedSource !== 'video_file' || cctvReplayRegistration)showToast(selectedSource === 'video_file' ? 'Clip ready. Load the other camera clips, then click Start all 3.' : 'Webcam connected! Tracking wrist keypoints in real time.', 'success');
+        if(cctvReplayRegistration)showToast('Clip ready. Load the other camera clips, then click Start all 3.', 'success');
       } catch (camErr) {
         if (generation !== trackingGeneration) return;
-        if (selectedSource === 'video_file') {
-          stopMediaPipeTracker();
-          setCctvReplayStatus('Recorded video failed: '+camErr.message);
-          showToast('Recorded video failed: ' + camErr.message, 'error');
-          return;
-        }
-        console.warn('Webcam access error, falling back to simulated mode:', camErr);
-        showToast(`Webcam unavailable (${camErr.message}). Switching to Simulation mode!`, 'info');
-        if (sourceSelect) sourceSelect.value = 'simulation';
-        runContinuousSimulationLoop();
-        if (badge) {
-          badge.className = 'badge badge-online';
-          badge.textContent = 'Simulation Active';
-        }
+        stopMediaPipeTracker();
+        setCctvReplayStatus('Recorded video failed: '+camErr.message);
+        showToast('Recorded video failed: ' + camErr.message, 'error');
       }
     }
 
@@ -5693,17 +5661,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const placeholder = document.getElementById('cctvTestPlaceholder');
       const videoEl = document.getElementById('cctvPoseVideo');
 
-      if (activeMediaStream) {
-        activeMediaStream.getTracks().forEach(t => t.stop());
-        activeMediaStream = null;
-      }
       if (poseAnimationId !== null) {
         cancelAnimationFrame(poseAnimationId);
         poseAnimationId = null;
-      }
-      if (simulationAnimId) {
-        cancelAnimationFrame(simulationAnimId);
-        simulationAnimId = null;
       }
       if (bridgeStreamInterval) {
         clearTimeout(bridgeStreamInterval);
@@ -5778,80 +5738,39 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
-    function runSimulatedHandInteraction() {
-      if (!isPoseRunning) {
-        const sourceSelect = document.getElementById('cctvPoseSourceSelect');
-        if (sourceSelect) sourceSelect.value = 'simulation';
-        startMediaPipeTracker();
+    // Toolbar Camera list: same binding path as the camera cards' Start button.
+    function onCctvCameraPicked(cctvId) {
+      const cam = cctvCamerasList.find(c => c.cctv_id === cctvId);
+      if (!cam) {
+        showToast(`${cctvId} is not registered. Refresh CCTVs.`, 'error');
+        syncCctvCameraPicker();
+        return;
       }
-      showToast('⚡ Running 1.3s sustained hand reach into SHELF_R1_C1 ROI...', 'info');
-
-      // Synthesize wrist motion trajectory entering SHELF_R1_C1 (x: 0.70, y: 0.30)
-      const startTime = performance.now();
-      const dwellDuration = 1350; // 1.35s (> 1.2s threshold)
-      const reachDuration = 500;  // 500ms reach-in
-      const withdrawDuration = 500; // 500ms withdraw
-
-      function simStep() {
-        if (!isPoseRunning) return;
-        const now = performance.now();
-        const elapsed = now - startTime;
-
-        let wx = 0.90;
-        let wy = 0.70;
-
-        if (elapsed < reachDuration) {
-          const t = elapsed / reachDuration;
-          wx = 0.90 - t * 0.20; // 0.90 -> 0.70
-          wy = 0.70 - t * 0.40; // 0.70 -> 0.30
-        } else if (elapsed < reachDuration + dwellDuration) {
-          const jitter = Math.sin(now * 0.01) * 0.005;
-          wx = 0.70 + jitter;
-          wy = 0.30 + jitter;
-        } else if (elapsed < reachDuration + dwellDuration + withdrawDuration) {
-          const t = (elapsed - (reachDuration + dwellDuration)) / withdrawDuration;
-          wx = 0.70 + t * 0.20;
-          wy = 0.30 + t * 0.40;
-        } else {
-          return;
-        }
-
-        const fakeResults = {
-          poseLandmarks: [
-            ...Array(15).fill({ x: 0.5, y: 0.5, visibility: 0.9 }),
-            { x: wx, y: wy, visibility: 0.92 }, // 15: LEFT_WRIST
-            { x: 0.95, y: 0.85, visibility: 0.85 } // 16: RIGHT_WRIST
-          ]
-        };
-
-        onPoseResults(fakeResults);
-
-        if (elapsed < reachDuration + dwellDuration + withdrawDuration + 350) {
-          requestAnimationFrame(simStep);
-        }
-      }
-
-      requestAnimationFrame(simStep);
+      if (!useCctvAsTrackerSource(cam.rtsp_url, cctvId)) syncCctvCameraPicker();
     }
 
-    function runContinuousSimulationLoop() {
-      let t = 0;
-      function loop() {
-        if (!isPoseRunning) return;
-        t += 0.02;
-        const wx = 0.70 + Math.sin(t) * 0.08;
-        const wy = 0.30 + Math.cos(t * 0.8) * 0.08;
-        const fakeResults = {
-          poseLandmarks: [
-            ...Array(15).fill({ x: 0.5, y: 0.5, visibility: 0.9 }),
-            { x: wx, y: wy, visibility: 0.90 },
-            { x: 0.90, y: 0.80, visibility: 0.85 }
-          ]
-        };
-        onPoseResults(fakeResults);
-        simulationAnimId = requestAnimationFrame(loop);
+    function syncCctvCameraPicker() {
+      const picker = document.getElementById('cctvCameraPicker');
+      if (!picker) return;
+      for (const option of picker.options) {
+        if (!option.value) continue;
+        const cam = cctvCamerasList.find(c => c.cctv_id === option.value);
+        option.disabled = !cam;
+        option.textContent = !cam ? `${option.value} (not registered)`
+          : `${cam.cctv_id}${cam.camera_name ? ' · ' + cam.camera_name : ''}${cam.is_active === false ? ' (inactive)' : ''}`;
       }
-      simulationAnimId = requestAnimationFrame(loop);
+      picker.value = activeCctvSourceUrl && cctvCamerasList.some(c => c.cctv_id === activeCctvId) ? activeCctvId : '';
+    }
+
+    // Diagnostics: enter or leave recorded-video replay for the selected camera.
+    function setCctvReplayMode(on) {
+      const select = document.getElementById('cctvPoseSourceSelect');
+      if (!select) return;
+      if ((select.value === 'video_file') !== on) {
+        select.value = on ? 'video_file' : 'cctv_bridge';
+        onCctvSourceChanged();
+      }
+      if (on) document.getElementById('cctvReplayTools')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
 
     // RTSP polling uses the selected camera card, independently of the editable form.
@@ -6094,6 +6013,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     function updateActiveCctvSourceText() {
       const label = document.getElementById('cctvActiveSourceText');
+      syncCctvCameraPicker();
       if (!label || !activeCctvSourceUrl) return;
       label.textContent = `Tracking: ${activeCctvId} | ${activeCameraRole} | ${cctvSourceBinding(activeCctvSourceUrl)}`;
     }
@@ -6200,6 +6120,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     function renderCctvCameras() {
       const grid = document.getElementById('cctvCamerasListGrid');
+      syncCctvCameraPicker();
       if (!grid) return;
 
       if (!cctvCamerasList || cctvCamerasList.length === 0) {
