@@ -194,6 +194,40 @@
     .cctv-tool-grid .btn-action small {font-weight:400;color:var(--text-secondary);font-size:11.5px;line-height:1.45;}
     .cctv-tools .btn-action:focus-visible,.cctv-tools summary:focus-visible {outline:2px solid var(--primary);outline-offset:3px;}
     .cctv-tools summary {cursor:pointer;padding:2px 0;font-weight:600;font-size:13px;color:var(--text-primary);}
+    .cctv-tools details[open] > summary {margin-bottom:12px;}
+    .cctv-steps {list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:10px;}
+    .cctv-step {display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:rgba(15,23,42,.7);}
+    .cctv-step > div {display:flex;flex-direction:column;gap:6px;min-width:0;}
+    .cctv-step strong {font-size:13px;font-weight:600;color:var(--text-primary);}
+    .cctv-step small {font-size:12px;line-height:1.45;color:var(--text-secondary);}
+    .cctv-step-num {flex:none;width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:1px solid var(--border);color:var(--text-secondary);}
+    .cctv-step-primary {border-color:var(--primary);}
+    .cctv-step-primary .cctv-step-num {background:var(--primary);border-color:var(--primary);color:#04111f;}
+    .cctv-tools .btn-primary-solid {align-self:flex-start;background:var(--primary);border-color:var(--primary);color:#04111f;font-weight:700;font-size:13px;padding:8px 14px;}
+    .cctv-tools .btn-primary-solid:hover {filter:brightness(1.1);background:var(--primary);}
+    .cctv-view-header {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px 16px;}
+    .cctv-view-title {display:flex;flex-direction:column;gap:2px;min-width:0;}
+    .cctv-view-title h3 {margin:0;font-size:15px;font-weight:700;color:var(--text-primary);}
+    .cctv-view-title span {font-size:12px;color:var(--text-muted);}
+    .cctv-status-row {display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+    .cctv-status-row .badge {font-size:11px;}
+    .cctv-chip {font-size:11px;padding:3px 8px;border-radius:999px;border:1px solid var(--border);color:var(--text-secondary);cursor:help;}
+    .cctv-fps {font-size:12px;font-family:var(--font-mono);color:var(--text-muted);}
+    .cctv-toolbar {display:flex;gap:8px;flex-wrap:wrap;align-items:center;justify-content:space-between;background:rgba(0,0,0,0.25);border:1px solid var(--border);border-radius:8px;padding:8px 10px;}
+    .cctv-toolbar-field {display:flex;align-items:center;gap:8px;flex:1 1 240px;min-width:0;max-width:420px;}
+    .cctv-toolbar-field label {font-size:12px;font-weight:600;color:var(--text-muted);white-space:nowrap;}
+    .cctv-toolbar-field select {font-size:12px;height:32px;padding:4px 8px;flex:1;min-width:0;width:auto;font-family:inherit;}
+    .cctv-toolbar-actions {display:flex;gap:8px;flex-wrap:wrap;}
+    .cctv-toolbar .btn-action {height:32px;font-size:12px;padding:0 12px;}
+    .cctv-toolbar .cctv-icon-btn {width:32px;padding:0;justify-content:center;font-size:15px;}
+    .cctv-source-text {font-size:12px;color:var(--text-muted);}
+    #cctvTestContainer {max-width:min(100%,calc(72vh * 4 / 3));margin-inline:auto;}
+    #cctvViewerColumn:fullscreen #cctvTestContainer {max-width:none;}
+    .cctv-empty-title {font-size:14px;color:var(--text-primary);}
+    .cctv-empty-text {font-size:12px;color:var(--text-muted);max-width:340px;line-height:1.5;}
+    .cctv-empty-actions {display:flex;gap:8px;flex-wrap:wrap;justify-content:center;pointer-events:auto;}
+    .cctv-empty-actions .btn-action {font-size:12px;padding:6px 12px;}
+    @media (max-width:520px){.cctv-empty-text{display:none;}}
     #threeCameraEvents {padding:10px 12px;border-radius:8px;background:rgba(7,11,20,.75);border:1px solid var(--border);font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);}
     .btn-action:hover {
       background: var(--surface-card-hover);
@@ -1181,64 +1215,53 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <!-- Right Column: In-Browser YOLO11n-Pose ONNX CCTV Wrist-ROI Dwell Detector -->
         <div id="cctvViewerColumn"
           style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-width: 0; overflow: hidden;">
-          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
-            <div style="display: flex; align-items: center; gap: 8px;">
-              <span style="font-size: 13px; font-weight: 700; color: var(--text-primary);">&#9889; YOLO11n-Pose ONNX
-                Wrist-ROI Dwell Detector</span>
-              <span class="badge badge-offline" id="cctvPoseStatusBadge" style="font-size: 10px;">Tracker Idle</span>
+          <div class="cctv-view-header">
+            <div class="cctv-view-title">
+              <h3>Live camera view</h3>
+              <span>YOLO11n-Pose ONNX wrist dwell detector &middot; browser diagnostic</span>
             </div>
-            <div style="display: flex; align-items: center; gap: 6px;">
-              <span id="cctvFpsText" style="font-size: 11px; font-family: var(--font-mono); color: var(--text-muted);">0
-                FPS</span>
+            <div class="cctv-status-row">
+              <span class="badge badge-offline" id="cctvPoseStatusBadge">Tracker Idle</span>
+              <span class="cctv-chip" title="Borrow/Return actions need all three live cameras to agree.">3-of-3 consensus</span>
+              <span id="cctvFpsText" class="cctv-fps">0 FPS</span>
               <span id="cctvPoseDwellMeter" class="badge"
-                style="display: none; font-size: 10px; background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; color: #fbbf24;"></span>
+                style="display: none; background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; color: #fbbf24;"></span>
             </div>
           </div>
+          <!-- Consensus is fixed at all enabled cameras; kept hidden for initCctvConsensusMode(). -->
+          <select id="cctvConsensusSelect" hidden aria-hidden="true" tabindex="-1"><option value="3" selected>3</option></select>
 
           <!-- Video Source & Tracker Controls Bar -->
-          <div
-            style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center; background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;">
-            <div style="display: flex; align-items: center; gap: 6px; flex: 1 1 220px; min-width: 0;">
-              <label for="cctvPoseSourceSelect"
-                style="font-size: 11px; font-weight: 600; color: var(--text-muted); white-space: nowrap;">Source:</label>
-              <select id="cctvPoseSourceSelect" class="form-control"
-                style="font-size: 11px; padding: 4px 6px; height: 30px; flex: 1; min-width: 0; width: auto;" onchange="onCctvSourceChanged()">
-                <option value="cctv_bridge" selected>&#127760; CCTV Camera (via Local Bridge RTSP Stream)</option>
-                <option value="webcam">&#128247; Laptop / USB Webcam (Device 0)</option>
+          <div class="cctv-toolbar">
+            <div class="cctv-toolbar-field">
+              <label for="cctvPoseSourceSelect">Source</label>
+              <select id="cctvPoseSourceSelect" class="form-control" onchange="onCctvSourceChanged()">
+                <option value="cctv_bridge" selected>CCTV camera (local bridge)</option>
+                <option value="webcam">Laptop / USB webcam</option>
                 <option value="video_file">Recorded Video File (.mp4)</option>
-                <option value="simulation">&#127918; Synthetic Wrist-ROI Interaction Simulation</option>
+                <option value="simulation">Synthetic simulation</option>
               </select>
             </div>
-            <div style="display: flex; align-items: center; gap: 6px; flex: 1 1 260px; min-width: 0;">
-              <label for="cctvConsensusSelect" style="font-size: 11px; color: var(--text-muted);">Consensus:</label>
-              <select id="cctvConsensusSelect" class="form-control" onchange="saveCctvConsensusMode()"
-                style="font-size: 11px; height: 30px; padding: 4px 6px; flex: 1; min-width: 0; width: auto;">
-                <option value="3" selected>All Enabled Cameras (3-of-3 when all active)</option>
-              </select>
+            <div class="cctv-toolbar-actions">
+              <button type="button" class="btn-action" id="cctvPoseToggleBtn"
+                style="border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 700;"
+                onclick="toggleMediaPipeTracker()">
+                &#9654; Start Pose Tracker
+              </button>
+              <button type="button" class="btn-action" id="cctvCalibrateRoiBtn"
+                style="border-color: var(--primary); color: var(--primary);"
+                onclick="toggleRoiCalibrationMode()">
+                &#127919; Calibrate ROI
+              </button>
+              <button type="button" class="btn-action cctv-icon-btn" id="cctvFullscreenBtn"
+                aria-label="Fullscreen camera view" title="Fullscreen camera view" onclick="toggleCctvFullscreen()">
+                <span aria-hidden="true">&#9974;</span>
+              </button>
             </div>
-            <button type="button" class="btn-action" id="cctvPoseToggleBtn"
-              style="height: 30px; font-size: 11px; padding: 0 12px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 700;"
-              onclick="toggleMediaPipeTracker()">
-              &#9654; Start Pose Tracker
-            </button>
-            <button type="button" class="btn-action" id="cctvCalibrateRoiBtn"
-              style="height: 30px; font-size: 11px; padding: 0 10px; border-color: var(--primary); color: var(--primary);"
-              onclick="toggleRoiCalibrationMode()">
-              &#127919; Calibrate ROI
-            </button>
-            <button type="button" class="btn-action" id="cctvFullscreenBtn"
-              style="height: 30px; font-size: 11px; padding: 0 10px;" onclick="toggleCctvFullscreen()">
-              &#9974; Fullscreen
-            </button>
-            <button type="button" class="btn-action" id="cctvSimulateBtn"
-              style="height: 30px; font-size: 11px; padding: 0 10px; border-color: #a855f7; color: #c084fc; background: rgba(168, 85, 247, 0.08);"
-              onclick="runSimulatedHandInteraction()">
-              &#9889; Test 1.3s Dwell (Sim)
-            </button>
           </div>
 
-          <div id="cctvActiveSourceText" style="font-size: 11px; color: var(--text-muted);" aria-live="polite">
-            Tracking source: select Start YOLO or Calibrate ROI on a camera card.
+          <div id="cctvActiveSourceText" class="cctv-source-text" aria-live="polite">
+            No camera selected. On a camera card below, click <strong>Calibrate ROI</strong> or <strong>Start YOLO11n-Pose ONNX</strong>.
           </div>
 
           <!-- Interactive ROI Calibration Bar (Shown when Calibrate ROI is active) -->
@@ -1300,17 +1323,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div id="cctvReplayVotes" style="font-size:12px;"></div>
           </div>
           <div id="cctvConsensusResult" role="status" style="font-size:13px;"></div>
-          <section class="cctv-tools" aria-label="CCTV monitoring and setup">
-          <div class="cctv-tool-group">
-            <h3>Camera calibration</h3>
-            <p>Calibrate and save each camera's regions first. Export prepares a file for the bridge; Install uploads it directly; loading reads calibrations already installed there.</p>
-            <div class="cctv-tool-grid">
-              <button type="button" class="btn-action" onclick="exportEdgeCalibrations()"><span>Export calibration file</span><small>Download saved browser regions for all three cameras.</small></button>
-              <button type="button" class="btn-action" onclick="installEdgeCalibrations()"><span>Install to Bridge</span><small>Upload saved regions to the bridge and re-verify every shelf.</small></button>
-              <button type="button" class="btn-action" onclick="importLocalRois()"><span>Load bridge calibrations</span><small>Copy installed bridge regions into this browser. This does not upload a file.</small></button>
-            </div>
-          </div>
-          </section>
           <!-- Canvas & Video Viewport (Single Full-Box Canvas — No Split Screen) -->
           <div class="preview-canvas-box" id="cctvTestContainer"
             style="position: relative; width: 100%; aspect-ratio: 4 / 3; display: block; background: #070b14; border-radius: 8px; overflow: hidden;">
@@ -1320,20 +1332,50 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               style="width: 100%; height: 100%; display: block;"></canvas>
             <div id="cctvTestPlaceholder" class="snapshot-placeholder"
               style="position: absolute; inset: 0; pointer-events: none; background: rgba(11, 17, 32, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 20px;">
-              <span style="font-size: 28px;">&#128249;</span>
-              <span style="font-size: 12px; color: var(--text-muted); max-width: 320px;">Click <strong>&quot;&#127919; Calibrate ROI&quot;</strong> or <strong>&quot;&#9654; Start YOLO11n-Pose ONNX JS&quot;</strong> to stream the CCTV feed full-screen on this canvas.</span>
+              <span style="font-size: 28px;" aria-hidden="true">&#128249;</span>
+              <strong class="cctv-empty-title">No camera feed yet</strong>
+              <span class="cctv-empty-text">Pick a camera card below and click <strong>Calibrate ROI</strong> or <strong>Start YOLO11n-Pose ONNX</strong> to show its feed here.</span>
+              <div class="cctv-empty-actions">
+                <button type="button" class="btn-action" onclick="document.getElementById('cctvCamerasListGrid').scrollIntoView({behavior:'smooth'})">&#8595; Choose a camera</button>
+                <button type="button" class="btn-action" onclick="toggleMediaPipeTracker()">&#9654; Start Pose Tracker</button>
+              </div>
             </div>
           </div>
 
           <!-- Bottom Telemetry HUD Bar -->
           <div
-            style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; font-size: 11px; font-family: var(--font-mono); color: var(--text-muted); background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;">
+            style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; font-size: 12px; font-family: var(--font-mono); color: var(--text-muted); background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px;">
             <div>Model: <span style="color: var(--primary);">YOLO11n-Pose ONNX</span></div>
             <div>Wrists: <span id="cctvWristsText" style="color: var(--text-primary);">None</span></div>
             <div>Dwell: <span id="cctvDwellStatusText" style="color: var(--text-primary);">Idle (0.0s)</span></div>
             <div>Last Event: <span id="cctvLastTriggerText" style="color: var(--warning);">None</span></div>
             <p id="cctvTrackingHelp" role="status" style="width:100%;line-height:1.5;">Save camera regions and exit calibration before testing wrist dwell.</p>
           </div>
+
+          <section class="cctv-tools" aria-label="CCTV setup">
+          <div class="cctv-tool-group">
+            <h3>Camera calibration</h3>
+            <p>Do these steps once for each of the three cameras, then install. The bridge reuses the installed file on every restart.</p>
+            <ol class="cctv-steps">
+              <li class="cctv-step"><span class="cctv-step-num" aria-hidden="true">1</span><div><strong>Calibrate</strong><small>Click <em>Calibrate ROI</em> on a camera card and draw each shelf region.</small></div></li>
+              <li class="cctv-step"><span class="cctv-step-num" aria-hidden="true">2</span><div><strong>Save</strong><small>Click <em>Save ROIs &amp; Finish Calibration</em>. Repeat for every camera.</small></div></li>
+              <li class="cctv-step cctv-step-primary"><span class="cctv-step-num" aria-hidden="true">3</span><div><strong>Install</strong><button type="button" class="btn-action btn-primary-solid" onclick="installEdgeCalibrations()">Install to Bridge</button><small>Uploads saved regions and re-verifies every shelf.</small></div></li>
+            </ol>
+          </div>
+          <details class="cctv-tool-group">
+            <summary>More calibration options</summary>
+            <div class="cctv-tool-grid">
+              <button type="button" class="btn-action" onclick="exportEdgeCalibrations()"><span>Export calibration file</span><small>Download saved browser regions for all three cameras.</small></button>
+              <button type="button" class="btn-action" onclick="importLocalRois()"><span>Load bridge calibrations</span><small>Copy installed bridge regions into this browser. This does not upload a file.</small></button>
+            </div>
+          </details>
+          <details class="cctv-tool-group">
+            <summary>Diagnostics (not inventory evidence)</summary>
+            <div class="cctv-tool-grid">
+              <button type="button" class="btn-action" id="cctvSimulateBtn" onclick="runSimulatedHandInteraction()"><span>&#9889; Test 1.3s Dwell (Sim)</span><small>Moves a simulated wrist into SHELF_R1_C1 to test the browser dwell path. Diagnostic only.</small></button>
+            </div>
+          </details>
+          </section>
         </div>
       </div>
 
