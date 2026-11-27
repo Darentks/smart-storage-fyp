@@ -237,6 +237,21 @@
     .cctv-empty-actions {display:flex;gap:8px;flex-wrap:wrap;justify-content:center;pointer-events:auto;}
     .cctv-empty-actions .btn-action {font-size:12px;padding:6px 12px;}
     @media (max-width:520px){.cctv-empty-text{display:none;}}
+    #cctvSingleView {display:contents;}
+    #cctvSingleView[hidden],#cctvConsensusTest[hidden] {display:none;}
+    .cctv-consensus-test {display:flex;flex-direction:column;gap:12px;}
+    .cctv-consensus-head {display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px 16px;}
+    .cctv-consensus-head h3 {margin:0 0 4px;font-size:14px;font-weight:700;color:var(--text-primary);}
+    .cctv-consensus-head span {display:block;font-size:12px;line-height:1.5;color:var(--text-muted);max-width:760px;}
+    .cctv-consensus-head .btn-action {height:32px;font-size:12px;padding:0 12px;}
+    .cctv-consensus-status {display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:rgba(15,23,42,.7);font-size:12px;line-height:1.5;color:var(--text-secondary);}
+    .cctv-consensus-status > strong {font-size:14px;color:var(--text-primary);}
+    .cctv-consensus-status.is-matched {border-color:var(--success);background:rgba(16,185,129,.12);}
+    .cctv-consensus-status .cctv-consensus-match {font-size:14px;font-weight:700;color:var(--success);}
+    #threeCameraCards {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:10px;}
+    #threeCameraCards article {display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px;border:1px solid var(--border);border-radius:10px;background:#070b14;}
+    #threeCameraCards article > div {font-size:11px;font-family:var(--font-mono);color:var(--text-secondary);overflow-wrap:anywhere;}
+    #threeCameraCards canvas {display:block;border-radius:6px;cursor:zoom-in;}
     #threeCameraEvents {padding:10px 12px;border-radius:8px;background:rgba(7,11,20,.75);border:1px solid var(--border);font-family:var(--font-mono);font-size:11px;color:var(--text-secondary);}
     .btn-action:hover {
       background: var(--surface-card-hover);
@@ -805,7 +820,7 @@ class ThreeCameraDashboard {
       const config = cameras.find(c => c.cctv_id === id);
       if (!config || config.is_active === false || !config.rtsp_url) throw Error(`Configure and enable ${id} first`);
       const role = index === 2 ? 'SIDE_PRESENCE' : 'GRID_6_ROI';
-      if (config.camera_role !== role) throw Error(`Set ${id} role to ${role}`);
+      if (config.camera_role !== role) throw Error(`Set ${id} role to ${role==='SIDE_PRESENCE'?'Side view':'Shelf view'}`);
       let rois = structuredClone(defaults);
       const key = `smart_storage_cctv_rois_${id}`;
       const binding = JSON.parse(localStorage.getItem(key+'_binding') || 'null');
@@ -865,7 +880,7 @@ class ThreeCameraDashboard {
       }
       const missing=cameras.filter(c=>!this.healthy(c));
       this.status(missing.length ? 'Waiting for '+missing.map(c=>c.id.replace('_',' ')).join(', ') : 'All cameras detecting');
-      for(const c of cameras)c.label.textContent=`${c.id} (${c.role}) | ${this.healthy(c)?'Connected':'Waiting'} | ${c.detectionStatus||'Idle'} | ${c.fps.toFixed(1)} FPS | processed ${c.processed?Math.round((performance.now()-c.processed))+'ms ago':'never'} | vote ${c.lastVote}`;
+      for(const c of cameras)c.label.textContent=`${c.id} · ${c.role==='SIDE_PRESENCE'?'Side view':'Shelf view'} | ${this.healthy(c)?'Connected':'Waiting'} | ${c.detectionStatus||'Idle'} | ${c.fps.toFixed(1)} FPS | processed ${c.processed?Math.round((performance.now()-c.processed))+'ms ago':'never'} | vote ${c.lastVote}`;
     } catch(error) {this.event(`${c.id}: ${error.message}`);await this.invalidate(c);}
     finally {if(this.running && generation===this.generation)this.timer=setTimeout(()=>this.schedule(),ran?0:25);}
   }
@@ -1249,6 +1264,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <option value="CCTV_01">CCTV_01</option>
                 <option value="CCTV_02">CCTV_02</option>
                 <option value="CCTV_03">CCTV_03</option>
+                <option value="ALL">All 3 cameras &middot; consensus test</option>
               </select>
               <button type="button" class="btn-action" id="cctvEditSelectedBtn" disabled
                 title="Edit the selected camera's registration" onclick="editSelectedCctvCamera()">&#9998; Edit</button>
@@ -1271,6 +1287,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
           </div>
 
+          <!-- Single-camera view (hidden while the three-camera consensus test runs). -->
+          <div id="cctvSingleView">
           <div id="cctvActiveSourceText" class="cctv-source-text" aria-live="polite">
             No camera selected. Choose one from the <strong>Camera</strong> list to show its feed, then use <strong>Edit</strong> or <strong>Calibrate ROI</strong>.
           </div>
@@ -1344,6 +1362,24 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div>Last Event: <span id="cctvLastTriggerText" style="color: var(--warning);">None</span></div>
             <p id="cctvTrackingHelp" role="status" style="width:100%;line-height:1.5;">Save camera regions and exit calibration before testing wrist dwell.</p>
           </div>
+          </div>
+
+          <!-- Three-camera consensus test: TEST ONLY, never posts votes, ESP32 captures or inventory changes. -->
+          <section id="cctvConsensusTest" class="cctv-consensus-test" hidden aria-label="Three-camera consensus test">
+            <div class="cctv-consensus-head">
+              <div>
+                <h3>Three-camera consensus test</h3>
+                <span>TEST ONLY: no vote, ESP32 capture or inventory change is sent. Reach into one shelf for at least 1.2&nbsp;s.
+                  CCTV_01 and CCTV_02 must agree on the shelf and action while CCTV_03 sees someone at the rack, all within 4&nbsp;s.</span>
+              </div>
+              <div class="cctv-toolbar-actions">
+                <button type="button" class="btn-action" onclick="startConsensusTest()">&#8635; Restart test</button>
+                <button type="button" class="btn-action" onclick="stopConsensusTest()">&#9632; Stop test</button>
+              </div>
+            </div>
+            <div id="diagnosticConsensusStatus" class="cctv-consensus-status"></div>
+            <div id="threeCameraCards"></div>
+          </section>
 
           <section class="cctv-tools" aria-label="CCTV setup">
           <div class="cctv-tool-group">
@@ -3450,7 +3486,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const data = await response.json();
         window.inventoryMode='runtime';
         if(window.inventoryMode==='runtime') {
-          if(typeof threeCameraDashboard!=='undefined')threeCameraDashboard.stop();
+          if(typeof threeCameraDashboard!=='undefined' && !threeCameraDashboard.diagnosticOnly)threeCameraDashboard.stop();
           if(typeof document!=='undefined') {
             for(const button of document.querySelectorAll('button[onclick]')) {
               if(/runFullDualCamValidation|runOfflinePhotoTest|startThreeCameras|startCctv|runCctv|startPose/.test(button.getAttribute('onclick')||'')) {
@@ -4634,8 +4670,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       renderDiagnosticConsensus();
     }
     function renderDiagnosticConsensus(){
-      const host=document.getElementById('diagnosticConsensusStatus');host.replaceChildren();
-      const add=(tag,text)=>{const node=document.createElement(tag);node.textContent=text;host.appendChild(node);};
+      const host=document.getElementById('diagnosticConsensusStatus');host.replaceChildren();host.className='cctv-consensus-status';
+      const add=(tag,text)=>{const node=document.createElement(tag);node.textContent=text;host.appendChild(node);return node;};
       if(!threeCameraDashboard.running || !threeCameraDashboard.diagnosticOnly){add('p','Three-camera test stopped. No live test agreement is being evaluated.');return;}
       const now=Date.now()/1000,{fresh,matched}=evaluateDiagnosticConsensus(diagnosticConsensusVotes,now);
       const healthy=[...threeCameraDashboard.contexts.values()].length===3 && [...threeCameraDashboard.contexts.values()].every(c=>threeCameraDashboard.healthy(c));
@@ -4654,7 +4690,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const c=threeCameraDashboard.contexts.get(id),vote=healthy?fresh[id]:null;
         add('p',`${id}: ${c && threeCameraDashboard.healthy(c)?c.detectionStatus:'Waiting for fresh detection'} · ${vote?`${vote.shelf_id} / ${vote.expected_action || 'presence'} (${Math.max(0,now-vote.detected_at).toFixed(1)}s ago)`:'No fresh vote (expires after 4s)'}`);
       }
-      if(diagnosticLastMatch)add('p',`Last TEST match: ${diagnosticLastMatch.location} · ${diagnosticLastMatch.action} · ALL 3 MATCHED · ${new Date(diagnosticLastMatch.at*1000).toLocaleTimeString()}`);
+      if(diagnosticLastMatch && Date.now()/1000-diagnosticLastMatch.at<10)host.className+=' is-matched';
+      if(diagnosticLastMatch)add('p',`Last TEST match: ${diagnosticLastMatch.location} · ${diagnosticLastMatch.action} · ALL 3 MATCHED · ${new Date(diagnosticLastMatch.at*1000).toLocaleTimeString()}`).className='cctv-consensus-match';
       add('p','Diagnostic agreement only. No authoritative intent, ESP32 capture or inventory update was created.');
     }
     let roiDraft = [];
@@ -5314,6 +5351,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // binding fails so Edit can still open that camera's registration to fix it.
     let cctvPickedId = null;
     function onCctvCameraPicked(cctvId) {
+      if (cctvId === 'ALL') return startConsensusTest();
+      if (cctvConsensusTestOn) stopConsensusTest();
       const cam = cctvCamerasList.find(c => c.cctv_id === cctvId);
       if (!cam) {
         showToast(`${cctvId} is not registered. Refresh CCTVs.`, 'error');
@@ -5325,6 +5364,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     function pickedCctvCamera() {
+      if (cctvConsensusTestOn) return null;
       const id = cctvPickedId || (activeCctvSourceUrl ? activeCctvId : null);
       return cctvCamerasList.find(c => c.cctv_id === id) || null;
     }
@@ -5351,22 +5391,66 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           : `${cam.cctv_id}${cam.camera_name ? ' · ' + cam.camera_name : ''}${cam.is_active === false ? ' (inactive)' : ''}`;
       }
       const picked = pickedCctvCamera();
-      picker.value = picked ? picked.cctv_id : '';
+      picker.value = cctvConsensusTestOn ? 'ALL' : picked ? picked.cctv_id : '';
       const editBtn = document.getElementById('cctvEditSelectedBtn');
       if (editBtn) editBtn.disabled = !picked;
     }
 
     function editSelectedCctvCamera() {
       const cam = pickedCctvCamera();
-      if (!cam) { showToast('Choose a camera from the Camera list first.', 'info'); focusCctvCameraPicker(); return; }
+      if (!cam) { showToast('Choose a single camera from the Camera list first.', 'info'); focusCctvCameraPicker(); return; }
       editCctvCamera(encodeURIComponent(JSON.stringify({ cctv_id: cam.cctv_id })));
+    }
+
+    // "All 3 cameras" option: TEST-ONLY three-feed consensus check on the existing diagnostic-only runner
+    // (threeCameraDashboard with diagnosticOnly, which refuses every POST). Never creates votes, captures or inventory.
+    let cctvConsensusTestOn = false;
+    function setConsensusTestView(on) {
+      cctvConsensusTestOn = on;
+      const single = document.getElementById('cctvSingleView'), test = document.getElementById('cctvConsensusTest');
+      if (single) single.hidden = on;
+      if (test) test.hidden = !on;
+      for (const id of ['cctvPoseToggleBtn', 'cctvCalibrateRoiBtn']) {
+        const button = document.getElementById(id);
+        if (button) button.style.display = on ? 'none' : '';
+      }
+      syncCctvCameraPicker();
+    }
+    function savedCalibrationMatches(cam) {
+      try {
+        const binding = JSON.parse(localStorage.getItem(`smart_storage_cctv_rois_${cam.cctv_id}_binding`) || 'null');
+        return !!binding && binding.camera_role === cameraRole(cam) && binding.source === cctvSourceBinding(cam.rtsp_url);
+      } catch (_) { return false; }
+    }
+    async function startConsensusTest() {
+      if (isCalibratingRoi) toggleRoiCalibrationMode(false);
+      if (isPoseRunning) stopPoseTracker();
+      clearInterval(diagnosticConsensusTimer); diagnosticConsensusTimer = null;
+      setConsensusTestView(true);
+      try {
+        await threeCameraDashboard.start(cctvCamerasList, DEFAULT_COMPARTMENT_ROIS, { diagnosticOnly: true });
+        if (!cctvConsensusTestOn) { threeCameraDashboard.stop(); return; }
+        diagnosticConsensusTimer = setInterval(renderDiagnosticConsensus, 500);
+        renderDiagnosticConsensus();
+        const uncalibrated = cctvCamerasList.filter(cam => ['CCTV_01', 'CCTV_02', 'CCTV_03'].includes(cam.cctv_id) && !savedCalibrationMatches(cam)).map(cam => cam.cctv_id);
+        if (uncalibrated.length) showToast(`${uncalibrated.join(', ')}: no saved regions for the current camera address in this browser, so default regions are used. Calibrate first for a meaningful test.`, 'warning');
+      } catch (error) {
+        threeCameraDashboard.stop();
+        renderDiagnosticConsensus();
+        showToast(`Consensus test could not start: ${error.message}`, 'error');
+      }
+    }
+    function stopConsensusTest() {
+      clearInterval(diagnosticConsensusTimer); diagnosticConsensusTimer = null;
+      if (threeCameraDashboard.running || threeCameraDashboard.diagnosticOnly) threeCameraDashboard.stop();
+      setConsensusTestView(false);
     }
 
     // Toolbar Calibrate ROI: binds the picked camera first (as calibrateCctvRoi always did), or exits calibration.
     function onCalibrateRoiClicked() {
       if (isCalibratingRoi) { toggleRoiCalibrationMode(false); return; }
       const cam = pickedCctvCamera();
-      if (!cam) { showToast('Choose a camera from the Camera list first.', 'info'); focusCctvCameraPicker(); return; }
+      if (!cam) { showToast('Choose a single camera from the Camera list first.', 'info'); focusCctvCameraPicker(); return; }
       calibrateCctvRoi(cam.cctv_id, cam.rtsp_url);
     }
 
