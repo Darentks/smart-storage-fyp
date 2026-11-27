@@ -4,11 +4,11 @@
   "rewrites": [
     {
       "source": "/cctv-configuration",
-      "destination": "/index.html"
+      "destination": "/"
     },
     {
       "source": "/esp32-cams",
-      "destination": "/index.html"
+      "destination": "/"
     },
     {
       "source": "/models/:path*",
@@ -16,7 +16,7 @@
     },
     {
       "source": "/((?!models/|src/|(?:camera_replacement|dashboard_pages)\\.js$|VisionValidation_Module/).*)",
-      "destination": "/index.html"
+      "destination": "/"
     }
   ],
   "headers": [
