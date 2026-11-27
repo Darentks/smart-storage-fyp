@@ -228,10 +228,8 @@
     .cctv-toolbar-field select {font-size:12px;height:32px;padding:4px 8px;flex:1;min-width:0;width:auto;font-family:inherit;}
     .cctv-toolbar-actions {display:flex;gap:8px;flex-wrap:wrap;}
     .cctv-toolbar .btn-action {height:32px;font-size:12px;padding:0 12px;}
-    .cctv-toolbar .cctv-icon-btn {width:32px;padding:0;justify-content:center;font-size:15px;}
     .cctv-source-text {font-size:12px;color:var(--text-muted);}
     #cctvTestContainer {max-width:min(100%,calc(72vh * 4 / 3));margin-inline:auto;}
-    #cctvViewerColumn:fullscreen #cctvTestContainer {max-width:none;}
     .cctv-empty-title {font-size:14px;color:var(--text-primary);}
     .cctv-empty-text {font-size:12px;color:var(--text-muted);max-width:340px;line-height:1.5;}
     .cctv-empty-actions {display:flex;gap:8px;flex-wrap:wrap;justify-content:center;pointer-events:auto;}
@@ -551,9 +549,6 @@
 
     /* Panel 2: Live Angle Tester & Scenario Reference Collector */
     /* Fullscreen CCTV viewer */
-    #cctvViewerColumn:fullscreen { background: #020617; padding: 12px; overflow: auto; justify-content: flex-start; }
-    #cctvViewerColumn:fullscreen #cctvTestContainer { flex: 1; min-height: 0; }
-    #cctvViewerColumn:fullscreen #cctvPoseCanvas { width: auto; max-width: 100%; max-height: calc(100vh - 220px); }
 
     .tester-grid {
       display: grid;
@@ -997,11 +992,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302;
           Load Both TM Models</button>
       </div>
-      <div style="display: flex; gap: 8px; margin-left: auto; flex-wrap: wrap;">
-        <a class="btn-action" data-dashboard-link="esp32" href="/esp32-cams">ESP32 CAMs</a>
-        <a class="btn-action" data-dashboard-link="cctv" data-calibrate href="/cctv-configuration?calibrate=1">Calibrate CCTV ROIs</a>
-        <button type="button" class="btn-action" onclick="refreshAllData()">&circlearrowright; Refresh All</button>
-      </div>
     </div>
 
     <div data-dashboard-view="dashboard">
@@ -1227,11 +1217,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <h2 class="panel-title">CCTV Configuration</h2>
           <p class="panel-desc">Manage CCTV cameras, calibrate shelf regions and review native camera agreement. Browser pose tools are diagnostic only.</p>
         </div>
-        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-          <button type="button" class="btn-action" onclick="loadCctvCameras()">
-            &#8635; Refresh CCTVs
-          </button>
-        </div>
       </div>
 
       <!-- CCTV diagnostic viewer; pick, edit and calibrate cameras from the toolbar. -->
@@ -1279,10 +1264,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 style="border-color: var(--primary); color: var(--primary);"
                 onclick="onCalibrateRoiClicked()">
                 &#127919; Calibrate ROI
-              </button>
-              <button type="button" class="btn-action cctv-icon-btn" id="cctvFullscreenBtn"
-                aria-label="Fullscreen camera view" title="Fullscreen camera view" onclick="toggleCctvFullscreen()">
-                <span aria-hidden="true">&#9974;</span>
               </button>
             </div>
           </div>
@@ -5355,7 +5336,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (cctvConsensusTestOn) stopConsensusTest();
       const cam = cctvCamerasList.find(c => c.cctv_id === cctvId);
       if (!cam) {
-        showToast(`${cctvId} is not registered. Refresh CCTVs.`, 'error');
+        showToast(`${cctvId} is not registered. Reload the page to refresh the camera list.`, 'error');
         syncCctvCameraPicker();
         return;
       }
@@ -5381,8 +5362,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (!picker) return;
       for (const option of picker.options) {
         if (!option.value) {
-          option.textContent = cctvLoadError ? 'CCTV configuration unavailable – click Refresh CCTVs'
+          option.textContent = cctvLoadError ? 'CCTV configuration unavailable – reload the page'
             : cctvConfigLoaded && !cctvCamerasList.length ? 'No CCTV cameras registered' : 'Choose a camera…';
+          continue;
+        }
+        if (option.value === 'ALL') {
+          const missing = ['CCTV_01', 'CCTV_02', 'CCTV_03'].filter(id => !cctvCamerasList.some(c => c.cctv_id === id));
+          option.disabled = missing.length > 0;
+          option.textContent = `All 3 cameras · consensus test${missing.length ? ` (needs ${missing.join(', ')})` : ''}`;
           continue;
         }
         const cam = cctvCamerasList.find(c => c.cctv_id === option.value);
@@ -5812,13 +5799,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (cctvConfigLoaded) syncCctvAlignmentConfig().catch(error => console.warn('[CCTV Alignment]', error.message));
     }
 
-    function toggleCctvFullscreen() {
-      const el = document.getElementById('cctvViewerColumn');
-      if (!el) return;
-      if (document.fullscreenElement) document.exitFullscreen();
-      else if (el.requestFullscreen) el.requestFullscreen();
-    }
-
     function calibrateCctvRoi(cctvId, rtspUrl) {
       if (!useCctvAsTrackerSource(rtspUrl, cctvId)) return;
       toggleRoiCalibrationMode(true);
@@ -5831,7 +5811,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       try {
         const binding = validateCctvBinding(cctvId, rtspUrl, camera?.ip_address);
         if (!camera || cctvSourceBinding(camera.rtsp_url) !== binding) {
-          throw new Error(`${cctvId}: camera registration changed. Refresh CCTVs and pick it again in the Camera list.`);
+          throw new Error(`${cctvId}: camera registration changed. Reload the page and pick it again in the Camera list.`);
         }
       } catch (error) {
         showToast(error.message, 'error');
