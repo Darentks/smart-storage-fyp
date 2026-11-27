@@ -1366,9 +1366,15 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         service=REPLACEMENT
         if service is None:
             self._send_json(503,{'error':'Replacement service unavailable'});return
+        # Wired replacement is retired. Keep only already-persisted recovery available;
+        # never clear a legacy maintenance record or create a new replacement job.
+        if not service.store.blocked():
+            self._send_json(410,{'error':'Wired replacement retired; cameras use fixed registrations and camera-specific OTA'});return
         try:
             body=self._read_json_body() if mutation else {}
             if not isinstance(body,dict):raise ValueError('Expected JSON object')
+            if mutation and body.get('camera_slot') not in {row['camera_slot'] for row in service.store.records}:
+                self._send_json(410,{'error':'New replacement jobs are disabled; only existing maintenance recovery is allowed'});return
             if path=='/replacement/status' and not mutation:
                 result=service.status()
                 if AUTONOMOUS and service.job:result['native']=AUTONOMOUS.shelf_status(service.job['shelf_id'],RUNTIME_INVENTORY.snapshot(service.job['shelf_id']))

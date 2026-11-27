@@ -1483,28 +1483,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       <h2 class="panel-title">ESP32 CAMs</h2>
       <p>Six fixed Back/Front cameras for C1?C3. Configure registrations in Panel 2 on the Inventory Dashboard.</p>
       <button class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">Probe all 6 cameras</button>
-      <button class="btn-action" id="wiredReplacementButton" onclick="openReplacement()">Wired Flash / Replace Camera</button>
       <p id="ignoredCameraRows"></p>
       <div id="esp32CameraManagerGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"></div>
     </section>
   </main>
-  <dialog id="replacementDialog" style="background:#0f172a;color:#e2e8f0;border:1px solid #64748b;border-radius:12px;max-width:680px;width:90%">
-    <h2>Wired Flash / Replace Camera</h2>
-    <p>Connect USB to the bridge laptop. Enter maintenance before disconnecting the old camera.</p>
-    <label>Camera <select id="replacementSlot" onchange="replacementPreview()"></select></label>
-    <pre id="replacementPreview" style="white-space:pre-wrap"></pre>
-    <button class="btn-action" onclick="replacementAction('begin')">Begin Replacement / Enter Maintenance</button>
-    <p><label>USB port <select id="replacementPort"></select></label> <button class="btn-action" onclick="refreshReplacementPorts()">Refresh Ports</button></p>
-    <p><label><input type="checkbox" id="replacementDisconnected"> The old camera is physically disconnected</label></p>
-    <button class="btn-action" onclick="replacementAction('flash')">Build &amp; Flash via USB</button>
-    <button class="btn-action" onclick="replacementAction('verify')">Retry Verification without reflashing</button>
-    <button class="btn-action" onclick="replacementAction('repair')">Repair selected identity via USB</button>
-    <button class="btn-action" onclick="replacementAction('retry')">Retry Scan</button>
-    <pre id="replacementProgress" role="status" aria-live="polite" style="white-space:pre-wrap"></pre>
-    <p>Manual bootloader: power off, connect GPIO0 to GND, reset/power on and upload. Remove GPIO0?GND and reset after upload. Use stable power and correct programmer serial voltage.</p>
-    <p>NVS mismatch remains in maintenance. Use physically identified serial recovery; never repair an assumed IP. Full erase requires separate confirmation and loses settings.</p>
-    <button class="btn-action" onclick="document.getElementById('replacementDialog').close()">Close (maintenance continues)</button>
-  </dialog>
+
 
   <!-- Toast Notification -->
   <div id="toast"></div>
