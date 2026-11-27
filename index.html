@@ -1481,7 +1481,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     </div>
     <section class="panel" data-dashboard-view="esp32" id="esp32CameraManagerPanel" style="margin-top:24px">
       <h2 class="panel-title">ESP32 CAMs</h2>
-      <p>Six fixed Back/Front cameras for C1?C3. Configure registrations in Panel 2 on the Inventory Dashboard.</p>
+      <p>Six fixed Back/Front cameras for C1?C3. Pictures load once from the native cache and stay fixed until you refresh them. Configure registrations in Panel 2 on the Inventory Dashboard.</p>
       <button class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">Probe all 6 cameras</button>
       <p id="ignoredCameraRows"></p>
       <div id="esp32CameraManagerGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"></div>
@@ -4202,8 +4202,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }));
 
     let esp32CameraNodesList = [];
-    let esp32NodeSnapshotModeMap = {};
-    let esp32NodeCacheBustMap = {};
 
     function cleanCameraHost(ip) {
       return String(ip || '').trim().replace(/^https?:\/\//i, '').replace(/\/\d+$/, '').replace(/\/+$/, '');
@@ -4370,42 +4368,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     // Fixed-slot renderer and read-only probes are defined in camera_replacement.js.
-    function toggleNodeSnapshotMode(deviceId) {
-      const current = esp32NodeSnapshotModeMap[deviceId] || 'live';
-      esp32NodeSnapshotModeMap[deviceId] = current === 'live' ? 'baseline' : 'live';
-      esp32NodeCacheBustMap[deviceId] = Date.now();
-      renderEsp32CameraManager();
-    }
-
-    function selectShelfForValidation(shelfId, ipAddress) {
-      if (refShelfSelect && shelfId) {
-        refShelfSelect.value = shelfId;
-        onTargetShelfChange();
-      }
-      if (ipAddress && refEspIpInput) {
-        refEspIpInput.value = cleanCameraHost(ipAddress);
-      }
-    }
-
-    async function triggerSingleCameraNode(deviceId, ipAddress, shelfId) {
-      esp32NodeCacheBustMap[deviceId] = Date.now();
-      renderEsp32CameraManager();
-      try {
-        const live = await probeCameraStatus(ipAddress);
-        esp32CameraNodesList = esp32CameraNodesList.map((c) =>
-          c.device_id === deviceId ? { ...c, status: 'ONLINE', rssi_dbm: live.rssi_dbm, last_seen: new Date().toISOString() } : c
-        );
-        renderEsp32CameraManager();
-        showToast(`Triggered & captured snapshot from ${deviceId} (${ipAddress})`, 'success');
-      } catch (_) {
-        // Also try triggering via local Python bridge if available
-        if (shelfId) {
-          selectShelfForValidation(shelfId, ipAddress);
-        }
-        showToast(`Snapshot refreshed for ${deviceId} (${ipAddress})`, 'info');
-      }
-    }
-
     function setupRealtimeSubscriptions() {
       // Normal monitoring uses the bridge. Do not subscribe to cloud inventory.
     }

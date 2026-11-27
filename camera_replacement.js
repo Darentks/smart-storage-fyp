@@ -15,21 +15,81 @@ function fixedCameraRegistrations(rows){
     return {...slot,row,errors,status:errors.length?'Configuration error':row?'Registered':'Not registered'};
   });
 }
+// One display-only picture per fixed camera, in this browser tab's RAM. No image archive.
+const esp32CachedPictures=new Map();
+const esp32PendingPictures=new Map();
+function cachedShelfPicture(bridge,shelf){
+  const key=bridge+'|'+shelf;
+  if(!esp32PendingPictures.has(key)){
+    const request=fetch(`${bridge}/native_observation?shelf_id=${encodeURIComponent(shelf)}`,{
+      cache:'no-store',signal:AbortSignal.timeout(5000)
+    }).then(async response=>{
+      if(!response.ok)throw Error('Native picture cache unavailable');
+      const payload=await response.json(),observation=payload.observation;
+      if(!observation || observation.shelf_id!==shelf)throw Error('No cached picture yet. Wait for a native scan, then refresh.');
+      return observation;
+    }).finally(()=>esp32PendingPictures.delete(key));
+    esp32PendingPictures.set(key,request);
+  }
+  return esp32PendingPictures.get(key);
+}
+async function loadCachedCameraPicture(slot,refresh=false){
+  const bridge=getBridgeUrl(),key=bridge+'|'+slot.device_id;
+  const previous=esp32CachedPictures.get(slot.device_id);
+  if(!refresh && previous?.key===key)return;
+  if(previous?.key===key && previous.loading)return;
+  const record={key,loading:true,image:previous?.key===key?previous.image:'',timestamp:previous?.key===key?previous.timestamp:null,message:'Loading cached picture…'};
+  esp32CachedPictures.set(slot.device_id,record);
+  try{
+    const observation=await cachedShelfPicture(bridge,slot.shelf_id);
+    const image=slot.angle_index===1?observation.image_back:observation.image_front;
+    if(typeof image!=='string' || !/^data:image\/(jpeg|png);base64,/.test(image) || image.length>8*1024*1024)throw Error('No usable cached picture for this camera.');
+    record.image=image;record.timestamp=observation.timestamp;record.message='Cached picture';
+  }catch(error){record.message=error.message;}
+  finally{
+    record.loading=false;
+    if(esp32CachedPictures.get(slot.device_id)===record && getBridgeUrl()===bridge)renderEsp32CameraManager();
+  }
+}
+async function refreshCachedCameraPicture(deviceId){
+  const slot=fixedCameraRegistrations(esp32CameraNodesList).find(s=>s.device_id===deviceId);
+  if(!slot || slot.status!=='Registered')return;
+  const pending=loadCachedCameraPicture(slot,true);
+  renderEsp32CameraManager();await pending;
+}
 function renderEsp32CameraManager(){
   const grid=document.getElementById('esp32CameraManagerGrid');if(!grid)return;
   const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   document.getElementById('ignoredCameraRows').textContent=`${esp32CameraNodesList.filter(r=>!FIXED_CAMERA_SLOTS.some(s=>s.device_id===r.device_id)).length} retired/unrecognised rows ignored`;
-  grid.innerHTML=fixedCameraRegistrations(esp32CameraNodesList).map(slot=>{
-    const mode=esp32NodeSnapshotModeMap[slot.device_id]||'live',valid=slot.status==='Registered';
-    const image=valid && esp32NodeCacheBustMap[slot.device_id]?captureLiveSnapshotUrl(slot.ip_address,mode,0):'';
+  const slots=fixedCameraRegistrations(esp32CameraNodesList),bridge=getBridgeUrl();
+  const pictures=new Map(Array.from(grid.querySelectorAll?.('img[data-camera-id]')||[]).map(image=>[image.dataset.cameraId,image]));
+  const markup=slots.map(slot=>{
+    const valid=slot.status==='Registered',record=esp32CachedPictures.get(slot.device_id);
+    const cached=valid && record?.key===bridge+'|'+slot.device_id?record:null;
+    const image=cached?.image||'';
+    const timestamp=Number.isFinite(cached?.timestamp)?new Date(cached.timestamp*1000).toLocaleString():'';
     return `<article style="padding:14px;border:1px solid #475569;border-radius:8px"><h3>${slot.label} · ${slot.shelf_id} ${slot.role}</h3>
       <p>${slot.device_id}<br>${slot.ip_address}</p><p>${slot.status} ${escape(slot.errors.join('; '))}</p>
       <p>${escape(slot.row?.status||'OFFLINE')} ${escape(slot.row?.probe_issue||'')}</p>
-      ${image?`<img src="${escape(image)}" alt="${slot.label} ${slot.role}" style="width:100%;height:140px;object-fit:contain">`:''}
-      <button class="btn-action" ${valid?'':'disabled'} onclick="triggerSingleCameraNode('${slot.device_id}','${slot.ip_address}','${slot.shelf_id}')">Test Trigger</button>
-      <button class="btn-action" ${valid?'':'disabled'} onclick="toggleNodeSnapshotMode('${slot.device_id}')">Baseline/Live: ${mode}</button>
+      ${image?`<img data-camera-id="${slot.device_id}" src="${escape(image)}" alt="${slot.label} ${slot.role} cached picture" style="width:100%;height:140px;object-fit:contain">`:''}
+      <p role="status">${escape(cached?.message||'No cached picture loaded')}${timestamp?' · '+escape(timestamp):''}</p>
+      <button class="btn-action" ${valid && !cached?.loading?'':'disabled'} onclick="refreshCachedCameraPicture('${slot.device_id}')">Refresh cached picture</button>
       </article>`;
   }).join('');
+  if(grid.innerHTML!==markup){
+    grid.innerHTML=markup;
+    // Preserve the existing image elements when only telemetry changes, avoiding visual reloads.
+    for(const image of Array.from(grid.querySelectorAll?.('img[data-camera-id]')||[])){
+      const previous=pictures.get(image.dataset.cameraId);
+      if(previous && previous.getAttribute('src')===image.getAttribute('src'))image.replaceWith(previous);
+    }
+  }
+  if(typeof DASHBOARD_PAGE!=='undefined' && DASHBOARD_PAGE==='esp32'){
+    for(const slot of slots){
+      if(slot.status==='Registered')void loadCachedCameraPicture(slot);
+      else esp32CachedPictures.delete(slot.device_id);
+    }
+  }
 }
 async function probeAllEsp32CameraNodes(){
   await Promise.all(fixedCameraRegistrations(esp32CameraNodesList).filter(s=>s.status==='Registered').map(async slot=>{
