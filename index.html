@@ -1311,15 +1311,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div id="cctvReplayVotes" style="font-size:12px;"></div>
           </div>
           <div id="cctvConsensusResult" role="status" style="font-size:13px;"></div>
-          <div id="cctvConsensusPopup" hidden role="alertdialog" aria-modal="true" aria-labelledby="cctvConsensusPopupTitle"
-            style="position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:10000;align-items:center;justify-content:center;">
-            <div style="max-width:480px;padding:24px;border:2px solid #10b981;border-radius:12px;background:#111827;color:white;">
-              <h3 id="cctvConsensusPopupTitle">All 3 cameras agree</h3>
-              <p id="cctvConsensusPopupText"></p>
-              <button type="button" class="btn-action" onclick="closeCctvConsensusPopup()">Close</button>
-            </div>
-          </div>
-
           <section class="cctv-tools" aria-label="CCTV monitoring and setup">
           <div class="cctv-tool-status">
             <h3>Processor &amp; live activity</h3>
@@ -5155,9 +5146,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     const cctvReplayClientId = `browser-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const cctvSeenConsensusResults = new Set();
     function isRecordedCctvTest() { return document.getElementById('cctvPoseSourceSelect')?.value === 'video_file'; }
-    function closeCctvConsensusPopup() {
-      const popup=document.getElementById('cctvConsensusPopup');popup.hidden=true;popup.style.display='none';
-    }
     function showCctvConsensusResult(result) {
       if (!result.consensus_met || cctvSeenConsensusResults.has(result.trigger_id)) return;
       cctvSeenConsensusResults.add(result.trigger_id);
@@ -5166,10 +5154,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const location=localIntentPresentation({shelf_id:result.shelf_id}).location;
       const message=`${location} — ${result.expected_action}: ${cameras.join(' + ')} agree. ${result.test_only ? 'TEST ONLY: no ESP32 capture or inventory update was sent.' : result.inventory_eligible===false?'Shelf count is not Ready. Inventory confirmation is paused; no action was queued.':'CCTV consensus received. Box-count verification is still required before inventory changes.'}`;
       document.getElementById('cctvConsensusResult').textContent=message;
-      document.getElementById('cctvConsensusPopupTitle').textContent=cameras.length===3?'All 3 cameras agree':`${cameras.length} cameras agree`;
-      document.getElementById('cctvConsensusPopupText').textContent=message;
-      const popup=document.getElementById('cctvConsensusPopup');popup.hidden=false;popup.style.display='flex';
-      showToast(message,'success');
     }
     function localCctvReplayContext() {
       return {
@@ -5408,7 +5392,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         video.currentTime=result.clip.offset;
         video.onseeked=()=>{if(isRecordedCctvTest() && video.paused && generation===trackingGeneration)onPoseResults({image:video,poseLandmarks:null});};
         if(video.readyState>=2)onPoseResults({image:video,poseLandmarks:null});
-        closeCctvConsensusPopup();document.getElementById('cctvConsensusResult').textContent='';
+        document.getElementById('cctvConsensusResult').textContent='';
         await applyCctvReplayState(result);
         const badge=document.getElementById('cctvPoseStatusBadge');
         if(badge){badge.className='badge badge-online';badge.textContent='Recorded Replay Ready (Test Only)';}
@@ -5426,7 +5410,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const result=await cctvReplayRequest(action);
         if(registration!==cctvReplayRegistration)return;
         cctvReplaySnapshot=null;initCompartmentTrackers();
-        if(action==='start'||action==='reset'){closeCctvConsensusPopup();document.getElementById('cctvConsensusResult').textContent='';}
+        if(action==='start'||action==='reset'){document.getElementById('cctvConsensusResult').textContent='';}
         await applyCctvReplayState(result);
       }catch(error){showToast(error.message,'error');}
     }
