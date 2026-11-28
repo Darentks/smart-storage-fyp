@@ -86,28 +86,35 @@ function renderEsp32CameraManager(){
   const probeButton=document.getElementById('probeAllNodesBtn');
   if(probeButton){
     probeButton.disabled=esp32Probing || esp32IpSaveRunning();
-    probeButton.textContent=esp32Probing?'Probing…':'Probe all 6 cameras';
+    probeButton.textContent=esp32Probing?'Probing…':'Check camera connections';
     probeButton.title=esp32IpSaveRunning()?'Wait for Save Assigned IPs to finish':'';
   }
   const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   document.getElementById('ignoredCameraRows').textContent=`${esp32CameraNodesList.filter(r=>!FIXED_CAMERA_SLOTS.some(s=>s.device_id===r.device_id)).length} retired/unrecognised rows ignored`;
   const slots=fixedCameraRegistrations(esp32CameraNodesList),bridge=getBridgeUrl();
   const pictures=new Map(Array.from(grid.querySelectorAll?.('img[data-camera-id]')||[]).map(image=>[image.dataset.cameraId,image]));
-  const markup=slots.map(slot=>{
+  const openDetails=new Set(Array.from(grid.querySelectorAll?.('details[data-device][open]')||[]).map(node=>node.dataset.device));
+  const cameraCard=slot=>{
     const valid=slot.status==='Registered',record=esp32CachedPictures.get(slot.device_id);
     const cached=valid && record?.key===bridge+'|'+slot.device_id?record:null;
     const image=cached?.loading?'':cached?.image||'';
-    const timestamp=!cached?.loading && Number.isFinite(cached?.timestamp)?new Date(cached.timestamp*1000).toLocaleString():'';
+    const captured=Number.isFinite(cached?.timestamp)?new Date(cached.timestamp*1000):null;
+    const timestamp=captured?(captured.toDateString()===new Date().toDateString()?captured.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):captured.toLocaleString()):'';
     const probe=esp32ProbeResults.get(slot.device_id),live=valid && probe?.ip===slot.ip_address?probe:null;
-    return `<article style="padding:10px;border:1px solid #475569;border-radius:8px"><h3>${slot.label} · ${slot.shelf_id} ${slot.role}</h3>
-      <p>${slot.device_id}<br>${slot.ip_address}</p><p>${slot.status} ${escape(slot.errors.join('; '))}</p>
-      <p>${escape(live?live.status:slot.row?.status||'OFFLINE')} ${escape(live?.issue||'')}${live?.rssi_dbm!=null?' · '+escape(live.rssi_dbm)+' dBm':''}</p>
-      ${image?`<button type="button" class="esp32-thumb" onclick="openEsp32Picture('${slot.device_id}')" aria-label="Open ${slot.label} ${slot.role} picture full size"><img data-camera-id="${slot.device_id}" src="${escape(image)}" alt="${slot.label} ${slot.role} cached picture"></button>`:''}
-      ${cached?.loading?'<div role="status" aria-busy="true" style="height:110px;display:grid;place-items:center;color:var(--text-muted)">Loading cached picture…</div>':''}
-      <p role="status">${escape(cached?.loading?'Loading…':cached?.message||'Click Show cached picture to view this camera.')}${timestamp?' · '+escape(timestamp):''}</p>
-      <button class="btn-action" ${valid && !cached?.loading?'':'disabled'} onclick="refreshCachedCameraPicture('${slot.device_id}')">${cached?.loading?'Loading…':cached?.image?'Refresh cached picture':'Show cached picture'}</button>
+    const status=live?.status || (valid?slot.row?.status:null);
+    const connection={ONLINE:'Online',OFFLINE:'Offline',MISMATCH:'Identity mismatch'}[String(status||'').toUpperCase()] || 'Not checked';
+    return `<article class="camera-overview-card"><h4>${slot.role} &middot; ${slot.label}</h4>
+      <p class="camera-connection" data-state="${escape(connection)}">${escape(connection)}${live?.checkedAt?`<small>Checked ${escape(new Date(live.checkedAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}))}</small>`:''}</p>
+      ${!valid?`<p class="camera-config-error">${escape(slot.status)} ${escape(slot.errors.join('; '))}</p>`:''}
+      ${live?.issue?`<p class="camera-config-error">${escape(live.issue)}</p>`:''}
+      ${image?`<button type="button" class="esp32-thumb" onclick="openEsp32Picture('${slot.device_id}')" aria-label="Open ${slot.label} ${slot.role} picture full size"><img data-camera-id="${slot.device_id}" src="${escape(image)}" alt="${slot.label} ${slot.role} cached picture"></button>`:`<div class="camera-empty" role="status" aria-busy="${cached?.loading?'true':'false'}">${cached?.loading?'Loading picture...':'No scan picture yet'}<small>${cached?.loading?'':'Waiting for an automatic shelf scan'}</small></div>`}
+      <p class="camera-picture-time">${timestamp?`<time title="${escape(captured.toLocaleString())}">Captured ${escape(timestamp)}</time>`:''}</p>
+      ${cached?.message && cached.message!=='Cached picture' && !cached.loading?`<p role="status">${escape(cached.message)}</p>`:''}
+      <button type="button" class="btn-action" ${valid && !cached?.loading?'':'disabled'} onclick="refreshCachedCameraPicture('${slot.device_id}')" title="Loads the latest scan picture; does not take a new photo">${cached?.loading?'Loading...':'Reload picture'}</button>
+      <details class="camera-device-details" data-device="${slot.device_id}" ${openDetails.has(slot.device_id)?'open':''}><summary>Device details</summary><p>${slot.device_id}<br>${slot.ip_address}<br>${escape(slot.status)}${live?.rssi_dbm!=null?'<br>'+escape(live.rssi_dbm)+' dBm':''}</p></details>
       </article>`;
-  }).join('');
+  };
+  const markup=ALL_SHELF_IDS.map((shelf,index)=>`<section class="camera-shelf-group" aria-label="Shelf C${index+1}"><h3>Shelf C${index+1}</h3><div class="camera-pair">${slots.filter(slot=>slot.shelf_id===shelf).map(cameraCard).join('')}</div></section>`).join('');
   if(grid.innerHTML!==markup){
     grid.innerHTML=markup;
     // Preserve the existing image elements when only telemetry changes, avoiding visual reloads.
@@ -133,7 +140,7 @@ async function probeAllEsp32CameraNodes(){
         if(live.angle_index && Number(live.angle_index)!==slot.angle_index)mismatch.push('angle');
         result={status:mismatch.length?'MISMATCH':'ONLINE',issue:mismatch.length?mismatch.join(', ')+' mismatch':'',rssi_dbm:typeof live.rssi_dbm==='number'?live.rssi_dbm:null};
       }catch(error){result={status:'OFFLINE',issue:'',rssi_dbm:null};}
-      esp32ProbeResults.set(slot.device_id,{...result,ip:slot.ip_address});
+      esp32ProbeResults.set(slot.device_id,{...result,ip:slot.ip_address,checkedAt:Date.now()});
     }));
   }finally{esp32Probing=false;renderEsp32CameraManager();}
 }

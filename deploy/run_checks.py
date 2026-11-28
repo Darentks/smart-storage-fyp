@@ -43,7 +43,7 @@ def main():
         'quiet_rebaseline_after_hold':'Physical HOLD to quiet recovery proof; unresolved intent must stay HELD',
         'stale_duplicate_events':'Physical delayed/duplicate event rejection without second update required',
         'bridge_crash_mid_action':'Actual termination/restart must discard evidence and infer no historical action',
-        'camera_mqtt_device_database_outage':'Physical outage/reconnect proof required: CCTV gaps up to 5 seconds preserve counts while actions require current frames; longer gaps require fresh baselines; Stop CCTV retains counts/timestamps, Start CCTV recounts; MQTT gates actions, not initial counts; cached device bindings permit local inventory during DB outage',
+        'camera_mqtt_device_database_outage':'Physical outage/reconnect proof required: CCTV gaps up to 5 seconds preserve counts while actions require current frames; longer gaps require fresh baselines; pausing CCTV (/cctv_control) retains counts/timestamps, resuming it or a bridge start recounts; MQTT gates actions, not initial counts; cached device bindings permit local inventory during DB outage',
         'roi_source_swap':'Physical swapped-source rejection plus accepted source-bound ROI deployment required',
         'service_ownership_rollback':'Real single writer and monitoring-only browser/shadow rollback required',
         'real_egress_measurements':'Python, SDK and browser live counts/bytes require separate evidence; fixtures are insufficient',

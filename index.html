@@ -949,6 +949,23 @@
     .training-controls select {background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;max-width:100%;font:inherit;}
     .automatic-validation-note {font-size:14px;margin-top:12px;color:var(--text-secondary);}
     .automatic-validation-note span {font-size:13px;color:var(--text-muted);}
+
+    #esp32CameraManagerGrid {grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;}
+    .camera-shelf-group {min-width:0;border:1px solid var(--border);border-radius:12px;padding:16px;}
+    .camera-shelf-group > h3 {font-size:16px;font-weight:500;margin-bottom:16px;}
+    .camera-pair {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;}
+    #esp32CameraManagerGrid article.camera-overview-card {border:0 !important;padding:0 !important;border-radius:0 !important;}
+    .camera-overview-card h4 {font-size:14px;font-weight:500;}
+    .camera-connection {color:var(--text-secondary);font-size:13px;}
+    .camera-connection[data-state="Online"] {color:var(--success);}
+    .camera-connection[data-state="Offline"],.camera-config-error {color:var(--danger);}
+    .camera-connection small,.camera-empty small {display:block;color:var(--text-muted);font-size:12px;}
+    .camera-empty {min-height:160px;display:flex;flex-direction:column;justify-content:center;gap:8px;background:#101112;padding:12px;color:var(--text-secondary);}
+    .camera-picture-time {min-height:20px;font-size:12px;color:var(--text-muted);}
+    .camera-device-details {margin-top:12px;color:var(--text-muted);font-size:12px;overflow-wrap:anywhere;}
+    .camera-device-details summary,.esp32-overview-actions summary {cursor:pointer;}
+    @media(max-width:1100px) {#esp32CameraManagerGrid {grid-template-columns:minmax(0,1fr);}.esp32-thumb img {height:200px;}}
+    @media(max-width:420px) {.camera-pair {gap:12px;}.camera-shelf-group {padding:12px;}.esp32-thumb img {height:160px;}}
   </style>
   <script>
 /* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
@@ -1334,13 +1351,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
       <!-- All 6 cameras (formerly the ESP32 CAMs page): read-only registration check, probes and cached pictures. -->
       <details class="esp32-overview" id="all-cameras" ontoggle="onEsp32OverviewToggle(this)">
-        <summary>All 6 cameras &middot; registration, online status, last picture</summary>
-        <p class="esp32-overview-intro">Six fixed Back/Front cameras for C1&ndash;C3. Pictures are the native processor's last cached
-          pictures (no new capture), loaded when this section first opens; click a picture to see it full size.
-          Probe all 6 checks what each camera reports about itself and never changes registrations.</p>
+        <summary>Camera overview</summary>
+        <p class="esp32-overview-intro">Latest saved scan pictures. Select a picture to enlarge.</p>
         <div class="esp32-overview-actions">
-          <button type="button" class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">Probe all 6 cameras</button>
-          <span id="ignoredCameraRows"></span>
+          <button type="button" class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">Check camera connections</button>
+          <details><summary>Configuration details</summary><span id="ignoredCameraRows"></span></details>
         </div>
         <div id="esp32CameraManagerGrid"></div>
       </details>
