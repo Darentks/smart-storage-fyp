@@ -412,9 +412,14 @@ class AutonomousProcessor:
                 self.pose_loaded=False;self.pose_issue=None
 
     # ---- status ------------------------------------------------------------
+    def live_camera_ids(self):
+        """Calibrated CCTVs with a frame in the last 1.5 s (the freshness rule actions use)."""
+        now=time.time()
+        return [c['id'] for c in self.cameras if self.health.get(c['id'],{}).get('state')=='Online' and
+            0<=now-self.health[c['id']]['at']<1.5]
+
     def cameras_ready(self):
-        return self.cctv_enabled and bool(self.cameras) and all(self.health.get(c['id'],{}).get('state')=='Online' and
-            0<=time.time()-self.health[c['id']]['at']<1.5 for c in self.cameras)
+        return self.cctv_enabled and bool(self.cameras) and len(self.live_camera_ids())==len(self.cameras)
 
     def actions_blocker(self):
         """Why BORROW/RETURN confirmation is paused right now, or None. Counting is independent of this."""
@@ -425,7 +430,7 @@ class AutonomousProcessor:
         if self.calibration_issue:return self.calibration_issue
         if not self.cameras:return 'Install camera calibration'
         if not self.mqtt_ok:return 'MQTT unavailable'
-        down=[c['id'] for c in self.cameras if not (self.health.get(c['id'],{}).get('state')=='Online' and 0<=time.time()-self.health[c['id']]['at']<1.5)]
+        live=self.live_camera_ids();down=[c['id'] for c in self.cameras if c['id'] not in live]
         return ('Waiting for live video from '+', '.join(down)) if down else None
 
     def shelf_status(self,sid,runtime=None):
@@ -457,6 +462,7 @@ class AutonomousProcessor:
             startup_id=self.run_id,state=self.state,setup_issue=self.setup_issue,actions_paused_reason=blocker,
             cameras=dict(self.health),camera_ids=[c['id'] for c in self.cameras],model_versions=self.native.versions,
             metrics=dict(self.metrics),restart_count=self.native.restart_count,cctv_enabled=self.cctv_enabled,
+            cctv_live=self.live_camera_ids() if self.cctv_enabled else [],
             movement_models_ready=self.pose_loaded,movement_issue=self.pose_issue,authorizes_write=False,
             acceptance=self.acceptance,release_blockers=[] if self.acceptance=='ACCEPTED' else ['REAL_CAMERA_ACCEPTANCE'])
 

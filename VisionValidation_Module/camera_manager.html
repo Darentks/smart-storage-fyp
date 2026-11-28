@@ -1394,6 +1394,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <span>YOLO11n-Pose ONNX wrist dwell detector &middot; browser diagnostic</span>
             </div>
             <div class="cctv-status-row">
+              <span class="badge badge-nochange" id="bridgeCctvBadge" role="status" title="CCTV processing on the bridge. It runs automatically, even with this page closed.">Bridge CCTV: checking&hellip;</span>
               <span class="badge badge-offline" id="cctvPoseStatusBadge">Tracker Idle</span>
               <span class="cctv-chip" title="Borrow/Return actions need all three live cameras to agree.">3-of-3 consensus</span>
               <span id="cctvFpsText" class="cctv-fps">0 FPS</span>
@@ -2695,8 +2696,28 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       button.textContent='Run preview';
       button.title=!online?'Bridge unavailable':diagnosticRunning?'Diagnostic capture running':native?'Quick bright capture using the same native models as initial counts. Diagnostic only; the native processor keeps counting.':'Read-only capture; inventory is unchanged';
       document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Showing the latest automatic scan pictures':'Automatic inventory checks are paused';
-      updateTrainingBatchAvailability();
+      updateTrainingBatchAvailability();renderBridgeCctvBadge(bridgeStatus,online);
       if(!native && !diagnosticRunning && !manualPreviewPinned()){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run preview to capture both pictures.':'Bridge Disconnected';}
+    }
+    // Bridge CCTV state (runs with the bridge); separate from this page's browser pose tracker ("Tracker Idle").
+    function renderBridgeCctvBadge(data,online){
+      const badge=document.getElementById('bridgeCctvBadge');if(!badge)return;
+      const ids=Array.isArray(data.camera_ids)?data.camera_ids:[],live=Array.isArray(data.cctv_live)?data.cctv_live:null;
+      let text,tone='nochange',detail;
+      if(!online){text='bridge offline';detail='The bridge is not reachable, so its CCTV state is unknown.';}
+      else if(data.authoritative_processor!=='native'){text='not running';detail='The native processor is not running on the bridge.';}
+      else if(data.cctv_enabled!==true){text='stopped';tone='offline';detail='CCTV is paused on the bridge: last counts are kept and Borrow/Return is not detected.';}
+      else if(!ids.length){text='no calibration';tone='removed';detail='Install the CCTV ROI calibration so the bridge knows which cameras to watch.';}
+      else if(!live){text='running';tone='online';detail='Restart the bridge to show which cameras are live.';}
+      else {
+        const down=ids.filter(id=>!live.includes(id));
+        text=down.length?`running · ${down.join(', ')} offline`:`running · ${live.length}/${ids.length} live`;tone=down.length?'removed':'online';
+        detail=down.length?`Started, but no frame in the last 1.5 s from ${down.join(', ')}.`:'All cameras are sending frames.';
+      }
+      badge.className='badge badge-'+tone;badge.textContent='Bridge CCTV: '+text;
+      badge.title=`${detail}${online && data.actions_paused_reason?`
+Borrow/Return paused: ${data.actions_paused_reason}`:''}
+Runs automatically with the bridge, even with this page closed. "Tracker" is the separate browser pose diagnostic.`;
     }
     function renderPanelFrames(row){
       for(const [img,placeholder,url] of [[backPreviewImg,backPlaceholder,row.image_back],[frontPreviewImg,frontPlaceholder,row.image_front],[livePreviewImg,previewPlaceholder,row.image]]){

@@ -3,7 +3,8 @@
 prepare  (bridge may keep running): read the links from deploy/tm-model-sources.json, download both exports
          into a staging folder, check that they load, and compare each role with the active models.
          Unchanged -> staging is deleted and nothing else happens. Changed -> the staged candidate is kept.
-install  (bridge must be stopped): back up the active models and swap in the prepared candidate.
+install  (bridge must be stopped): back up the active models and swap in the prepared candidate. Only that newest
+         backup is kept (one undo step); older backups are deleted so they do not pile up.
 
 Every outcome is written to .runtime/model-update-result.json (the bridge shows it on the dashboard and
 checks it against the models it actually loaded) and appended to the bounded .runtime/model-update.log.
@@ -108,9 +109,10 @@ def bundle_fingerprint(folder):
     return None if None in roles else (tuple(roles),pose['sha256'])
 
 
-def file_hashes(folder):
+def file_hashes(folder,skip=()):
     hashes=set()
     for path in folder.rglob('*'):
+        if path.relative_to(folder).parts[:1] in [(name,) for name in skip]:continue
         try:
             if path.is_file():hashes.add(hashlib.sha256(path.read_bytes()).hexdigest())
         except OSError:hashes.add('unreadable:'+str(path))  # never matches a backup, so its folder is kept
@@ -118,9 +120,10 @@ def file_hashes(folder):
 
 
 def sweep_staging(runtime,active):
-    """Delete leftover staging folders only when nothing in them is unique: every file still inside must be
-    byte-identical to a file in the active models or a backup. This also clears half-deleted folders left by
-    an interrupted cleanup. Returns what is still pending."""
+    """Delete leftover staging folders unless they hold a downloaded candidate that exists nowhere else. The
+    replaced models (previous/) were backed up before the swap, and older backups are dropped on purpose (only
+    the newest is kept), so previous/ and the prepared.json note never keep a folder. This also clears
+    half-deleted folders left by an interrupted cleanup. Returns what is still pending."""
     leftovers=[folder for folder in sorted(runtime.glob('model-update-*')) if folder.is_dir()]
     if not leftovers:return []
     known=set()
@@ -128,10 +131,20 @@ def sweep_staging(runtime,active):
         if bundle.is_dir():known|=file_hashes(bundle)
     pending=[]
     for folder in leftovers:
-        if not file_hashes(folder)<=known:
-            pending.append(folder.name+': kept, it holds model files with no identical backup');continue
+        if not file_hashes(folder,skip=('previous','prepared.json'))<=known:
+            pending.append(folder.name+': kept, it holds downloaded model files that are not installed');continue
         try:shutil.rmtree(folder)
         except OSError:pending.append(folder.name+': locked (for example by OneDrive); will retry on the next update')
+    return pending
+
+
+def prune_backups(runtime,keep):
+    """Delete every model backup except `keep` (the one just made). Returns the ones still locked."""
+    pending=[]
+    for folder in sorted(runtime.glob('edge-models-backup-*')):
+        if folder.name==keep or not folder.is_dir():continue
+        try:shutil.rmtree(folder)
+        except OSError:pending.append(folder.name+': old backup locked (for example by OneDrive); will retry on the next update')
     return pending
 
 
@@ -239,6 +252,7 @@ def install(name,root=ROOT):
             except OSError:raise UpdateFailure('install','Could not replace the model folder (it may be locked); the previous models were restored')
         finally:bridge.__exit__(None,None,None)
         cleanup=list(prepared.get('cleanup_pending') or [])
+        if backup:cleanup+=prune_backups(runtime,backup.name)
         try:shutil.rmtree(temporary)
         except OSError:cleanup.append(name+': locked (for example by OneDrive); will retry on the next update')
         return dict(prepared,outcome='installed',candidate=None,backup=backup.name if backup else None,cleanup_pending=cleanup)
