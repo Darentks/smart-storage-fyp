@@ -1148,7 +1148,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
         path = parsed.path
         if path.startswith('/replacement/'):
             self._replacement_route(path);return
-        if path in ('/camera_replacement.js','/dashboard_pages.js'):
+        if path in ('/esp32_camera_manager.js','/dashboard_pages.js'):
             data=(Path(__file__).resolve().parent.parent/path.lstrip('/')).read_bytes()
             self.send_response(200);self.send_header('Content-Type','application/javascript; charset=utf-8');self.end_headers();self.wfile.write(data);return
         if path.rstrip('/') in ('/local-dashboard','/local-dashboard/cctv-configuration','/local-dashboard/esp32-cams'):

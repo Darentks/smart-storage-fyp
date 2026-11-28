@@ -2459,7 +2459,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if(line){line.textContent=text;if(typeof markStatusError==='function')markStatusError(line,isError);}
       showToast(text,isError?'error':'success');
     }
-    let esp32IpSaveInProgress = false;  // read by Probe all 6 (camera_replacement.js)
+    let esp32IpSaveInProgress = false;  // read by Probe all 6 (esp32_camera_manager.js)
     async function saveAssignedShelfIps() {
       const shelfId = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
       const ip1 = cleanCameraHost(refEspIpInput ? refEspIpInput.value : '');
@@ -2475,10 +2475,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
       const resetButton = () => {
         if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf'; }
-        esp32IpSaveInProgress = false; renderEsp32CameraManager();
+        esp32IpSaveInProgress = false; renderAllCamerasOverview();
       };
       if (saveCamIpsBtn) { saveCamIpsBtn.disabled = true; saveCamIpsBtn.textContent = 'Saving...'; }
-      esp32IpSaveInProgress = true; renderEsp32CameraManager();
+      esp32IpSaveInProgress = true; renderAllCamerasOverview();
       const roles = { 1: 'Back (CAM1)', 2: 'Front (CAM2)' }, wanted = { 1: ip1, 2: ip2 };
       const outcome = { 1: 'not saved', 2: 'not saved' };
       const summary = () => `${shelfId}: ${roles[1]} ${outcome[1]}; ${roles[2]} ${outcome[2]}.`;
@@ -2540,7 +2540,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       // 4. Reflect the saved addresses in every panel.
       compartmentsData = (compartmentsData || []).map(c => c.shelf_id === shelfId ? { ...c, ip_address: ip1, secondary_ip_address: ip2 } : c);
       esp32CameraNodesList = (esp32CameraNodesList || []).map(cam => cam.shelf_id === shelfId ? { ...cam, ip_address: Number(cam.angle_index) === 2 ? ip2 : ip1 } : cam);
-      renderEsp32CameraManager();
+      renderAllCamerasOverview();
       userEditedCamIp = { 1: false, 2: false };
       populateAssignedIpDropdowns();
       renderCompartments(compartmentsData);
@@ -3707,7 +3707,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           const node = discoveredCamerasList.find(node => node.device_id === camera.device_id || cleanCameraHost(node.ip_address) === cleanCameraHost(camera.ip_address));
           return { ...camera, status: node?.status === 'ONLINE' ? 'ONLINE' : 'OFFLINE', rssi_dbm: node?.rssi_dbm ?? camera.rssi_dbm };
         });
-        renderEsp32CameraManager();
+        renderAllCamerasOverview();
       }
       if (Array.isArray(bridgeJson.running_pipelines)) {
         runningPipelinesList = bridgeJson.running_pipelines;
@@ -4187,15 +4187,20 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             last_seen: prev.last_seen || null
           };
         });
-        renderEsp32CameraManager();
+        renderAllCamerasOverview();
       } catch (err) {
         esp32CameraNodesList = [];
         showToast(`Cannot load ESP32 configuration. ${deviceSaveError(err)}`, 'error');
-        renderEsp32CameraManager();
+        renderAllCamerasOverview();
       }
     }
 
-    // Fixed-slot renderer and read-only probes are defined in camera_replacement.js.
+    // Fixed-slot renderer and read-only probes are defined in esp32_camera_manager.js. Inventory code calls it
+    // through this guard so a missing or failed overview script can never block shelf counts.
+    function renderAllCamerasOverview() {
+      if (typeof renderEsp32CameraManager !== 'function') return;
+      try { renderEsp32CameraManager(); } catch (error) { console.warn('[All 6 cameras]', error); }
+    }
     function setupRealtimeSubscriptions() {
       // Normal monitoring uses the bridge. Do not subscribe to cloud inventory.
     }
@@ -5691,7 +5696,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     };
 
   </script>
-  <script src="/camera_replacement.js"></script>
+  <script src="/esp32_camera_manager.js"></script>
   <script>
     // Initialization
     if (tmModelUrlInput) {
