@@ -1147,8 +1147,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <span class="badge badge-online" id="liveBadge"><span class="pulse-dot"></span>Live Sync Active</span>
       </div>
 
-      <button type="button" class="btn-action" onclick="scanInitialCounts({retry:true})">Scan initial counts</button>
-      <p id="initialCountStatus" role="status">Initial camera counts will scan automatically when the bridge, models and camera pairs are available.</p>
+      <p class="panel-desc">Counts update automatically: each shelf is counted when the bridge starts and re-checked every 30 seconds. If a shelf can't be counted, a <strong>Retry scan</strong> button appears on it.</p>
       <div id="compartmentsGrid" class="compartments-grid">
         <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
           Loading local shelf telemetry...
@@ -3678,7 +3677,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             renderCompartments(compartmentsData);
             syncSelectedShelfTelemetry();
           }
-          if(typeof scanInitialCounts==='function')void scanInitialCounts();
           return;
         }
       } catch (err) {
@@ -3694,64 +3692,18 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // =========================================================================
     // RENDER FUNCTIONS
     // =========================================================================
-    const initialCountScans=new Map();
-    let initialCountScanRunning=false;
-    async function scanInitialCounts({retry=false}={}){
-      const status=document.getElementById('initialCountStatus');
-      if(initialCountScanRunning || diagnosticRunning){if(retry)status.textContent='Wait for the current diagnostic to finish.';return;}
-      if(!bridgeStatus.online){status.textContent='Waiting for the local bridge before scanning.';return;}
-      if(bridgeStatus.authoritative_processor==='native'){status.textContent='Native service owns capture and initializes counts automatically. Check shelf readiness for progress.';return;}
-      if(!window.tmFrontModel || !window.tmBackModel){status.textContent='Waiting for both Teachable Machine models.';return;}
-      const epoch=previewGeneration,url=getBridgeUrl();
-      const owned=comp=>epoch===previewGeneration && url===getBridgeUrl() && bridgeStatus.online && bridgeStatus.authoritative_processor!=='native' && compartmentsData.some(c=>c.shelf_id===comp.shelf_id && c.ip_address===comp.ip_address && c.secondary_ip_address===comp.secondary_ip_address);
-      const pending=compartmentsData.filter(comp=>{
-        if((comp.status || '').toUpperCase()!=='ONLINE' || !comp.ip_address || !comp.secondary_ip_address)return false;
-        if((shelfOperatingStates[comp.shelf_id]?.runtime || comp).authoritative)return false;
-        const previous=initialCountScans.get(comp.shelf_id);
-        return retry || !previous || previous.epoch!==epoch || previous.ip!==comp.ip_address || previous.ip2!==comp.secondary_ip_address;
-      }).map(c=>({...c}));
-      if(!pending.length){if(retry)status.textContent='No camera pairs available to scan. Check both IP assignments and device connections.';return;}
-      initialCountScanRunning=diagnosticRunning=true;panelState(bridgeStatus);
-      try{
-        for(const comp of pending){
-          if(!owned(comp))break;
-          const entry={epoch,ip:comp.ip_address,ip2:comp.secondary_ip_address,state:'Scanning',reason:'Taking fresh back/front pictures...'};
-          initialCountScans.set(comp.shelf_id,entry);renderCompartments(compartmentsData);
-          status.textContent=`Scanning ${comp.shelf_id}: fresh back/front pictures, read-only...`;
-          try{
-            const query=new URLSearchParams({run_mode:'diagnostic',shelf_id:comp.shelf_id,ip:entry.ip,ip2:entry.ip2});
-            const response=await fetch(`${url}/diagnostic_preview?${query}`,{cache:'no-store',signal:AbortSignal.timeout(15000)});
-            const row=await response.json();if(!response.ok)throw Error(row.error || 'Camera capture failed');
-            const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
-            if(!owned(comp))break;
-            const prediction=await predictDualCamerasWithTM(images[0],images[1],'off',{renderDiagnostics:false});
-            if(!owned(comp))break;
-            entry.timestamp=row.timestamp;
-            if(prediction?.status==='VERIFIED_PAIR' && Number.isInteger(prediction.totalBoxes))entry.label=`Observed ${prediction.totalBoxes}`;
-            else if(prediction?.status==='INDETERMINATE_B1' && prediction.countRange)entry.label=`Observed ${prediction.countRange.min}\u2013${prediction.countRange.max}`;
-            else throw Error(prediction?.scenarioLabel || 'No trusted count from this picture');
-            entry.state='Observed';entry.reason='Initial picture count only; native inventory baseline is still pending.';
-          }catch(error){if(owned(comp)){entry.state='Scan needed';entry.reason=error.message;}}
-          if(!owned(comp))break;
-          renderCompartments(compartmentsData);
-        }
-        status.textContent=epoch===previewGeneration?'Initial scan finished. Observed counts are snapshots, not accepted inventory. Use Scan initial counts to retry.':'Bridge changed; waiting for a new scan.';
-      }finally{initialCountScanRunning=diagnosticRunning=false;panelState(bridgeStatus,bridgeStatus.online);}
-    }
     function runtimeInventoryView(comp, status) {
       const runtime=status?.runtime || comp;
       const state=status?.state || runtime.state || 'Starting';
       const ready=state==='Ready' && runtime.state==='Ready' && runtime.authoritative===true;
       const exact=ready && runtime.precision==='EXACT' && Number.isInteger(runtime.current_quantity);
       const range=ready && runtime.precision==='RANGE';
-      const scan=typeof initialCountScans==='undefined'?null:initialCountScans.get(comp.shelf_id);
-      const initial=scan && state!=='Offline' && (comp.status || '').toUpperCase()==='ONLINE' && scan.epoch===previewGeneration && scan.ip===comp.ip_address && scan.ip2===comp.secondary_ip_address && bridgeStatus.online && bridgeStatus.authoritative_processor!=='native'?scan:null;
       const slots=observation=>observation?.slots?.map((value,i)=>`${['F1','M1','M2','B1','B2'][i]}=${value===null?'unknown':value}`).join(' ') || 'None';
       const base={quantity:exact?runtime.current_quantity:null,
-        label:exact?`Exact ${runtime.current_quantity}`:range?`${runtime.count_range.join('\u2013')} boxes · B1 hidden — range`:initial?.label || (initial?.state==='Scanning'?'Scanning...':'Scan needed'),
-        state:range?'Ready Limited':!ready && initial?initial.state:state,
-        reason:!ready && initial?initial.reason:null,
-        details:`${!ready && initial?`${initial.reason}\n${initial.timestamp?'Picture time: '+new Date(initial.timestamp*1000).toLocaleString()+'\n':''}`:''}${range?'B1 unknown; actions require proof across all possibilities.\n':''}Last accepted baseline (history): ${slots(runtime.baseline)}\nLatest observed: ${slots(runtime.latest_observation)}\n${runtime.latest_observation?.hold_code || status?.code || ''}`};
+        label:exact?`Exact ${runtime.current_quantity}`:range?`${runtime.count_range.join('\u2013')} boxes · B1 hidden — range`:'Scan needed',
+        state:range?'Ready Limited':state,
+        reason:null,
+        details:`${range?'B1 unknown; actions require proof across all possibilities.\n':''}Last accepted baseline (history): ${slots(runtime.baseline)}\nLatest observed: ${slots(runtime.latest_observation)}\n${runtime.latest_observation?.hold_code || status?.code || ''}`};
       return nativeShelfView(base,comp,status,runtime,exact,range);
     }
     function nativeShelfView(view, comp, status, runtime, exact, range) {

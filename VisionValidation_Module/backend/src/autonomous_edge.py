@@ -347,9 +347,14 @@ class AutonomousProcessor:
     def setup_issue(self):
         return self.model_issue or self.calibration_issue
 
-    def start(self):
-        """Never raises for setup problems: they are reported through status while counting stays available."""
+    def start(self,cctv=False):
+        """Never raises for setup problems: they are reported through status while counting stays available.
+
+        cctv=True switches CCTV on at boot through the same control boundary as the dashboard's Resume:
+        previous action evidence is discarded and every shelf is recounted once all three cameras are live.
+        """
         if self.runtime is not None:self.runtime.set_cctv_enabled(False)
+        if cctv:self.set_cctv_enabled(True)
         for target in (self._boot,self._poses,self._validations,self._recover_workers):
             thread=threading.Thread(target=target,daemon=True,name='AutonomousEdge');self.threads.append(thread);thread.start()
 

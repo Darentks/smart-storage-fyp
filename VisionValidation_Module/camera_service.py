@@ -963,7 +963,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
                 for camera in AUTONOMOUS.cameras:
                     reader=_PERSISTENT_STREAMS.pop(str(camera['source']).strip(),None)
                     if reader is not None:reader.running=False
-        self._send_json(200,{'cctv_enabled':AUTONOMOUS.cctv_enabled,'status':'CCTV started; recount when cameras are live' if body['enabled'] else 'CCTV stopped; last counts retained'})
+        self._send_json(200,{'cctv_enabled':AUTONOMOUS.cctv_enabled,'status':'CCTV resumed; every shelf is recounted once all three cameras are live' if body['enabled'] else 'CCTV paused; last counts retained, Borrow/Return detection stopped'})
 
     def _request_scan(self, body):
         """Retry scan: ask the shared native scanner to recount. The browser never captures or writes inventory."""
@@ -2304,7 +2304,11 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
 
     try:
         if AUTONOMOUS:
-            AUTONOMOUS.start()
+            # CCTV starts with the bridge (no dashboard control). SMART_STORAGE_CCTV_AUTOSTART=0 keeps it paused
+            # until POST /cctv_control {"enabled": true}; the same route can pause it for camera maintenance.
+            cctv_autostart=os.getenv('SMART_STORAGE_CCTV_AUTOSTART','1').strip().lower() not in {'0','false','no','off'}
+            print('[CameraService] CCTV '+('starts automatically' if cctv_autostart else 'stays paused (SMART_STORAGE_CCTV_AUTOSTART=0); resume with POST /cctv_control {"enabled": true}'))
+            AUTONOMOUS.start(cctv=cctv_autostart)
         httpd.serve_forever()
     except KeyboardInterrupt:
         print("\n[CameraService] Shutting down server...")
