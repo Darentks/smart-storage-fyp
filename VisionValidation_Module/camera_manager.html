@@ -235,6 +235,24 @@
     .cctv-empty-actions .btn-action {font-size:12px;padding:6px 12px;}
     @media (max-width:520px){.cctv-empty-text{display:none;}}
     #cctvSingleView {display:contents;}
+    .roi-toolbar {flex-direction:column;gap:12px;padding:12px 14px;border:1px solid rgba(56,189,248,.45);border-radius:10px;background:rgba(56,189,248,.06);}
+    .roi-toolbar-head {display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:8px 16px;}
+    .roi-toolbar-title {display:flex;flex-direction:column;gap:2px;min-width:0;}
+    .roi-toolbar-title strong {font-size:13px;color:var(--primary);}
+    .roi-toolbar-title span {font-size:12px;color:var(--text-muted);}
+    .roi-field {display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:var(--text-secondary);}
+    .roi-toolbar select.form-control {height:32px;font-size:12px;padding:4px 8px;width:auto;min-width:150px;font-family:inherit;}
+    .roi-groups {display:flex;flex-wrap:wrap;gap:10px;}
+    .roi-group {display:flex;flex-direction:column;gap:6px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:rgba(15,23,42,.55);min-width:0;}
+    .roi-group-label {font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;color:var(--text-muted);}
+    .roi-group-buttons {display:flex;gap:6px;flex-wrap:wrap;align-items:center;}
+    .roi-toolbar .btn-action {height:32px;font-size:12px;padding:0 12px;}
+    .roi-toolbar .roi-seg-btn.is-active {border-color:var(--primary);color:var(--primary);background:rgba(56,189,248,.14);}
+    .roi-toolbar .roi-danger {border-color:rgba(244,63,94,.55);color:var(--danger);}
+    .roi-toolbar-foot {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;}
+    .roi-coords {font-size:11px;color:var(--text-muted);}
+    #cctvCalibCoordsText {font-family:var(--font-mono);color:var(--primary);background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px;}
+    .roi-toolbar .roi-save {background:var(--success);border-color:var(--success);color:#04111f;font-weight:700;}
     .esp32-overview {margin-top:16px;padding:12px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(15,23,42,.55);}
     .esp32-overview > summary {cursor:pointer;font-weight:600;font-size:13px;color:var(--text-primary);}
     .esp32-overview > summary:focus-visible,.esp32-thumb:focus-visible {outline:2px solid var(--primary);outline-offset:3px;}
@@ -1261,50 +1279,68 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
 
           <!-- Interactive ROI Calibration Bar (Shown when Calibrate ROI is active) -->
-          <div id="cctvCalibrationToolbar"
-            style="display: none; background: rgba(56, 189, 248, 0.08); border: 1px dashed var(--primary); border-radius: 8px; padding: 8px 12px; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px;">
-            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <span style="font-size: 11px; font-weight: 700; color: var(--primary);">&#127919; Target Shelf:</span>
-              <select id="cctvCalibShelfSelect" class="form-control"
-                style="font-size: 11px; padding: 2px 6px; height: 26px; width: 140px;" onchange="onCalibShelfChanged()">
-                <option value="SHELF_R1_C1" selected>SHELF_R1_C1</option>
-                <option value="SHELF_R1_C2">SHELF_R1_C2</option>
-                <option value="SHELF_R1_C3">SHELF_R1_C3</option>
-                <option value="RACK_ENTRY_ZONE">RACK_ENTRY_ZONE (Side Presence)</option>
-              </select>
-              <select id="cctvRoiTool" class="form-control" style="font-size:11px; width:150px; height:28px;" onchange="resetRoiEditor()">
-                <option value="edit">Edit / move ROI</option>
-                <option value="rectangle">Draw rectangle</option>
-              </select>
-              <button type="button" class="btn-action" onclick="insetSelectedRoi()" title="Shrink the selected region 5% on every side">Inset 5%</button>
-              <button type="button" class="btn-action" onclick="outsetSelectedRoi()" title="Grow the selected region 5% on every side (undoes one Inset)">Outset 5%</button>
-              <span id="cctvRoiSwapControls" style="display:inline-flex;align-items:center;gap:6px;">
-                <label for="cctvRoiSwapSelect" style="font-size:11px;">Swap with:</label>
-                <select id="cctvRoiSwapSelect" class="form-control" style="font-size:11px;width:145px;height:28px;"></select>
-                <button type="button" id="cctvRoiSwapBtn" class="btn-action" onclick="swapSelectedRoi()">Swap ROIs</button>
-              </span>
-              <button type="button" class="btn-action" onclick="undoSelectedRoi()" title="Restore only the selected shelf to how it was when calibration opened">Undo this shelf</button>
-              <button type="button" class="btn-action" onclick="deleteSelectedRoi()" title="Remove the selected shelf's region so you can draw it again">Delete region</button>
-
-              <span style="font-size: 11px; color: var(--text-muted);">Drag a rectangle, then drag its corner handles to fit the shelf (side camera: rectangle only).</span>
-              <span id="cctvCalibCoordsText"
-                style="font-size: 10px; font-family: var(--font-mono); color: var(--primary); background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">x:
-                0.60–0.81, y: 0.19–0.42</span>
+          <div id="cctvCalibrationToolbar" class="roi-toolbar" style="display: none;">
+            <div class="roi-toolbar-head">
+              <div class="roi-toolbar-title">
+                <strong>&#127919; Calibrate shelf regions</strong>
+                <span>1. Pick a shelf &middot; 2. Draw rectangle, then drag its corner handles to fit &middot; 3. Save</span>
+              </div>
+              <label class="roi-field" for="cctvCalibShelfSelect">Shelf
+                <select id="cctvCalibShelfSelect" class="form-control" onchange="onCalibShelfChanged()">
+                  <option value="SHELF_R1_C1" selected>SHELF_R1_C1</option>
+                  <option value="SHELF_R1_C2">SHELF_R1_C2</option>
+                  <option value="SHELF_R1_C3">SHELF_R1_C3</option>
+                  <option value="RACK_ENTRY_ZONE">RACK_ENTRY_ZONE (Side Presence)</option>
+                </select>
+              </label>
             </div>
-            <div style="display: flex; gap: 6px;">
-              <button type="button" class="btn-action"
-                style="font-size: 10px; padding: 3px 8px; border-color: var(--success); color: var(--success);"
-                onclick="saveCalibratedRois()">
-                &#128190; Save ROIs &amp; Finish Calibration
-              </button>
-              <button type="button" class="btn-action" style="font-size: 10px; padding: 3px 8px;"
-                onclick="resetAllRoiEdits()" title="Restore every shelf on this camera to how it was when calibration opened (last saved)">
-                &#8634; Reset all edits
-              </button>
-              <button type="button" class="btn-action" style="font-size: 10px; padding: 3px 8px; border-color: var(--danger); color: var(--danger);"
-                onclick="clearAllRois()" title="Remove every region on this camera so you can draw them all again">
-                Clear all regions
-              </button>
+            <div class="roi-groups">
+              <div class="roi-group" role="group" aria-label="Drawing tool">
+                <span class="roi-group-label">Tool</span>
+                <div class="roi-group-buttons">
+                  <button type="button" class="btn-action roi-seg-btn is-active" data-roi-tool="edit" aria-pressed="true"
+                    onclick="setRoiTool('edit')" title="Drag a corner handle to reshape, or drag inside the region to move it">Edit / move</button>
+                  <button type="button" class="btn-action roi-seg-btn" data-roi-tool="rectangle" aria-pressed="false"
+                    onclick="setRoiTool('rectangle')" title="Drag on the picture to draw a new box for the selected shelf">Draw rectangle</button>
+                </div>
+                <!-- Read by the canvas handlers; the buttons above set it through setRoiTool(). -->
+                <select id="cctvRoiTool" hidden aria-hidden="true" tabindex="-1" onchange="resetRoiEditor()">
+                  <option value="edit">Edit / move ROI</option>
+                  <option value="rectangle">Draw rectangle</option>
+                </select>
+              </div>
+              <div class="roi-group" role="group" aria-label="Resize">
+                <span class="roi-group-label">Resize</span>
+                <div class="roi-group-buttons">
+                  <button type="button" class="btn-action" onclick="insetSelectedRoi()" title="Shrink the selected region 5% on every side">Inset 5%</button>
+                  <button type="button" class="btn-action" onclick="outsetSelectedRoi()" title="Grow the selected region 5% on every side (undoes one Inset)">Outset 5%</button>
+                </div>
+              </div>
+              <div class="roi-group" id="cctvRoiSwapControls" role="group" aria-label="Swap regions">
+                <label class="roi-group-label" for="cctvRoiSwapSelect">Swap with</label>
+                <div class="roi-group-buttons">
+                  <select id="cctvRoiSwapSelect" class="form-control"></select>
+                  <button type="button" id="cctvRoiSwapBtn" class="btn-action" onclick="swapSelectedRoi()" title="Exchange the selected shelf's region with this shelf's region">Swap</button>
+                </div>
+              </div>
+              <div class="roi-group" role="group" aria-label="Undo">
+                <span class="roi-group-label">Undo</span>
+                <div class="roi-group-buttons">
+                  <button type="button" class="btn-action" onclick="undoSelectedRoi()" title="Restore only the selected shelf to how it was when calibration opened">Undo this shelf</button>
+                  <button type="button" class="btn-action" onclick="resetAllRoiEdits()" title="Restore every shelf on this camera to how it was when calibration opened (last saved)">&#8634; Reset all edits</button>
+                </div>
+              </div>
+              <div class="roi-group" role="group" aria-label="Remove">
+                <span class="roi-group-label">Remove</span>
+                <div class="roi-group-buttons">
+                  <button type="button" class="btn-action roi-danger" onclick="deleteSelectedRoi()" title="Remove the selected shelf's region so you can draw it again">Delete region</button>
+                  <button type="button" class="btn-action roi-danger" onclick="clearAllRois()" title="Remove every region on this camera so you can draw them all again">Clear all regions</button>
+                </div>
+              </div>
+            </div>
+            <div class="roi-toolbar-foot">
+              <span class="roi-coords">Corners: <span id="cctvCalibCoordsText">x: 0.60–0.81, y: 0.19–0.42</span></span>
+              <button type="button" class="btn-action roi-save" onclick="saveCalibratedRois()">&#128190; Save ROIs &amp; Finish Calibration</button>
             </div>
           </div>
 
@@ -4227,6 +4263,19 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const xs = points.map(p=>p[0]), ys = points.map(p=>p[1]);
       return { vertices: points.map(p=>[...p]), coordinate_space:'normalized', x_min:Math.min(...xs), y_min:Math.min(...ys), x_max:Math.max(...xs), y_max:Math.max(...ys) };
     }
+    // Tool toggle buttons drive the hidden #cctvRoiTool select that the canvas handlers read.
+    function setRoiTool(value, {reset = true} = {}) {
+      const tool = document.getElementById('cctvRoiTool');
+      if (!tool) return;
+      const changed = tool.value !== value;
+      tool.value = value;
+      if (reset && changed) resetRoiEditor();
+      for (const button of document.querySelectorAll?.('[data-roi-tool]') || []) {
+        const active = button.dataset.roiTool === value;
+        button.classList?.toggle('is-active', active);
+        button.setAttribute?.('aria-pressed', String(active));
+      }
+    }
     function selectedRoiId() { return document.getElementById('cctvCalibShelfSelect')?.value || 'SHELF_R1_C1'; }
     function syncRoiSwapOptions() {
       const select = document.getElementById('cctvRoiSwapSelect');
@@ -5141,8 +5190,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function clearedRoi() { return { vertices: [], coordinate_space: 'normalized' }; }
     function roiCleared(roi) { return !!roi && Array.isArray(roi.vertices) && roi.vertices.length === 0; }
     function chooseRoiRedrawTool() {
-      const tool = document.getElementById('cctvRoiTool');
-      if (tool) tool.value = 'rectangle';
+      setRoiTool('rectangle', {reset: false});
     }
     function deleteSelectedRoi() {
       resetRoiEditor();
@@ -5223,7 +5271,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         if (points && validQuad(points)) { setEditedRoi(points);roiDraft=points;edit.drew=true; }
       });
       const finish=()=>{
-        if (roiPointerEdit?.rectangle && roiPointerEdit.drew) document.getElementById('cctvRoiTool').value='edit';
+        if (roiPointerEdit?.rectangle && roiPointerEdit.drew) setRoiTool('edit', {reset: false});
         roiPointerEdit=null;roiDraft=[];
       };
       canvas.addEventListener('pointerup',finish);
@@ -5401,10 +5449,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       resetRoiEditor();
       activeCctvId = cctvId;
       activeCameraRole = cameraRole(cctvCamerasList.find(cam => cam.cctv_id === cctvId) || { cctv_id: cctvId });
-      const tool = document.getElementById('cctvRoiTool');
-      if (tool) {
-        tool.value = 'edit';
-      }
+      setRoiTool('edit', {reset: false});
       const calibSelect = document.getElementById('cctvCalibShelfSelect');
       if (calibSelect) {
         for (const option of calibSelect.options) option.hidden = activeCameraRole === 'SIDE_PRESENCE' ? option.value !== 'RACK_ENTRY_ZONE' : option.value === 'RACK_ENTRY_ZONE';
