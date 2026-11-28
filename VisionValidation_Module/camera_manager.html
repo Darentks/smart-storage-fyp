@@ -940,6 +940,15 @@
     .stat-val.qty {font-size:24px;}
     .card-footer {align-items:flex-start;}
     @media(max-width:600px) {.system-settings .config-bar-left {display:flex;flex-wrap:wrap;}.system-settings .config-bar-left label,.system-settings .config-bar-left input,.system-settings .config-bar-left span {width:100%;}}
+
+    .diagnostic-section {margin:12px 0;min-width:0;}
+    .diagnostic-section > summary {cursor:pointer;color:var(--text-secondary);font-size:14px;padding:8px 0;}
+    .diagnostic-section[open] > summary {margin-bottom:12px;}
+    .capture-time {margin:8px 0 16px;color:var(--text-muted);font-size:12px;overflow-wrap:anywhere;}
+    .training-controls {display:flex;flex-direction:column;gap:12px;}
+    .training-controls select {background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:8px;max-width:100%;font:inherit;}
+    .automatic-validation-note {font-size:14px;margin-top:12px;color:var(--text-secondary);}
+    .automatic-validation-note span {font-size:13px;color:var(--text-muted);}
   </style>
   <script>
 /* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
@@ -1215,34 +1224,38 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
           </div>
 
+          <div class="capture-time"><span id="previewOverlayText"
+                style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span></div>
+          <details class="diagnostic-section"><summary>Combined view</summary>
           <!-- Stitched Combined [BACK CAM | FRONT CAM] View -->
           <div
             style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 14px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
               <span style="font-size: 13px; font-weight: 600; color: var(--text-muted);">Back / Front comparison</span>
-              <span id="previewOverlayText"
-                style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span>
+
             </div>
             <div class="preview-canvas-box" id="previewContainer" style="max-height: 240px;">
               <div id="previewPlaceholder" class="snapshot-placeholder">
-                <span> No snapshot yet. Click "Preview Both Angles" or upload test photos.</span>
+                <span>Run preview to capture both pictures.</span>
               </div>
               <img id="livePreviewImg" src="" crossOrigin="anonymous" alt="Combined Stitched View"
                 style="display:none;" />
             </div>
           </div>
 
+          </details>
           <details class="prediction-details"><summary>Prediction details</summary><div id="tmDiagnostics" style="display:none; padding:12px; border:1px solid var(--border); border-radius:8px;"></div>
 
-          </details>
-          <p class="diagnostic-label">Camera diagnostics <span>Diagnostic only - Does not update inventory</span></p>
           <!-- Prominent status banner -->
           <div id="previewProcessorBanner" role="status">Checking bridge connection...</div>
           <div id="previewModeBadge">No observation</div>
+          </details>
           <div id="tmLivePredictionBanner"
             style="display: block; background: #0b1528; border: 1px solid var(--primary); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: var(--font-mono); color: var(--primary); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.1);">
             Waiting for a diagnostic preview
           </div>
+          <p class="diagnostic-label">Preview only &mdash; does not update inventory</p>
+
         </div>
 
         <!-- Right Column (Dual Camera Controls) -->
@@ -1251,10 +1264,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div
             style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
             <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary);">
-              Target Shelf &amp; ESP32-CAM Setup</h3>
+              Camera preview</h3>
 
             <div class="form-group" style="margin-bottom: 12px;">
-              <label for="refShelfSelect">Target Shelf Compartment</label>
+              <label for="refShelfSelect">Shelf</label>
               <select id="refShelfSelect" class="form-control" onchange="onTargetShelfChange()">
                 <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
                 <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
@@ -1262,8 +1275,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </select>
             </div>
 
+            <details class="diagnostic-section"><summary>Camera setup</summary>
             <div class="form-group" style="margin-bottom: 12px;">
-              <label for="refEspIpInput">ESP32-CAM 1 Back Angle IP</label>
+              <label for="refEspIpInput">Back camera</label>
               <select id="cam1IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
                 onchange="onSelectAssignedCameraIp(1, this.value)"></select>
               <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.201"
@@ -1271,7 +1285,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
 
             <div class="form-group" style="margin-bottom: 12px;">
-              <label for="refEspIp2Input">ESP32-CAM 2 Front Angle IP</label>
+              <label for="refEspIp2Input">Front camera</label>
               <select id="cam2IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
                 onchange="onSelectAssignedCameraIp(2, this.value)"></select>
               <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.202"
@@ -1281,21 +1295,24 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
               <button type="button" class="btn-action" id="scanCamIpsBtn"
                 style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
-                 Scan Online Camera IPs
+                 Find cameras
               </button>
               <button type="button" class="btn-action" id="saveCamIpsBtn"
                 style="height: 36px; justify-content: center; font-size: 11px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);"
                 onclick="saveAssignedShelfIps()">
-                 Save Assigned IPs to Shelf
+                 Save camera assignments
               </button>
               <div id="camIpSaveStatus" role="status" aria-live="polite" style="font-size:12px"></div>
             </div>
 
+            </details>
             <div style="display: flex; flex-direction: column; gap: 10px;">
               <button type="button" class="btn-primary" style="height: 40px; justify-content: center;"
                 id="diagnosticPreviewButton" disabled title="Checking bridge connection" onclick="fetchLiveAnglePreview({runMode: 'diagnostic'})">
-                 Preview Both Angles &amp; Run Teachable Machine
+                 Run preview
               </button>
+              <details class="diagnostic-section"><summary>Training capture</summary>
+              <div class="training-controls">
               <label>Training batch pairs: <select id="tmBatchCount" onchange="updateTrainingBatchPlan()"><option>8</option><option>16</option><option>24</option><option>32</option></select></label>
               <label>Verified back label: <select id="tmBatchBack" onchange="updateTrainingBatchPlan()"><option value="">Choose physical scenario</option><option>Back_11X</option><option>Back_X01</option><option>Back_100</option><option>Back_000</option></select></label>
               <label>Verified front label: <select id="tmBatchFront" onchange="updateTrainingBatchPlan()"><option value="">Choose physical scenario</option><option>Front_111</option><option>Front_110</option><option>Front_100</option><option>Front_011</option><option>Front_010</option><option>Front_000</option></select></label>
@@ -1307,11 +1324,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <progress id="tmBatchProgress" max="1" value="0" hidden style="width:100%" aria-label="Training pairs captured"></progress>
               <div id="tmBatchStatus" role="status" aria-live="polite"></div>
               <div id="tmBatchDownload"></div>
-              <button type="button" class="btn-action"
-                style="height: 40px; justify-content: center; background: rgba(56, 189, 248, 0.1); border-color: var(--primary); color: var(--primary);"
-                onclick="runFullDualCamValidation(refShelfSelect.value, 'BORROW')">
-                 Native Validation: Monitor Results
-              </button>
+              </div></details>
+              <p class="automatic-validation-note">Inventory checks run automatically<br><span>View confirmed counts and readiness under Shelf inventory</span></p>
             </div>
           </div>
 
@@ -2476,7 +2490,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       } finally {
         if (scanCamIpsBtn) {
           scanCamIpsBtn.disabled = false;
-          scanCamIpsBtn.innerHTML = ' Scan Online Camera IPs';
+          scanCamIpsBtn.innerHTML = ' Find cameras';
         }
       }
     }
@@ -2504,7 +2518,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         return;
       }
       const resetButton = () => {
-        if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = ' Save Assigned IPs to Shelf'; }
+        if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = ' Save camera assignments'; }
         esp32IpSaveInProgress = false; renderAllCamerasOverview();
       };
       if (saveCamIpsBtn) { saveCamIpsBtn.disabled = true; saveCamIpsBtn.textContent = 'Saving...'; }
@@ -2654,11 +2668,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const native=online && processor==='native';
       const button=document.getElementById('diagnosticPreviewButton');
       button.disabled=!online || diagnosticRunning;
-      button.textContent='Run Diagnostic Preview (Read-Only)';
+      button.textContent='Run preview';
       button.title=!online?'Bridge unavailable':diagnosticRunning?'Diagnostic capture running':native?'Quick bright capture using the same native models as initial counts. Diagnostic only; the native processor keeps counting.':'Read-only capture; inventory is unchanged';
-      document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Native Processor Active — Displaying authoritative observations.':'Native Processor Disabled — Automated validation is paused.';
+      document.getElementById('previewProcessorBanner').textContent=!online?'Bridge Disconnected':native?'Showing the latest automatic scan pictures':'Automatic inventory checks are paused';
       updateTrainingBatchAvailability();
-      if(!native && !diagnosticRunning && !manualPreviewPinned()){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run Diagnostic Preview (Read-Only) to fetch frames.':'Bridge Disconnected';}
+      if(!native && !diagnosticRunning && !manualPreviewPinned()){previewOverlayText.textContent=online?'Diagnostic preview available (read-only)':'Bridge Disconnected';if(livePreviewImg.style.display!=='block')previewPlaceholder.textContent=online?'Run preview to capture both pictures.':'Bridge Disconnected';}
     }
     function renderPanelFrames(row){
       for(const [img,placeholder,url] of [[backPreviewImg,backPlaceholder,row.image_back],[frontPreviewImg,frontPlaceholder,row.image_front],[livePreviewImg,previewPlaceholder,row.image]]){
@@ -2669,7 +2683,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function renderPanelObservation(row,native=false) {
       renderPanelFrames(row);
       const sources={scan:'Automatic scan picture',count_check:'Automatic count check picture',training:'Training capture picture'};
-      const label=native?(sources[row.source] || 'Native Authoritative'):'Diagnostic Only (No Inventory Write)';
+      const label=native?(sources[row.source] || 'Automatic scan picture'):'Diagnostic preview';
       document.getElementById('previewModeBadge').textContent=label;
       const time=new Date(row.timestamp*1000).toLocaleTimeString();
       previewOverlayText.textContent=native && Number.isFinite(row.age_seconds)?`${label} · ${time} · last picture ${pictureAge(row.age_seconds)}`:time;
@@ -2681,9 +2695,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
       const candidate=row.candidate || {};
       backPredBadge.style.display=frontPredBadge.style.display='block';
-      backPredBadge.textContent=`${candidate.back_class || candidate.backClass || 'Unknown'} (${candidate.back_confidence ?? candidate.backConfidence ?? '?'}%)`;
-      frontPredBadge.textContent=`${candidate.front_class || candidate.frontClass || 'Unknown'} (${candidate.front_confidence ?? candidate.frontConfidence ?? '?'}%)`;
-      tmLivePredictionBanner.textContent=native?'Native observation; inventory acceptance is shown separately in shelf status.':`Diagnostic Only (No Inventory Write): ${candidate.scenarioLabel || candidate.hold || 'Prediction complete'}`;
+      backPredBadge.title=`Raw confidence: ${candidate.back_confidence ?? candidate.backConfidence ?? 'Unknown'}`;
+      backPredBadge.textContent=`${candidate.back_class || candidate.backClass || 'Unknown'} (${Number.isFinite(candidate.back_confidence ?? candidate.backConfidence) ? (candidate.back_confidence ?? candidate.backConfidence).toFixed(1)+'%' : 'Unknown'})`;
+      frontPredBadge.title=`Raw confidence: ${candidate.front_confidence ?? candidate.frontConfidence ?? 'Unknown'}`;
+      frontPredBadge.textContent=`${candidate.front_class || candidate.frontClass || 'Unknown'} (${Number.isFinite(candidate.front_confidence ?? candidate.frontConfidence) ? (candidate.front_confidence ?? candidate.frontConfidence).toFixed(1)+'%' : 'Unknown'})`;
+      tmLivePredictionBanner.textContent=native?'See Shelf inventory for confirmed counts':`Diagnostic Only (No Inventory Write): ${candidate.scenarioLabel || candidate.hold || 'Prediction complete'}`;
     }
     function previewBanner(text,isError=false){
       tmLivePredictionBanner.style.display='block';markStatusError(tmLivePredictionBanner,isError);tmLivePredictionBanner.textContent=text;
@@ -3032,14 +3048,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                   } else {
                     // Update badges on individual cameras
                     backPredBadge.style.display = 'block';
-                    backPredBadge.textContent = `${tmRes.backClass} (${tmRes.backConfidence}%)`;
+                    backPredBadge.textContent = `${tmRes.backClass} (${Number.isFinite(tmRes.backConfidence)?tmRes.backConfidence.toFixed(1):'Unknown'}%)`;
 
                     frontPredBadge.style.display = 'block';
-                    frontPredBadge.textContent = `${tmRes.frontClass} (${tmRes.frontConfidence}%)`;
+                    frontPredBadge.textContent = `${tmRes.frontClass} (${Number.isFinite(tmRes.frontConfidence)?tmRes.frontConfidence.toFixed(1):'Unknown'}%)`;
 
                     // Update Prominent Status Banner
                     tmLivePredictionBanner.style.display = 'block';
-                    tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
+                    tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${Number.isFinite(tmRes.backConfidence)?tmRes.backConfidence.toFixed(1):'Unknown'}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${Number.isFinite(tmRes.frontConfidence)?tmRes.frontConfidence.toFixed(1):'Unknown'}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
                     showToast(`Live TM Prediction: ${tmRes.scenarioLabel}`, 'success');
                   }
                 }
@@ -3459,7 +3475,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
         if (tmLivePredictionBanner) {
           tmLivePredictionBanner.style.display = 'block';
-          tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${tmRes.backConfidence}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${tmRes.frontConfidence}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
+          tmLivePredictionBanner.innerHTML = `CAM 1 (Back): ${tmRes.backClass} (${tmRes.backCount} box, ${Number.isFinite(tmRes.backConfidence)?tmRes.backConfidence.toFixed(1):'Unknown'}%) + CAM 2 (Front): ${tmRes.frontClass} (${tmRes.frontCount} box, ${Number.isFinite(tmRes.frontConfidence)?tmRes.frontConfidence.toFixed(1):'Unknown'}%) ➜ <strong>${tmRes.scenarioLabel}</strong> (Minimum Confidence: ${tmRes.confidence}%)`;
         }
 
         // 3. Send POST /esp32_validate to Local Bridge
