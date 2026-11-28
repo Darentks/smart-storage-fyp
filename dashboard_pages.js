@@ -38,7 +38,20 @@ function openAllCamerasSection() {
 if(typeof window!=='undefined' && typeof window.addEventListener==='function')window.addEventListener('hashchange',openAllCamerasSection);
 document.documentElement.dataset.dashboardPage=DASHBOARD_PAGE;
 document.title=`${DASHBOARD_PAGE_TITLES[DASHBOARD_PAGE]} · Smart Storage`;
+// Only a tab-local presentation preference; no device or inventory data is stored.
+function rememberConnectionModels() {
+  const section=document.getElementById('connectionModels');
+  if(!section)return;
+  const key='smart_storage_connection_models_open';
+  try { section.open=sessionStorage.getItem(key)==='true'; } catch (_) {}
+  const save=()=>{try { sessionStorage.setItem(key,String(section.open)); } catch (_) {}};
+  section.addEventListener('toggle',save);
+  // Navigation can happen before the browser dispatches the queued toggle event.
+  window.addEventListener('pagehide',save);
+}
+
 document.addEventListener('DOMContentLoaded',()=>{
+  rememberConnectionModels();
   document.getElementById('dashboardPageTitle').textContent=DASHBOARD_PAGE_TITLES[DASHBOARD_PAGE];
   for(const link of document.querySelectorAll('[data-dashboard-link]')) {
     const page=link.dataset.dashboardLink;
