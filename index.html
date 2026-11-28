@@ -83,7 +83,7 @@
 
     .brand-title {
       font-size: 20px;
-      font-weight: 700;
+      font-weight: 600;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -188,7 +188,7 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      transition: all 0.15s;
+      transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease;
     }
 
     .cctv-tools {display:grid;gap:12px;margin:12px 0;}
@@ -208,14 +208,14 @@
     .cctv-step > div {display:flex;flex-direction:column;gap:6px;min-width:0;}
     .cctv-step strong {font-size:13px;font-weight:600;color:var(--text-primary);}
     .cctv-step small {font-size:12px;line-height:1.45;color:var(--text-secondary);}
-    .cctv-step-num {flex:none;width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:1px solid var(--border);color:var(--text-secondary);}
+    .cctv-step-num {flex:none;width:24px;height:24px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-size:12px;font-weight: 600;border:1px solid var(--border);color:var(--text-secondary);}
     .cctv-step-primary {border-color:var(--primary);}
     .cctv-step-primary .cctv-step-num {background:var(--primary);border-color:var(--primary);color:#04111f;}
-    .cctv-tools .btn-primary-solid {align-self:flex-start;background:var(--primary);border-color:var(--primary);color:#04111f;font-weight:700;font-size:13px;padding:8px 14px;}
+    .cctv-tools .btn-primary-solid {align-self:flex-start;background:var(--primary);border-color:var(--primary);color:#04111f;font-weight: 600;font-size:13px;padding:8px 14px;}
     .cctv-tools .btn-primary-solid:hover {filter:brightness(1.1);background:var(--primary);}
     .cctv-view-header {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px 16px;}
     .cctv-view-title {display:flex;flex-direction:column;gap:2px;min-width:0;}
-    .cctv-view-title h3 {margin:0;font-size:15px;font-weight:700;color:var(--text-primary);}
+    .cctv-view-title h3 {margin:0;font-size:15px;font-weight: 600;color:var(--text-primary);}
     .cctv-view-title span {font-size:12px;color:var(--text-muted);}
     .cctv-status-row {display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
     .cctv-status-row .badge {font-size:11px;}
@@ -252,7 +252,7 @@
     .roi-toolbar-foot {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;}
     .roi-coords {font-size:11px;color:var(--text-muted);}
     #cctvCalibCoordsText {font-family:var(--font-mono);color:var(--primary);background:rgba(0,0,0,.3);padding:2px 6px;border-radius:4px;}
-    .roi-toolbar .roi-save {background:var(--success);border-color:var(--success);color:#04111f;font-weight:700;}
+    .roi-toolbar .roi-save {background:var(--success);border-color:var(--success);color:#04111f;font-weight: 600;}
     .esp32-overview {margin-top:16px;padding:12px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(15,23,42,.55);}
     .esp32-overview > summary {cursor:pointer;font-weight:600;font-size:13px;color:var(--text-primary);}
     .esp32-overview > summary:focus-visible,.esp32-thumb:focus-visible {outline:2px solid var(--primary);outline-offset:3px;}
@@ -277,13 +277,13 @@
     #cctvSingleView[hidden],#cctvConsensusTest[hidden] {display:none;}
     .cctv-consensus-test {display:flex;flex-direction:column;gap:12px;}
     .cctv-consensus-head {display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px 16px;}
-    .cctv-consensus-head h3 {margin:0 0 4px;font-size:14px;font-weight:700;color:var(--text-primary);}
+    .cctv-consensus-head h3 {margin:0 0 4px;font-size:14px;font-weight: 600;color:var(--text-primary);}
     .cctv-consensus-head span {display:block;font-size:12px;line-height:1.5;color:var(--text-muted);max-width:760px;}
     .cctv-consensus-head .btn-action {height:32px;font-size:12px;padding:0 12px;}
     .cctv-consensus-status {display:flex;flex-direction:column;gap:4px;padding:12px 14px;border:1px solid var(--border);border-radius:10px;background:rgba(15,23,42,.7);font-size:12px;line-height:1.5;color:var(--text-secondary);}
     .cctv-consensus-status > strong {font-size:14px;color:var(--text-primary);}
     .cctv-consensus-status.is-matched {border-color:var(--success);background:rgba(16,185,129,.12);}
-    .cctv-consensus-status .cctv-consensus-match {font-size:14px;font-weight:700;color:var(--success);}
+    .cctv-consensus-status .cctv-consensus-match {font-size:14px;font-weight: 600;color:var(--success);}
     #threeCameraCards {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:10px;}
     #threeCameraCards article {display:flex;flex-direction:column;gap:6px;min-width:0;padding:8px;border:1px solid var(--border);border-radius:10px;background:#070b14;}
     #threeCameraCards article > div {font-size:11px;font-family:var(--font-mono);color:var(--text-secondary);overflow-wrap:anywhere;}
@@ -302,7 +302,7 @@
       padding: 8px 16px;
       border-radius: 6px;
       font-size: 13px;
-      font-weight: 700;
+      font-weight: 600;
       cursor: pointer;
       display: inline-flex;
       align-items: center;
@@ -351,7 +351,7 @@
 
     .panel-title {
       font-size: 16px;
-      font-weight: 700;
+      font-weight: 600;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -371,7 +371,7 @@
       padding: 3px 9px;
       border-radius: 9999px;
       font-size: 11px;
-      font-weight: 700;
+      font-weight: 600;
       letter-spacing: 0.2px;
     }
 
@@ -459,7 +459,7 @@
 
     .card-title {
       font-size: 15px;
-      font-weight: 700;
+      font-weight: 600;
     }
 
     .card-subtitle {
@@ -545,7 +545,7 @@
 
     .stat-val {
       font-size: 16px;
-      font-weight: 700;
+      font-weight: 600;
       font-family: var(--font-mono);
     }
 
@@ -724,7 +724,7 @@
       padding: 4px 10px;
       border-radius: 6px;
       font-size: 11px;
-      font-weight: 700;
+      font-weight: 600;
       font-family: var(--font-mono);
       z-index: 2;
     }
@@ -784,7 +784,7 @@
       content: "\26A0";
       flex: none;
       color: var(--danger);
-      font-weight: 700;
+      font-weight: 600;
     }
 
     pre.status-error {
@@ -816,6 +816,112 @@
         transform: translateY(0);
         opacity: 1;
       }
+    }
+
+    /* Rack monitoring console. Design pass guided by unslop by Damir Sokolovsky
+       (@heydamir), CC BY 4.0. Presentation only; runtime authority is unchanged. */
+    :root {
+      --bg:#141516; --surface:#1b1c1e; --surface-card:#232527;
+      --surface-card-hover:#2b2e30; --border:#3b3e41; --border-active:#72c69c;
+      --text:#ededee; --text-primary:#ededee; --text-secondary:#b5b8bc;
+      --text-muted:#a1a6ad; --primary:#80d4ed; --primary-hover:#a2e2f3;
+      --success:#72c69c; --success-bg:rgba(114,198,156,.08);
+      --danger:#f28c98; --danger-bg:rgba(242,140,152,.08);
+      --warning:#e7bd76; --warning-bg:rgba(231,189,118,.08);
+    }
+    body {padding:32px 32px 64px;font-size:14px;}
+    .container {max-width:1520px;}
+    header {gap:16px;padding-bottom:24px;}
+    .brand-title {font-size:24px;font-weight:500;letter-spacing:0;flex-wrap:wrap;}
+    .brand-title span {color:var(--text);}
+    .brand-subtitle {margin-top:8px;color:var(--text-secondary);}
+    .dashboard-nav {gap:8px;margin:24px 0;}
+    .dashboard-nav a[aria-current="page"] {background:var(--surface-card);border-color:var(--primary);}
+    .status-group {gap:12px;}
+    .status-pill {border-radius:8px;padding:8px 12px;font-size:12px;font-weight:400;}
+    .status-dot,.status-dot.connected,.slot-pill.active {box-shadow:none;}
+    .pulse-dot {animation:none;}
+    .config-bar {padding:16px;gap:16px;margin:24px 0;align-items:flex-start;}
+    .config-bar-left {gap:8px 12px;align-items:center;}
+    .config-bar label,.form-group label {font-size:13px;font-weight:500;color:var(--text-secondary);}
+    .config-bar input,.form-control {background:var(--surface-card);border-radius:8px;min-height:36px;font-size:13px;max-width:100%;}
+    .btn-action,.btn-primary,.btn-danger {min-height:36px;padding:8px 12px;border-radius:8px;font-size:13px;font-weight:500;justify-content:center;line-height:1.4;}
+    .btn-primary,.cctv-tools .btn-primary-solid {background:var(--text);border-color:var(--text);color:var(--bg);font-weight:500;}
+    .btn-primary:hover,.cctv-tools .btn-primary-solid:hover {background:#fff;filter:none;}
+    button:disabled {cursor:not-allowed;opacity:.55;}
+    :where(button,a,input,select,textarea,summary,[tabindex]):focus-visible {outline:2px solid var(--primary);outline-offset:4px;}
+    .panel {padding:24px;margin-bottom:24px;border-radius:16px;box-shadow:none;}
+    .panel-header {gap:16px;margin-bottom:24px;align-items:flex-start;}
+    .panel-title {font-size:20px;font-weight:500;line-height:1.4;}
+    .panel-desc {font-size:14px;line-height:1.5;margin-top:8px;max-width:76ch;color:var(--text-secondary);}
+    .badge {font-size:12px;font-weight:500;letter-spacing:0;padding:4px 8px;border-radius:6px;}
+    .badge-online,.badge-offline,.badge-removed,.badge-returned {border-color:var(--border);}
+    .compartments-grid {grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr));gap:24px;margin-top:16px;}
+    .compartment-card {border-radius:12px;transition:border-color 160ms ease;}
+    .compartment-card:hover {transform:none;border-color:#656c72;}
+    .card-top,.card-stats {padding:16px;gap:16px;}
+    .card-title {font-size:16px;font-weight:500;}
+    .card-subtitle {font-size:12px;}
+    .card-stats {grid-template-columns:minmax(0,1.4fr) minmax(0,1fr);}
+    .stat-item {min-width:0;overflow-wrap:anywhere;}
+    .stat-lbl {font-size:12px;text-transform:none;font-weight:400;}
+    .stat-val {font-weight:500;font-variant-numeric:tabular-nums;}
+    .stat-val.qty {font-size:24px;color:var(--text);line-height:1.4;}
+    .card-stats .stat-item > span[style] {font-size:12px !important;color:var(--text-secondary);}
+    .slot-bar {gap:4px;margin-top:8px;}
+    .slot-pill {height:4px;background:#45494d;border-radius:2px;}
+    .slot-pill.active {background:var(--success);}
+    .snapshot-wrap,.cam-box,.preview-canvas-box {background:#101112;}
+    .snapshot-img,.cam-box img,.preview-canvas-box img {object-fit:contain;}
+    .snapshot-tag,.snapshot-timestamp,.cam-badge-tag,.cam-pred-badge {font-size:12px;letter-spacing:0;text-transform:none;background:rgba(16,17,18,.94);border-color:var(--border);}
+    .cam-badge-tag {top:8px;left:8px;color:var(--text);}
+    .cam-pred-badge {bottom:8px;right:8px;max-width:calc(100% - 16px);color:var(--text-secondary);font-weight:400;}
+    .tester-grid {grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:24px;}
+    .tester-preview-col,.tester-controls-col {min-width:0;}
+    .tester-form {padding:16px;gap:16px;border-radius:12px;}
+    .diagnostic-label {margin:16px 0 8px;font-size:14px;font-weight:500;}
+    .diagnostic-label span {display:block;color:var(--text-secondary);font-size:13px;font-weight:400;}
+    #tmLivePredictionBanner:not(.status-error) {background:var(--surface-card) !important;color:var(--text-secondary) !important;border:1px dashed #747b82 !important;box-shadow:none !important;font-size:13px !important;}
+    #tmLivePredictionBanner,#previewProcessorBanner,#previewModeBadge {overflow-wrap:anywhere;line-height:1.6;}
+    #tmStatusBadge {background:var(--surface-card);color:var(--text-secondary);border-color:var(--border);}
+    .cctv-tool-group,.cctv-tool-grid .btn-action,.cctv-step,.roi-group,.esp32-overview,.cctv-consensus-status,#threeCameraCards article,#threeCameraEvents {background:var(--surface-card);}
+    .cctv-tool-grid,.cctv-steps,#threeCameraCards,#esp32CameraManagerGrid {gap:16px;}
+    .cctv-tool-group,.esp32-overview,.cctv-consensus-status {padding:16px;}
+    .cctv-tool-grid .btn-action {padding:12px 16px;gap:8px;min-height:80px;}
+    .cctv-tool-grid .btn-action:hover {transform:none;background:var(--surface-card-hover);}
+    .cctv-tool-grid .btn-action small,#threeCameraCards article > div,#threeCameraEvents {font-size:12px;line-height:1.5;}
+    .roi-group-label {text-transform:none;letter-spacing:0;font-size:12px;font-weight:500;}
+    .roi-toolbar {background:var(--surface-card);border-color:var(--border);padding:16px;}
+    #esp32CameraManagerGrid article {padding:16px !important;border-color:var(--border) !important;border-radius:12px !important;}
+    #esp32CameraManagerGrid article p {margin:8px 0;}
+    .esp32-thumb img {height:160px;object-fit:contain;background:#101112;}
+    #threeCameraCards canvas {height:auto;object-fit:contain;}
+    .status-error {padding:12px 16px;}
+    .status-error::before,pre.status-error::before {content:"!";font-family:var(--font-mono);font-weight:600;}
+    #toast {bottom:24px;right:24px;background:var(--surface-card);box-shadow:none;}
+    #toast.show {animation:none;}
+    code,.stat-val,.cctv-fps,.snapshot-timestamp {font-variant-numeric:tabular-nums;}
+    @media(max-width:900px) {.tester-grid {grid-template-columns:minmax(0,1fr);}}
+    @media(max-width:600px) {
+      body {padding:16px 16px 40px;}
+      .panel {padding:16px;}
+      .brand-title {font-size:20px;}
+      .panel-title {font-size:18px;}
+      .config-bar {padding:12px;}
+      .config-bar > div,.config-bar-left {width:100%;min-width:0;}
+      .config-bar input.form-control {min-width:0 !important;width:100%;}
+      .config-bar-left input {max-width:none;}
+      .config-bar .btn-action {white-space:normal;}
+      .card-stats {grid-template-columns:minmax(0,1fr);}
+      .dual-preview-grid {grid-template-columns:minmax(0,1fr);}
+      .cctv-toolbar-field,.roi-field {max-width:100%;flex-wrap:wrap;}
+      .cctv-empty-text {display:block;}
+      .cam-box {aspect-ratio:4/3;}
+      dialog {max-width:calc(100% - 24px);padding:12px;}
+      #toast {left:16px;right:16px;bottom:16px;}
+    }
+    @media(prefers-reduced-motion:reduce) {
+      *,*::before,*::after {animation:none !important;transition:none !important;scroll-behavior:auto !important;}
     }
   </style>
   <script>
@@ -1026,7 +1132,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <label for="tmBackModelUrlInput">CAM1 Back model URL (4 classes):</label>
         <input type="text" id="tmBackModelUrlInput" class="form-control" style="min-width:280px;"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
-        <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">&#129302;
+        <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">
           Load Both TM Models</button>
       </div>
     </div>
@@ -1036,7 +1142,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">&#128230; Panel 1 &bull; Shelf Compartments, Inventory &amp; Automatic Count Checks</h2>
+          <h2 class="panel-title"> Panel 1 &bull; Shelf inventory</h2>
           <p class="panel-desc">Latest verified stock level, automatic 30-second count checks, and hardware
             telemetry from the local RAM inventory bridge.</p>
         </div>
@@ -1056,11 +1162,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title">&#128247; Panel 2 &bull; Dual ESP32-CAM (<code>CAM1 Back</code> +
-            <code>CAM2 Front</code>) &amp; Google Teachable Machine (18-State) Live Validator
+          <h2 class="panel-title"> Panel 2 &bull; Front/Back Camera Diagnostics
           </h2>
-          <p class="panel-desc">Real-time dual-camera perspective (CAM 1 Back + CAM 2 Front) &amp; client-side Google
-            Teachable Machine AI classification into 5 physical inventory scenarios.</p>
+          <p class="panel-desc">Back and Front camera previews with read-only model predictions. Confirmed inventory is shown in Panel 1.</p>
         </div>
         <div style="display: flex; gap: 8px; align-items: center;">
           <span class="badge badge-online" id="tmStatusBadge"><span class="pulse-dot"></span>TM AI Model Active</span>
@@ -1074,7 +1178,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div class="dual-preview-grid">
             <!-- CAM 1 Back Box -->
             <div class="cam-box" id="backCamBox">
-              <span class="cam-badge-tag">&#128247; CAM 1 (Back Angle)</span>
+              <span class="cam-badge-tag"> CAM 1 (Back Angle)</span>
               <div id="backPlaceholder" class="snapshot-placeholder">
                 <span>Waiting for Cam 1...</span>
               </div>
@@ -1084,7 +1188,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
             <!-- CAM 2 Front Box -->
             <div class="cam-box" id="frontCamBox">
-              <span class="cam-badge-tag">&#128247; CAM 2 (Front Angle)</span>
+              <span class="cam-badge-tag"> CAM 2 (Front Angle)</span>
               <div id="frontPlaceholder" class="snapshot-placeholder">
                 <span>Waiting for Cam 2...</span>
               </div>
@@ -1098,14 +1202,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div
             style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 14px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 13px; font-weight: 700; color: var(--text-muted);">&#127916; Combined Stitched
+              <span style="font-size: 13px; font-weight: 600; color: var(--text-muted);"> Combined Stitched
                 Feed [BACK CAM | FRONT CAM]</span>
               <span id="previewOverlayText"
                 style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span>
             </div>
             <div class="preview-canvas-box" id="previewContainer" style="max-height: 240px;">
               <div id="previewPlaceholder" class="snapshot-placeholder">
-                <span>&#128249; No snapshot yet. Click "Preview Both Angles" or upload test photos.</span>
+                <span> No snapshot yet. Click "Preview Both Angles" or upload test photos.</span>
               </div>
               <img id="livePreviewImg" src="" crossOrigin="anonymous" alt="Combined Stitched View"
                 style="display:none;" />
@@ -1114,12 +1218,13 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
           <div id="tmDiagnostics" style="display:none; padding:12px; border:1px solid var(--border); border-radius:8px;"></div>
 
+          <p class="diagnostic-label">Camera diagnostics <span>Predictions are not confirmed inventory</span></p>
           <!-- Prominent status banner -->
           <div id="previewProcessorBanner" role="status">Checking bridge connection...</div>
           <div id="previewModeBadge">No observation</div>
           <div id="tmLivePredictionBanner"
             style="display: block; background: #0b1528; border: 1px solid var(--primary); padding: 12px 16px; border-radius: 8px; font-size: 13px; font-family: var(--font-mono); color: var(--primary); box-shadow: 0 4px 15px rgba(56, 189, 248, 0.1);">
-            Teachable Machine (0cQO4TjOm): Waiting for preview...
+            Waiting for a diagnostic preview
           </div>
         </div>
 
@@ -1128,7 +1233,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <!-- Dual Camera Controls Card -->
           <div
             style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
-            <h3 style="font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--text-primary);">&#9881;
+            <h3 style="font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary);">
               Target Shelf &amp; ESP32-CAM Setup</h3>
 
             <div class="form-group" style="margin-bottom: 12px;">
@@ -1159,12 +1264,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
               <button type="button" class="btn-action" id="scanCamIpsBtn"
                 style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
-                &#128269; Scan Online Camera IPs
+                 Scan Online Camera IPs
               </button>
               <button type="button" class="btn-action" id="saveCamIpsBtn"
                 style="height: 36px; justify-content: center; font-size: 11px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);"
                 onclick="saveAssignedShelfIps()">
-                &#128190; Save Assigned IPs to Shelf
+                 Save Assigned IPs to Shelf
               </button>
               <div id="camIpSaveStatus" role="status" aria-live="polite" style="font-size:12px"></div>
             </div>
@@ -1172,7 +1277,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div style="display: flex; flex-direction: column; gap: 10px;">
               <button type="button" class="btn-primary" style="height: 40px; justify-content: center;"
                 id="diagnosticPreviewButton" disabled title="Checking bridge connection" onclick="fetchLiveAnglePreview({runMode: 'diagnostic'})">
-                &#128065; Preview Both Angles &amp; Run Teachable Machine
+                 Preview Both Angles &amp; Run Teachable Machine
               </button>
               <label>Training batch pairs: <select id="tmBatchCount" onchange="updateTrainingBatchPlan()"><option>8</option><option>16</option><option>24</option><option>32</option></select></label>
               <label>Verified back label: <select id="tmBatchBack" onchange="updateTrainingBatchPlan()"><option value="">Choose physical scenario</option><option>Back_11X</option><option>Back_X01</option><option>Back_100</option><option>Back_000</option></select></label>
@@ -1188,7 +1293,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <button type="button" class="btn-action"
                 style="height: 40px; justify-content: center; background: rgba(56, 189, 248, 0.1); border-color: var(--primary); color: var(--primary);"
                 onclick="runFullDualCamValidation(refShelfSelect.value, 'BORROW')">
-                &#9889; Native Validation: Monitor Results
+                 Native Validation: Monitor Results
               </button>
             </div>
           </div>
@@ -1260,14 +1365,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
             <div class="cctv-toolbar-actions">
               <button type="button" class="btn-action" id="cctvPoseToggleBtn"
-                style="border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 700;"
+                style="border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08); font-weight: 600;"
                 onclick="togglePoseTracker()">
                 &#9654; Start Pose Tracker
               </button>
               <button type="button" class="btn-action" id="cctvCalibrateRoiBtn"
                 style="border-color: var(--primary); color: var(--primary);"
                 onclick="onCalibrateRoiClicked()">
-                &#127919; Calibrate ROI
+                 Calibrate ROI
               </button>
             </div>
           </div>
@@ -1282,7 +1387,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div id="cctvCalibrationToolbar" class="roi-toolbar" style="display: none;">
             <div class="roi-toolbar-head">
               <div class="roi-toolbar-title">
-                <strong>&#127919; Calibrate shelf regions</strong>
+                <strong> Calibrate shelf regions</strong>
                 <span>1. Pick a shelf &middot; 2. Draw rectangle, then drag its corner handles to fit &middot; 3. Save</span>
               </div>
               <label class="roi-field" for="cctvCalibShelfSelect">Shelf
@@ -1340,7 +1445,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
             <div class="roi-toolbar-foot">
               <span class="roi-coords">Corners: <span id="cctvCalibCoordsText">x: 0.60–0.81, y: 0.19–0.42</span></span>
-              <button type="button" class="btn-action roi-save" onclick="saveCalibratedRois()">&#128190; Save ROIs &amp; Finish Calibration</button>
+              <button type="button" class="btn-action roi-save" onclick="saveCalibratedRois()"> Save ROIs &amp; Finish Calibration</button>
             </div>
           </div>
 
@@ -1352,7 +1457,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               style="width: 100%; height: 100%; display: block;"></canvas>
             <div id="cctvTestPlaceholder" class="snapshot-placeholder"
               style="position: absolute; inset: 0; pointer-events: none; background: rgba(11, 17, 32, 0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 20px;">
-              <span style="font-size: 28px;" aria-hidden="true">&#128249;</span>
+              <span style="font-size: 28px;" aria-hidden="true"></span>
               <strong class="cctv-empty-title">No camera feed yet</strong>
               <span class="cctv-empty-text">Choose CCTV_01, CCTV_02 or CCTV_03 from the <strong>Camera</strong> list to show its feed here.</span>
               <div class="cctv-empty-actions">
@@ -1442,7 +1547,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <div
           style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-            <h3 id="cctvEditTitle" style="font-size: 14px; font-weight: 700; margin: 0; color: var(--text-primary);">Edit CCTV Camera</h3>
+            <h3 id="cctvEditTitle" style="font-size: 14px; font-weight: 600; margin: 0; color: var(--text-primary);">Edit CCTV Camera</h3>
             <button type="button" class="btn-action" style="font-size: 11px; padding: 3px 8px;"
               onclick="closeCctvEditor()">Cancel</button>
           </div>
@@ -1467,12 +1572,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div
               style="background: rgba(0,0,0,0.25); border: 1px dashed var(--border); border-radius: 8px; padding: 10px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-                <span style="font-size: 11px; font-weight: 700; color: var(--primary);">&#9889; Quick RTSP Builder
+                <span style="font-size: 11px; font-weight: 600; color: var(--primary);"> Quick RTSP Builder
                   Helper</span>
                 <button type="button" class="btn-action"
                   style="font-size: 10px; padding: 2px 7px; border-color: var(--primary); color: var(--primary);"
                   onclick="buildCctvRtspFromInputs()">
-                  &#9889; Auto-Fill RTSP URL
+                   Auto-Fill RTSP URL
                 </button>
               </div>
               <div style="display: grid; grid-template-columns: 1.2fr 0.8fr 0.8fr 1.2fr; gap: 6px;">
@@ -2092,7 +2197,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const rack=configured?.rack_id || (match?`RACK_${match[1].padStart(2,'0')}`:null);
       const location=match?`Rack ${rack} · Compartment ${match[2]} (${shelf})`:'Compartment not identified (entry-zone observation)';
       const action=record.shelf_id==='ANY_SHELF'?'Presence':({BORROW:'Borrow',RETURN:'Return',RECHECK:'Shelf recheck'}[record.action] || 'Interaction');
-      const status={PENDING:'Waiting for camera agreement',CONSENSUS:'Camera agreement confirmed',HELD:'Validation on hold',ACCEPTED:`${action} confirmed`,RECONCILED:'Shelf verification completed'}[record.status] || 'Unknown status';
+      const status={PENDING:'Waiting for camera agreement',CONSENSUS:'Camera agreement confirmed',HELD:'Held: validation on hold',ACCEPTED:`${action} confirmed`,RECONCILED:'Shelf verification completed'}[record.status] || 'Unknown status';
       const reason={MISSING_CCTV_CONSENSUS:'Waiting for the required cameras to agree.',LOW_CONFIDENCE:'Camera prediction confidence is too low.',MISSING_CAMERA:'A required camera is unavailable.',MQTT_UNAVAILABLE:'The MQTT connection is unavailable.',M2_CONFLICT:'The cameras disagree about the shared slot.',UNKNOWN_B1:'The back bottom slot is hidden; an exact count cannot be confirmed.',STALE_CAPTURE:'Fresh camera pictures are required.',OCCUPANCY_CHANGED:'The box arrangement changed during verification.',MODEL_FAILURE:'A prediction model could not complete verification.',VALIDATION_TIMEOUT:'Verification took too long.',LEASE_EXPIRED:'The validation session expired.',DATABASE_FAILURE:'A required data operation failed.',VISIBLE_CHANGE_NET_UNPROVEN:'A visible change was detected, but the quantity change is unproven.',VALIDATION_REJECTED:'The validation checks did not pass.'}[record.reason];
       const explanation=record.status==='CONSENSUS'?'Cameras agree — checking the box count now. This is not a completed pick yet.':record.status==='ACCEPTED'?'The guarded inventory validation passed.':record.status==='RECONCILED'?'Shelf verification completed; this does not imply a borrow or return.':reason || (record.status==='PENDING'?'Waiting for more evidence.':'Inventory change has not been confirmed.');
       return {location,action,status,explanation,time:Number.isFinite(record.timestamp)?new Date(record.timestamp*1000).toLocaleString():'Time unavailable'};
@@ -2368,7 +2473,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       } finally {
         if (scanCamIpsBtn) {
           scanCamIpsBtn.disabled = false;
-          scanCamIpsBtn.innerHTML = '&#128269; Scan Online Camera IPs';
+          scanCamIpsBtn.innerHTML = ' Scan Online Camera IPs';
         }
       }
     }
@@ -2396,7 +2501,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         return;
       }
       const resetButton = () => {
-        if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf'; }
+        if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = ' Save Assigned IPs to Shelf'; }
         esp32IpSaveInProgress = false; renderAllCamerasOverview();
       };
       if (saveCamIpsBtn) { saveCamIpsBtn.disabled = true; saveCamIpsBtn.textContent = 'Saving...'; }
@@ -3741,7 +3846,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <!-- Stats & Capacity -->
             <div class="card-stats">
               <div class="stat-item">
-                <span class="stat-lbl">Stock Quantity</span>
+                <span class="stat-lbl">Stock quantity</span>
                 <span class="stat-val qty">${view.display?readinessText(view.display):`${qtyText} / ${maxQty} Boxes`}</span><span style="white-space:pre-wrap;font-size:11px">${readinessText(view.details)}</span>
                 <div class="slot-bar">${slotPillsHtml}</div>
               </div>
@@ -4841,7 +4946,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       isPoseRunning = true;
       if (placeholder) placeholder.style.display = 'none';
       if (toggleBtn) {
-        toggleBtn.innerHTML = '&#9209; Stop Pose Tracker';
+        toggleBtn.innerHTML = ' Stop Pose Tracker';
         toggleBtn.style.borderColor = 'var(--danger)';
         toggleBtn.style.color = 'var(--danger)';
         toggleBtn.style.background = 'rgba(244, 63, 94, 0.08)';
@@ -5094,7 +5199,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (calibBtn) {
         calibBtn.style.borderColor = isCalibratingRoi ? 'var(--warning)' : 'var(--primary)';
         calibBtn.style.color = isCalibratingRoi ? 'var(--warning)' : 'var(--primary)';
-        calibBtn.innerHTML = isCalibratingRoi ? '&#10005; Exit Calibration' : '&#127919; Calibrate ROI';
+        calibBtn.innerHTML = isCalibratingRoi ? '&#10005; Exit Calibration' : ' Calibrate ROI';
       }
       if (isCalibratingRoi) {
         captureRoiSnapshot();
