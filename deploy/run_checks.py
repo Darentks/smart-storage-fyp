@@ -16,8 +16,13 @@ def run_check(name,command,env):
         result=subprocess.run(command,cwd=ROOT,text=True,capture_output=True,env=env,timeout=120)
         output=result.stdout+'\n'+result.stderr
         skips=len(re.findall(r'\.\.\. skipped ',output)) + len(re.findall(r'^SKIP:',output,re.M))
-        return dict(case=name,status='FAIL' if result.returncode else 'SKIP' if skips else 'PASS',
+        check=dict(case=name,status='FAIL' if result.returncode else 'SKIP' if skips else 'PASS',
             skipped=skips,scope='isolated fixtures only',evidence=output[-2000:])
+        # The five SQL suites need the test-only PGlite (not a project dependency). It installs offline from the
+        # npm cache into any temp folder; point PHASE1_PGLITE_MODULE at its node_modules/@electric-sql/pglite.
+        if check['status']=='SKIP' and name.endswith('_sql.cjs') and not env.get('PHASE1_PGLITE_MODULE'):
+            check['reason']='Set PHASE1_PGLITE_MODULE to a test-only @electric-sql/pglite install to run this SQL suite'
+        return check
     except (OSError,subprocess.TimeoutExpired):
         return dict(case=name,status='BLOCKED',reason='Required local executable unavailable or test exceeded 120 seconds')
 
