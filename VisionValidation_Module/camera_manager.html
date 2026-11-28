@@ -1579,7 +1579,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // =========================================================================
     const DEFAULT_TM_MODEL_URL = "https://teachablemachine.withgoogle.com/models/0cQO4TjOm/";
     const DEFAULT_TM_BACK_MODEL_URL = "https://teachablemachine.withgoogle.com/models/40mk-G4Oq/";
-    const SCENARIO_LABELS = Object.fromEntries(Array.from({length: 6}, (_, n) => [n, `${n}/5 Boxes Present`]));
     const DUAL_CAM_LABELS = {
       Front: ['000', '010', '011', '100', '110', '111'].map(bits => `Front_${bits}`),
       Back: ['000', '100', 'X01', '11X'].map(bits => `Back_${bits}`)
@@ -1853,16 +1852,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     // Explicit downloads only: fixtures contain images; they never enter validation.
-    function edgeBase64(bytes) {
-      let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-      return btoa(binary);
-    }
-    function edgeRGB(canvas) {
-      const data=canvas.getContext('2d').getImageData(0,0,canvas.width,canvas.height).data;
-      const result=new Uint8Array(canvas.width*canvas.height*3);
-      for(let i=0,j=0;i<data.length;i+=4){result[j++]=data[i];result[j++]=data[i+1];result[j++]=data[i+2];}
-      return edgeBase64(result);
-    }
     function edgeDownload(name,value) {
       const url=URL.createObjectURL(new Blob([JSON.stringify(value)],{type:'application/json'}));
       const anchor=document.createElement('a');anchor.href=url;anchor.download=name;anchor.click();
@@ -1872,12 +1861,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       return [...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
     }
     async function pollEdgeProcessor() {
-      const label=document.getElementById('edgeProcessorStatus');
       try {
         const response=await fetch(`${getBridgeUrl()}/edge_status`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-        if(!response.ok)throw Error('Unavailable');const data=await response.json();bridgeMissedPolls=0;panelState(data);renderLiveActivity(data);renderLoadedTmVersions(data);
-        if(label)label.textContent=bridgeStatus.authoritative_processor==='native'?nativeProcessorLabel(data):data.mode==='shadow'?`Shadow testing · ${data.state} · Inventory updates off`:`Processor disabled · ${data.state} · Automated validation paused`;
-        if(typeof refreshLocalOperations==='function')await refreshLocalOperations({notify:true});
+        if(!response.ok)throw Error('Unavailable');const data=await response.json();bridgeMissedPolls=0;panelState(data);renderLoadedTmVersions(data);
         if(bridgeStatus.authoritative_processor==='native'){
           // A pinned manual preview stays (its age is refreshed); otherwise show the shelf's latest automatic picture.
           if(manualPreviewPinned())showManualPreviewAge();
@@ -1890,7 +1876,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             else {clearPanelFrames();document.getElementById('previewModeBadge').textContent='No recent picture of this shelf yet';}
           }
         }
-      }catch(_){bridgeMissedPolls++;panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);if(label)label.textContent='Bridge Disconnected';{const banner=document.getElementById('confirmedActionBanner');if(banner)banner.textContent='Action status unavailable — reconnect the local bridge for fresh results.';}}
+      }catch(_){bridgeMissedPolls++;panelState({state:'Disconnected',authoritative_processor:'none'},false);renderLoadedTmVersions(null);}
     }
     // Seconds (bridge clock = this PC) when Get latest TM models was clicked; only newer results are shown.
     let tmUpdateRequestedAt=0;
@@ -1936,35 +1922,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const links=!sources?'':sources.error?` · Update links (${sources.file}): ${sources.error}`:` · Update links (${sources.file}): Front ${sources.Front} · Back ${sources.Back}`;
       label.textContent=`Loaded TM versions: Front ${version('Front')} · Back ${version('Back')}${links}`;
       renderModelUpdateResult(data.model_update);
-    }
-    function nativeProcessorLabel(data) {
-      if(data.setup_issue)return `Native processor · setup needed: ${data.setup_issue}`;
-      return `Native processor · ${data.state}${data.acceptance==='ACCEPTED'?'':' · not field-accepted'}`;
-    }
-    function renderLiveActivity(data) {
-      const issue=document.getElementById('processorSetupIssue'),cams=document.getElementById('cameraAgreementStatus'),stage=document.getElementById('liveActivityStage');
-      if(!cams)return;
-      const native=bridgeStatus.authoritative_processor==='native';
-      if(issue){
-        issue.hidden=!(native && (data.setup_issue || data.actions_paused_reason));
-        issue.textContent=data.setup_issue?`Setup needed: ${data.setup_issue}`:data.actions_paused_reason?`Counting continues; actions paused: ${data.actions_paused_reason}.`:'';
-        // A setup problem is an error (red); paused actions stay an amber notice.
-        if(typeof markStatusError==='function')markStatusError(issue,!!data.setup_issue);
-      }
-      if(!native){cams.textContent='Camera agreement is shown when the native processor is running.';if(stage)stage.textContent='';return;}
-      const ids=data.camera_ids?.length?data.camera_ids:['CCTV_01','CCTV_02','CCTV_03'],consensus=data.consensus || {votes:{},pending:[]};
-      const part=id=>{
-        const health=data.cameras?.[id],vote=consensus.votes?.[id],live=health?(health.state==='Online'?'live':'offline'):'starting';
-        const target=vote?` → ${vote.shelf_id==='ANY_SHELF'?'entry presence':'Compartment '+String(vote.shelf_id).slice(-1)+(vote.action?' '+String(vote.action).toLowerCase():'')}`:'';
-        return `${id} ${live}${target}`;
-      };
-      cams.textContent=ids.map(part).join(' · ');
-      const pending=consensus.pending?.[consensus.pending.length-1],grid=Object.values(consensus.votes || {}).filter(v=>v.shelf_id!=='ANY_SHELF');
-      let text='Waiting for a camera interaction.';
-      if(pending)text=`Cameras agree — RACK_01 / Compartment ${String(pending.shelf_id).slice(-1)} — checking box count`;
-      else if(grid.length>1 && new Set(grid.map(v=>v.shelf_id+v.action)).size>1)text='Cameras disagree on the shelf or action — no stock change.';
-      else if(grid.length)text='Waiting for the other grid camera and entry presence to agree.';
-      if(stage)stage.textContent=text;
     }
     async function setNativeCctv(enabled) {
       try {
@@ -2070,17 +2027,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         showToast('Local calibrations loaded. Stop/restart camera tracking to use the updated geometry.','success');
       }catch(error){showToast(error.message,'error');}
     }
-    let localIntentSeen=new Map(),localIntentRun=null,localOperationsBusy=false;
-    let liveConsensusSeen=new Set();
-    function notifyLiveConsensus(data,sameRun){
-      const notices=(data.consensus_notifications || []).filter(row=>row.consensus_met===true && row.required_cameras===3 && row.confirmed_count===3 && ['CCTV_01','CCTV_02','CCTV_03'].every(id=>(row.confirmed_cameras || []).includes(id)));
-      if(!sameRun)liveConsensusSeen.clear();
-      for(const notice of notices){
-        if(sameRun && !liveConsensusSeen.has(notice.trigger_id))showCctvConsensusResult({...notice,test_only:false});
-        liveConsensusSeen.add(notice.trigger_id);
-      }
-      liveConsensusSeen=new Set(notices.map(row=>row.trigger_id));
-    }
     function localIntentPresentation(record){
       const shelf=record.shelf_id,match=/^SHELF_R(\d+)_C([1-3])$/.exec(shelf || '');
       const configured=compartmentsData.find(c=>c.shelf_id===shelf);
@@ -2092,73 +2038,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const explanation=record.status==='CONSENSUS'?'Cameras agree — checking the box count now. This is not a completed pick yet.':record.status==='ACCEPTED'?'The guarded inventory validation passed.':record.status==='RECONCILED'?'Shelf verification completed; this does not imply a borrow or return.':reason || (record.status==='PENDING'?'Waiting for more evidence.':'Inventory change has not been confirmed.');
       return {location,action,status,explanation,time:Number.isFinite(record.timestamp)?new Date(record.timestamp*1000).toLocaleString():'Time unavailable'};
     }
-    function renderLocalOperations(data,{notify=false}={}){
-      const host=document.getElementById('localOperationsStatus');if(!host)return;host.replaceChildren();
-      const add=(parent,tag,text)=>{const node=document.createElement(tag);node.textContent=text;parent.appendChild(node);return node;};
-      const records=[...(data.intents || [])].sort((a,b)=>b.timestamp-a.timestamp).slice(0,5);
-      const sameRun=localIntentRun===data.run_id;
-      notifyLiveConsensus(data,sameRun);
-      add(host,'p',`Processor: ${bridgeStatus.authoritative_processor==='native'?'Native active':bridgeStatus.mode==='shadow'?'Shadow testing — no automated inventory changes':'Disabled — automated validation paused'}. Updated ${new Date().toLocaleTimeString()}.`);
-      for(const warning of (data.cctv_warnings || []))add(host,'p',`Possible missed movement: ${warning.camera_id}. ${warning.recovered_at===null?'Waiting for fresh video.':'Fresh quiet paired verification is required.'} Counts are retained; a change spanning the gap cannot be attributed as Borrow/Return.`);
-      if(!records.length && !(data.changes || []).length)add(host,'p','No interactions recorded yet. In shadow mode, predictions do not create authoritative action confirmations.');
-      for(const record of records){
-        const view=localIntentPresentation(record),card=add(host,'article','');
-        card.style.cssText='padding:12px;margin:8px 0;border:1px solid var(--border);border-radius:8px;';
-        add(card,'strong',view.status);add(card,'div',view.location);
-        add(card,'div',`${view.action} · ${view.time}${record.camera_id?' · '+record.camera_id:''}`);
-        add(card,'p',view.explanation);
-        if(notify && sameRun && localIntentSeen.get(record.id)!==record.status && ['CONSENSUS','ACCEPTED'].includes(record.status))showToast(`${view.status}: ${view.location}`,record.status==='ACCEPTED'?'success':'info');
-      }
-      for(const change of (data.changes || []).slice(0,5)){
-        const card=add(host,'article','');
-        const count=observation=>Number.isInteger(observation.total)?String(observation.total):observation.count_range.join('–');
-        add(card,'strong',change.label);
-        add(card,'div',`${change.shelf_id} · ${new Date(change.timestamp*1000).toLocaleString()} · ${count(change.before)} → ${count(change.after)} boxes`);
-        if(change.action==='UNATTRIBUTED')add(card,'p','Count and baseline updated from two matching reads. No Borrow/Return was created.');
-        if(change.has_images){
-          const button=add(card,'button','View Back/Front pictures');button.type='button';
-          button.onclick=async()=>{
-            const url=getBridgeUrl(),epoch=previewGeneration;
-            try{
-              const response=await fetch(`${url}/api/comparisons/latest?id=${encodeURIComponent(change.id)}`,{cache:'no-store'});
-              if(!response.ok)throw Error();
-              const rows=await response.json(),record=rows.find(row=>row.id===change.id);
-              if(!record || epoch!==previewGeneration)throw Error();
-              const dialog=document.createElement('dialog');
-              add(dialog,'strong',record.label);
-              const close=add(dialog,'button','Close');close.onclick=()=>dialog.remove();
-              for(const phase of ['before','after'])for(const angle of ['back','front']){
-                const src=record.pictures?.[phase]?.[`image_${angle}`];
-                if(typeof src!=='string' || !/^data:image\/(jpeg|png);base64,/.test(src))continue;
-                add(dialog,'p',`${phase} · ${angle}`);
-                const image=add(dialog,'img','');image.src=src;image.alt=`${phase} ${angle}`;image.style.maxWidth='40vw';
-              }
-              document.body.appendChild(dialog);dialog.addEventListener('close',()=>dialog.remove());dialog.showModal();
-            }catch(_){showToast('Pictures expired or bridge unavailable. Refresh the activity list.', 'error');}
-          };
-        }
-      }
-      localIntentRun=data.run_id;localIntentSeen=new Map(records.map(r=>[r.id,r.status]));
-      const latest=records[0],banner=document.getElementById('confirmedActionBanner');
-      if(latest){const view=localIntentPresentation(latest);banner.textContent=`${view.status} — ${view.location} — ${view.time}. ${view.explanation}`;}
-      else banner.textContent='No confirmed action received.';
-      const blockers=data.release_blockers || [];
-      if(blockers.length)add(host,'p',`Setup required: ${blockers.map(x=>x==='REAL_CAMERA_ACCEPTANCE'?'Real-camera acceptance testing is incomplete':String(x).replace(/_/g,' ').toLowerCase()).join('; ')}.`);
-      if(Object.keys(data.unresolved_failures || {}).length)add(host,'p','Unresolved checks remain. See technical details below.');
-      const details=add(host,'details','');add(details,'summary','Technical diagnostics');
-      const pre=add(details,'pre',JSON.stringify({...data,browser_device_rest:{...cloudRequestMetrics}},null,2));pre.style.cssText='white-space:pre-wrap;overflow-wrap:anywhere;';
-    }
-    async function refreshLocalOperations({notify=false}={}){
-      if(!document.getElementById('localOperationsStatus') || localOperationsBusy)return;
-      localOperationsBusy=true;const epoch=previewGeneration,url=getBridgeUrl();
-      try{
-        const response=await fetch(`${url}/local_operations`,{cache:'no-store',signal:AbortSignal.timeout(5000)});
-        if(!response.ok)throw Error('Local diagnostics unavailable');const data=await response.json();
-        if(epoch===previewGeneration && url===getBridgeUrl())renderLocalOperations(data,{notify});
-      }catch(error){{const host=document.getElementById('localOperationsStatus');if(host)host.textContent='Could not refresh diagnostics. Check the local bridge connection.';}{const banner=document.getElementById('confirmedActionBanner');if(banner)banner.textContent='Action status unavailable — reconnect the local bridge for fresh results.';}}
-      finally{localOperationsBusy=false;}
-    }
-    async function showLocalOperations(){await refreshLocalOperations();}
     function showToast(message, type = 'info') {
       const toast = document.getElementById('toast');
       toast.textContent = message;
@@ -2247,10 +2126,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     // In-Browser YOLO ROI Calibrator Launcher
-    function launchLocalCalibrator() {
-      navigateToDashboardPage('cctv',{calibrate:true});
-    }
-
     // =========================================================================
     // DUAL-CAMERA IMAGE STITCHING & CALIBRATION HELPERS
     // =========================================================================
@@ -3099,9 +2974,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
       return null;
     }
-    function showUnresolvedValidation(shelfId) {
-      showToast(`${shelfId}: Unresolved - will recheck automatically. Check camera visibility and lighting.`, 'warning');
-    }
     // Metadata-only queue. One bridge lease covers every shelf and dashboard window.
     class ValidationQueue {
       constructor(options) {
@@ -3500,55 +3372,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     }
 
     // Trigger Test Capture via Local Bridge
-    function triggerTestCapture(shelfId, action) {
-      return runFullDualCamValidation(shelfId, action, false);
-    }
-
     // =========================================================================
     // FETCH COMPARTMENTS & COMPARISON LOGS
     // =========================================================================
     const processedTriggerIds = new Set();
-    const DEFAULT_6_COMPARTMENTS = ALL_SHELF_IDS.map((shelfId, i) => ({
-      shelf_id: shelfId, rack_id: 'RACK_01',
-      mqtt_client_id: `ESP32_R1_C${i + 1}`, secondary_mqtt_client_id: `ESP32_R1_C${i + 1}_CAM2`,
-      camera_name: `ESP32 Dual Node R1-C${i + 1}`,
-      ip_address: null, secondary_ip_address: null,
-      current_quantity: null, inventory_mode:'runtime', precision:'UNKNOWN', state:'Starting', max_capacity: 5, status: 'OFFLINE'
-    }));
-
-
     // Minimal clean schema columns only (runtime telemetry such as status / RSSI / baselines is bridge-RAM only)
-    const COMPARTMENT_COLS = 'shelf_id,rack_id,current_quantity,max_capacity,tm_model_url,esp32_cameras(id,device_id,camera_name,angle_index,ip_address)';
-
-    // Joins public.esp32_cameras (angle 1 = Back, angle 2 = Front) into compartment rows and
-    // preserves in-memory runtime telemetry from the previous snapshot.
-    function mergeCloudCompartments(rows, cameraRows) {
-      const camsByShelf = {};
-      (cameraRows || []).forEach(cam => {
-        if (!cam || !cam.shelf_id) return;
-        (camsByShelf[cam.shelf_id] = camsByShelf[cam.shelf_id] || {})[Number(cam.angle_index) === 2 ? 2 : 1] = cam;
-      });
-      const prevByShelf = {};
-      (compartmentsData || []).forEach(c => { if (c && c.shelf_id) prevByShelf[c.shelf_id] = c; });
-
-      return rows.map(row => {
-        const prev = prevByShelf[row.shelf_id] || {};
-        const cameras = row.esp32_cameras || Object.values(camsByShelf[row.shelf_id] || {});
-        const c1 = cameras.find(cam => Number(cam.angle_index) === 1);
-        const c2 = cameras.find(cam => Number(cam.angle_index) === 2);
-        const out = { ...prev, ...row };
-        if (c1) {
-          out.ip_address = cleanCameraHost(c1.ip_address) || prev.ip_address;
-          out.mqtt_client_id = c1.device_id || prev.mqtt_client_id;
-          out.camera_name = c1.camera_name || prev.camera_name;
-        }
-        if (c2) {
-          out.secondary_ip_address = cleanCameraHost(c2.ip_address) || prev.secondary_ip_address;
-          out.secondary_mqtt_client_id = c2.device_id || prev.secondary_mqtt_client_id;
-        }
-        return out;
-      });
-    }
 
     // Single shared merge of local bridge telemetry (/esp32_nodes) used by loadCompartments() and pollLocalBridgeOnly()
     function consumeCctvTrigger(trigger) {
@@ -4076,7 +3904,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     // 100% client-side YOLO11n-Pose ONNX on Vercel
     // =========================================================================
 
-    const DEFAULT_3_CCTV_CAMERAS = [];
 
     const DEFAULT_COMPARTMENT_ROIS = {
       'SHELF_R1_C1': { x_min: 0.60, y_min: 0.19, x_max: 0.81, y_max: 0.42 }, // mirrors 385, 93, 516, 201 on 640x480
@@ -4302,15 +4129,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       status: () => {}
     });
     let diagnosticConsensusVotes={},diagnosticLastMatch=null,diagnosticConsensusTimer=null,diagnosticConsensusStartup=0;
-    function roiPolygonsOverlap(a,b){
-      for(const polygon of [a,b])for(let i=0;i<polygon.length;i++){
-        const p=polygon[i],q=polygon[(i+1)%polygon.length],axis=[p[1]-q[1],q[0]-p[0]];
-        const project=points=>points.map(v=>v[0]*axis[0]+v[1]*axis[1]);
-        const pa=project(a),pb=project(b);
-        if(Math.max(...pa)<=Math.min(...pb)+1e-9 || Math.max(...pb)<=Math.min(...pa)+1e-9)return false;
-      }
-      return true;
-    }
     function evaluateDiagnosticConsensus(votes,now){
       const fresh=Object.fromEntries(Object.entries(votes).filter(([id,v])=>['CCTV_01','CCTV_02','CCTV_03'].includes(id) && v.camera_id===id && v.camera_role===(id==='CCTV_03'?'SIDE_PRESENCE':'GRID_6_ROI') && Number.isFinite(v.dwell_duration_seconds) && v.dwell_duration_seconds>=1.2 && Number.isFinite(v.oks_confidence) && v.oks_confidence>=0 && v.oks_confidence<=1 && Number.isFinite(v.detected_at) && now-v.detected_at<=4 && v.detected_at-now<=1));
       const a=fresh.CCTV_01,b=fresh.CCTV_02,side=fresh.CCTV_03;
@@ -4817,11 +4635,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
-    function getCctvConsensusMode() {
-      return cctvCamerasList.filter(cam => cam.is_active !== false).length;
-    }
-
-    function saveCctvConsensusMode() { initCompartmentTrackers(); }
     function initCctvConsensusMode() {
       const select = document.getElementById('cctvConsensusSelect');
       if (select) select.value = '3';
@@ -4853,23 +4666,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const message=`${location} — ${result.expected_action}: ${cameras.join(' + ')} agree. ${result.test_only ? 'TEST ONLY: no ESP32 capture or inventory update was sent.' : result.inventory_eligible===false?'Shelf count is not Ready. Inventory confirmation is paused; no action was queued.':'CCTV consensus received. Box-count verification is still required before inventory changes.'}`;
       document.getElementById('cctvConsensusResult').textContent=message;
     }
-    const diagnosticWristGestures=[];
-    function recordDiagnosticWristGesture(shelfId,action,dwellDuration,cameraId){
-      diagnosticWristGestures.unshift({shelf_id:shelfId,action,timestamp:Date.now()/1000,camera_id:cameraId,duration:dwellDuration});
-      diagnosticWristGestures.splice(5);
-      const host=document.getElementById('cctvDiagnosticActivity');if(!host)return;
-      host.replaceChildren();
-      const add=(parent,tag,text)=>{const node=document.createElement(tag);node.textContent=text;parent.appendChild(node);return node;};
-      add(host,'h4','Latest preview gestures — not confirmed actions');
-      add(host,'p','Single-camera browser observations only. No vote sent, ESP32 capture requested or inventory changed. Authoritative picking intents require the approved native service.');
-      for(const gesture of diagnosticWristGestures){
-        const view=localIntentPresentation(gesture),card=add(host,'article','');
-        card.style.cssText='padding:10px;margin:6px 0;border:1px dashed var(--border);border-radius:8px;';
-        add(card,'strong',`Wrist/presence dwell observed · ${gesture.camera_id}`);
-        add(card,'div',view.location);
-        add(card,'div',`${view.time} · ${Number(gesture.duration).toFixed(1)}s · ${gesture.shelf_id==='ANY_SHELF'?'Presence only; compartment/action not identified':view.action+' candidate (unverified)'}`);
-      }
-    }
     async function dispatchDwellTrigger(shelfId, action, dwellDuration, conf) {
       const triggerEl = document.getElementById('cctvLastTriggerText');
       const cameraId = activeCctvId;
@@ -4877,7 +4673,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const triggerId = `dwell-${cameraId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
       try {
         if(window.inventoryMode==='runtime'){
-          recordDiagnosticWristGesture(shelfId,action,dwellDuration,cameraId);
           if(triggerEl)triggerEl.textContent=`${shelfId}: Preview gesture observed — no vote sent (native service required)`;
           return {status:'diagnostic_only',consensus_met:false,authorizes_write:false};
         }

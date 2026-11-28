@@ -21,14 +21,6 @@ function dashboardPageUrl(page,{calibrate=false}={}) {
   if(calibrate)query.set('calibrate','1');
   return paths[page]+(query.size?'?'+query:'');
 }
-function navigateToDashboardPage(page,options={}) {
-  if(page==='cctv' && dashboardPageForPath(location.pathname)==='cctv') {
-    if(options.calibrate)toggleRoiCalibrationMode(true);
-    document.getElementById('cctvCameraManagerPanel').scrollIntoView({behavior:'smooth'});
-    return;
-  }
-  location.assign(dashboardPageUrl(page,options));
-}
 // Same index.html, so rewrite an old ESP32 CAMs address in place (keeping ?bridge=) to Panel 2's anchor.
 if(isLegacyEsp32Path(location.pathname) && typeof history!=='undefined' && typeof history.replaceState==='function')
   history.replaceState(null,'',dashboardPageUrl('dashboard')+'#all-cameras');
