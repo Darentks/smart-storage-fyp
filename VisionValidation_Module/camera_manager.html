@@ -24,7 +24,6 @@
     /* Keep shared control dependencies mounted, but show only the requested page. */
     html[data-dashboard-page="dashboard"] [data-dashboard-view]:not([data-dashboard-view="dashboard"]),
     html[data-dashboard-page="cctv"] [data-dashboard-view]:not([data-dashboard-view="cctv"]),
-    html[data-dashboard-page="esp32"] [data-dashboard-view]:not([data-dashboard-view="esp32"]),
     [data-dashboard-view][hidden] { display: none !important; }
     .dashboard-nav { display:flex;flex-wrap:wrap;gap:8px;margin:16px 0; }
     .dashboard-nav a { text-decoration:none; }
@@ -236,6 +235,20 @@
     .cctv-empty-actions .btn-action {font-size:12px;padding:6px 12px;}
     @media (max-width:520px){.cctv-empty-text{display:none;}}
     #cctvSingleView {display:contents;}
+    .esp32-overview {margin-top:16px;padding:12px 16px;border:1px solid var(--border);border-radius:12px;background:rgba(15,23,42,.55);}
+    .esp32-overview > summary {cursor:pointer;font-weight:600;font-size:13px;color:var(--text-primary);}
+    .esp32-overview > summary:focus-visible,.esp32-thumb:focus-visible {outline:2px solid var(--primary);outline-offset:3px;}
+    .esp32-overview-intro {font-size:12px;line-height:1.5;color:var(--text-secondary);margin:10px 0;}
+    .esp32-overview-actions {display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;font-size:12px;color:var(--text-muted);}
+    #esp32CameraManagerGrid {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,200px),1fr));gap:10px;}
+    #esp32CameraManagerGrid article {min-width:0;font-size:12px;line-height:1.4;}
+    #esp32CameraManagerGrid article h3 {margin:0 0 4px;font-size:13px;}
+    #esp32CameraManagerGrid article p {margin:2px 0;overflow-wrap:anywhere;}
+    #esp32CameraManagerGrid article .btn-action {margin-top:6px;padding:4px 10px;font-size:12px;}
+    .esp32-thumb {display:block;width:100%;padding:0;border:0;border-radius:6px;background:none;cursor:zoom-in;}
+    .esp32-thumb img {display:block;width:100%;height:110px;object-fit:contain;}
+    .esp32-picture-head {display:flex;justify-content:space-between;align-items:center;gap:12px;}
+    #esp32PictureDialog img {display:block;max-width:100%;max-height:75vh;margin:12px auto 0;}
     #cctvSingleView[hidden],#cctvConsensusTest[hidden] {display:none;}
     .cctv-consensus-test {display:flex;flex-direction:column;gap:12px;}
     .cctv-consensus-head {display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px 16px;}
@@ -964,7 +977,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     <nav class="dashboard-nav" aria-label="Main navigation">
       <a class="btn-action" data-dashboard-link="dashboard" href="/">Inventory Dashboard</a>
       <a class="btn-action" data-dashboard-link="cctv" href="/cctv-configuration">CCTV Configuration</a>
-      <a class="btn-action" data-dashboard-link="esp32" href="/esp32-cams">ESP32 CAMs</a>
     </nav>
     <p data-dashboard-view="dashboard" style="padding:0 24px;color:var(--text-muted)">Active vision layout: 5 slots. Bottom: F1, M1, B1. Top: M2, B2. Front camera: F1, M1, M2. Back camera: B1, B2; conditional M2 cross-check. Existing database capacities require an explicit layout migration.</p>
     <p data-dashboard-view="dashboard" style="padding:0 24px;color:var(--text-muted)">Recommended loading practice: Fill B2 before placing M2 to reduce B1 occlusion. This is advice, not a validity rule.</p>
@@ -1172,6 +1184,19 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
         </div>
       </div>
+
+      <!-- All 6 cameras (formerly the ESP32 CAMs page): read-only registration check, probes and cached pictures. -->
+      <details class="esp32-overview" id="all-cameras" ontoggle="onEsp32OverviewToggle(this)">
+        <summary>All 6 cameras &middot; registration, online status, last picture</summary>
+        <p class="esp32-overview-intro">Six fixed Back/Front cameras for C1&ndash;C3. Pictures are the native processor's last cached
+          pictures (no new capture), loaded when this section first opens; click a picture to see it full size.
+          Probe all 6 checks what each camera reports about itself and never changes registrations.</p>
+        <div class="esp32-overview-actions">
+          <button type="button" class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">Probe all 6 cameras</button>
+          <span id="ignoredCameraRows"></span>
+        </div>
+        <div id="esp32CameraManagerGrid"></div>
+      </details>
     </section>
 
     </div>
@@ -1356,15 +1381,16 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     </section>
 
     </div>
-    <section class="panel" data-dashboard-view="esp32" id="esp32CameraManagerPanel" style="margin-top:24px">
-      <h2 class="panel-title">ESP32 CAMs</h2>
-      <p>Six fixed Back/Front cameras for C1?C3. Click Show cached picture to view a camera. Pictures stay fixed until you refresh them. Configure registrations in Panel 2 on the Inventory Dashboard.</p>
-      <button class="btn-action" id="probeAllNodesBtn" onclick="probeAllEsp32CameraNodes()">Probe all 6 cameras</button>
-      <p id="ignoredCameraRows"></p>
-      <div id="esp32CameraManagerGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px"></div>
-    </section>
   </main>
 
+
+  <dialog id="esp32PictureDialog" aria-labelledby="esp32PictureCaption">
+    <div class="esp32-picture-head">
+      <strong id="esp32PictureCaption"></strong>
+      <form method="dialog"><button type="submit" class="btn-action">Close</button></form>
+    </div>
+    <img id="esp32PictureFull" alt="Full-size cached camera picture" />
+  </dialog>
 
   <dialog id="cctvEditDialog" aria-labelledby="cctvEditTitle"
     oncancel="if(cctvEditSaving)event.preventDefault()" onclose="resetCctvEditor()">
@@ -2433,6 +2459,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if(line){line.textContent=text;if(typeof markStatusError==='function')markStatusError(line,isError);}
       showToast(text,isError?'error':'success');
     }
+    let esp32IpSaveInProgress = false;  // read by Probe all 6 (camera_replacement.js)
     async function saveAssignedShelfIps() {
       const shelfId = refShelfSelect ? refShelfSelect.value : 'SHELF_R1_C1';
       const ip1 = cleanCameraHost(refEspIpInput ? refEspIpInput.value : '');
@@ -2446,8 +2473,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         camIpSaveReport('The Back and Front cameras need different IP addresses. Nothing was saved.', true);
         return;
       }
-      const resetButton = () => { if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf'; } };
+      const resetButton = () => {
+        if (saveCamIpsBtn) { saveCamIpsBtn.disabled = false; saveCamIpsBtn.innerHTML = '&#128190; Save Assigned IPs to Shelf'; }
+        esp32IpSaveInProgress = false; renderEsp32CameraManager();
+      };
       if (saveCamIpsBtn) { saveCamIpsBtn.disabled = true; saveCamIpsBtn.textContent = 'Saving...'; }
+      esp32IpSaveInProgress = true; renderEsp32CameraManager();
       const roles = { 1: 'Back (CAM1)', 2: 'Front (CAM2)' }, wanted = { 1: ip1, 2: ip2 };
       const outcome = { 1: 'not saved', 2: 'not saved' };
       const summary = () => `${shelfId}: ${roles[1]} ${outcome[1]}; ${roles[2]} ${outcome[2]}.`;
@@ -2486,7 +2517,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           }
           resetButton();
           camIpSaveReport(rollbackFailed
-            ? `${summary()} The shelf now has mismatched cameras in the database; press Save again or correct it in the 6-Camera Manager. Bridge unchanged.`
+            ? `${summary()} The shelf now has mismatched cameras in the database; press Save again, then check All 6 cameras at the bottom of this panel. Bridge unchanged.`
             : `${summary()} Both cameras keep their previous addresses. Bridge unchanged.`, true);
           return;
         }

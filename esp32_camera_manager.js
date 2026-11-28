@@ -58,8 +58,37 @@ async function refreshCachedCameraPicture(deviceId){
   const pending=loadCachedCameraPicture(slot);
   renderEsp32CameraManager();await pending;
 }
+// Probe results live here, never in the shared esp32CameraNodesList rows that Panel 2 and status polling use.
+const esp32ProbeResults=new Map();
+let esp32Probing=false,esp32OverviewLoaded=false;
+function esp32IpSaveRunning(){return typeof esp32IpSaveInProgress!=='undefined' && esp32IpSaveInProgress===true;}
+// First opening of the All 6 cameras section loads each registered camera's cached picture once.
+function loadEsp32OverviewPictures(){
+  if(esp32OverviewLoaded || !document.getElementById('all-cameras')?.open)return;
+  const slots=fixedCameraRegistrations(esp32CameraNodesList).filter(s=>s.status==='Registered');
+  if(!slots.length)return;
+  esp32OverviewLoaded=true;
+  for(const slot of slots)loadCachedCameraPicture(slot);
+  renderEsp32CameraManager();
+}
+function onEsp32OverviewToggle(details){if(details?.open)loadEsp32OverviewPictures();}
+function openEsp32Picture(deviceId){
+  const record=esp32CachedPictures.get(deviceId),slot=FIXED_CAMERA_SLOTS.find(s=>s.device_id===deviceId);
+  const dialog=document.getElementById('esp32PictureDialog'),full=document.getElementById('esp32PictureFull');
+  if(!record?.image || !slot || !dialog || !full)return;
+  full.src=record.image;full.alt=`${slot.label} ${slot.role} cached picture, full size`;
+  document.getElementById('esp32PictureCaption').textContent=`${slot.label} · ${slot.shelf_id} ${slot.role}`+
+    (Number.isFinite(record.timestamp)?' · '+new Date(record.timestamp*1000).toLocaleString():'');
+  if(!dialog.open)dialog.showModal();
+}
 function renderEsp32CameraManager(){
   const grid=document.getElementById('esp32CameraManagerGrid');if(!grid)return;
+  const probeButton=document.getElementById('probeAllNodesBtn');
+  if(probeButton){
+    probeButton.disabled=esp32Probing || esp32IpSaveRunning();
+    probeButton.textContent=esp32Probing?'Probing…':'Probe all 6 cameras';
+    probeButton.title=esp32IpSaveRunning()?'Wait for Save Assigned IPs to finish':'';
+  }
   const escape=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   document.getElementById('ignoredCameraRows').textContent=`${esp32CameraNodesList.filter(r=>!FIXED_CAMERA_SLOTS.some(s=>s.device_id===r.device_id)).length} retired/unrecognised rows ignored`;
   const slots=fixedCameraRegistrations(esp32CameraNodesList),bridge=getBridgeUrl();
@@ -69,11 +98,12 @@ function renderEsp32CameraManager(){
     const cached=valid && record?.key===bridge+'|'+slot.device_id?record:null;
     const image=cached?.loading?'':cached?.image||'';
     const timestamp=!cached?.loading && Number.isFinite(cached?.timestamp)?new Date(cached.timestamp*1000).toLocaleString():'';
-    return `<article style="padding:14px;border:1px solid #475569;border-radius:8px"><h3>${slot.label} · ${slot.shelf_id} ${slot.role}</h3>
+    const probe=esp32ProbeResults.get(slot.device_id),live=valid && probe?.ip===slot.ip_address?probe:null;
+    return `<article style="padding:10px;border:1px solid #475569;border-radius:8px"><h3>${slot.label} · ${slot.shelf_id} ${slot.role}</h3>
       <p>${slot.device_id}<br>${slot.ip_address}</p><p>${slot.status} ${escape(slot.errors.join('; '))}</p>
-      <p>${escape(slot.row?.status||'OFFLINE')} ${escape(slot.row?.probe_issue||'')}</p>
-      ${image?`<img data-camera-id="${slot.device_id}" src="${escape(image)}" alt="${slot.label} ${slot.role} cached picture" style="width:100%;height:140px;object-fit:contain">`:''}
-      ${cached?.loading?'<div role="status" aria-busy="true" style="height:140px;display:grid;place-items:center;color:var(--text-muted)">Loading cached picture…</div>':''}
+      <p>${escape(live?live.status:slot.row?.status||'OFFLINE')} ${escape(live?.issue||'')}${live?.rssi_dbm!=null?' · '+escape(live.rssi_dbm)+' dBm':''}</p>
+      ${image?`<button type="button" class="esp32-thumb" onclick="openEsp32Picture('${slot.device_id}')" aria-label="Open ${slot.label} ${slot.role} picture full size"><img data-camera-id="${slot.device_id}" src="${escape(image)}" alt="${slot.label} ${slot.role} cached picture"></button>`:''}
+      ${cached?.loading?'<div role="status" aria-busy="true" style="height:110px;display:grid;place-items:center;color:var(--text-muted)">Loading cached picture…</div>':''}
       <p role="status">${escape(cached?.loading?'Loading…':cached?.message||'Click Show cached picture to view this camera.')}${timestamp?' · '+escape(timestamp):''}</p>
       <button class="btn-action" ${valid && !cached?.loading?'':'disabled'} onclick="refreshCachedCameraPicture('${slot.device_id}')">${cached?.loading?'Loading…':cached?.image?'Refresh cached picture':'Show cached picture'}</button>
       </article>`;
@@ -87,17 +117,25 @@ function renderEsp32CameraManager(){
     }
   }
   for(const slot of slots)if(slot.status!=='Registered')esp32CachedPictures.delete(slot.device_id);
+  loadEsp32OverviewPictures();
 }
+// Button-only probe. Blocked while Save Assigned IPs runs; results never overwrite the shared rows.
 async function probeAllEsp32CameraNodes(){
-  await Promise.all(fixedCameraRegistrations(esp32CameraNodesList).filter(s=>s.status==='Registered').map(async slot=>{
-    try{const live=await probeCameraStatus(slot.ip_address);
-      const mismatch=['device_id','shelf_id'].filter(k=>live[k]!==slot[k]);
-      if(cleanCameraHost(live.ip_address)!==slot.ip_address)mismatch.push('IP');
-      if(live.camera_role && live.camera_role!==slot.role)mismatch.push('role');
-      if(live.angle_index && Number(live.angle_index)!==slot.angle_index)mismatch.push('angle');
-      Object.assign(slot.row,{status:mismatch.length?'MISMATCH':'ONLINE',probe_issue:mismatch.length?mismatch.join(', ')+' mismatch':'',rssi_dbm:live.rssi_dbm});
-    }catch(error){slot.row.status='OFFLINE';}
-  }));renderEsp32CameraManager();
+  if(esp32Probing || esp32IpSaveRunning())return;
+  esp32Probing=true;renderEsp32CameraManager();
+  try{
+    await Promise.all(fixedCameraRegistrations(esp32CameraNodesList).filter(s=>s.status==='Registered').map(async slot=>{
+      let result;
+      try{const live=await probeCameraStatus(slot.ip_address);
+        const mismatch=['device_id','shelf_id'].filter(k=>live[k]!==slot[k]);
+        if(cleanCameraHost(live.ip_address)!==slot.ip_address)mismatch.push('IP');
+        if(live.camera_role && live.camera_role!==slot.role)mismatch.push('role');
+        if(live.angle_index && Number(live.angle_index)!==slot.angle_index)mismatch.push('angle');
+        result={status:mismatch.length?'MISMATCH':'ONLINE',issue:mismatch.length?mismatch.join(', ')+' mismatch':'',rssi_dbm:typeof live.rssi_dbm==='number'?live.rssi_dbm:null};
+      }catch(error){result={status:'OFFLINE',issue:'',rssi_dbm:null};}
+      esp32ProbeResults.set(slot.device_id,{...result,ip:slot.ip_address});
+    }));
+  }finally{esp32Probing=false;renderEsp32CameraManager();}
 }
 // Fixed camera monitoring only: registration checks, probing and snapshots.
 renderEsp32CameraManager();
