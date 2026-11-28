@@ -1131,15 +1131,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 value="192.168.0.202" oninput="markIpInputDirty(2)" />
             </div>
 
-            <div class="form-group" style="margin-bottom: 12px;">
-              <label for="visionBoostSelect">&#128161; Low-Light Vision Boost</label>
-              <select id="visionBoostSelect" class="form-control">
-                <option value="off" selected>&#128247; Raw Sensor Image (No Brightness Boost)</option>
-                <option value="auto">&#128161; Auto Low-Light Boost (CLAHE + Shadow Gamma)</option>
-                <option value="high">&#128261; Maximum Brightness Boost (Very Dark Shelf)</option>
-              </select>
-            </div>
-
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
               <button type="button" class="btn-action" id="scanCamIpsBtn"
                 style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
@@ -1727,6 +1718,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         sourceRectWidth:width, sourceRectHeight:height, outputWidth:224, outputHeight:224,
         mode:'full-frame-resize'};
     }
+    // The Low-Light Vision Boost dropdown was removed; dashboard captures and inference stay raw (boost off),
+    // which was that dropdown's default, so the four former readers use 'off'. Explicit per-call boosts (validation retry rounds) are unchanged.
     function preprocessForTM(source, boost = 'off') {
       tmFrameParameters(source);
       const canvas = enhanceCanvasLowLight(source, boost, true);
@@ -1800,7 +1793,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const usable = image => image && (!(image instanceof HTMLImageElement) ||
           (image.complete && image.naturalWidth > 0 && image.src));
         if (!usable(backImgEl) || !usable(frontImgEl)) return pending('Both camera images are required');
-        const boostMode = overrideBoost || document.getElementById('visionBoostSelect')?.value || 'off';
+        const boostMode = overrideBoost || 'off';
         backTarget = preprocessForTM(backImgEl, boostMode);
         frontTarget = preprocessForTM(frontImgEl, boostMode);
         const valid = image => image instanceof HTMLCanvasElement && image.width === 224 && image.height === 224;
@@ -2734,7 +2727,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         previewBanner('Fresh pictures received. Running browser Teachable Machine classification...');
         const images=await Promise.all([decodeTMImage(row.image_back),decodeTMImage(row.image_front)]);
         if(!current())return;
-        const candidate=await predictDualCamerasWithTM(images[0],images[1],document.getElementById('visionBoostSelect')?.value || 'off');
+        const candidate=await predictDualCamerasWithTM(images[0],images[1],'off');
         console.info('[Diagnostic] Skipping inventory write');
         if(current()){renderPanelObservation({...row,candidate},false);showManualPreviewAge();}
       }catch(error){if(current())previewBanner('Pictures captured, but classification failed: '+error.message,true);}
@@ -2931,8 +2924,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     async function fetchLiveAnglePreviewLocked(shelfId, assignedIp1, assignedIp2, selectedBoost) {
       const ip1 = assignedIp1;
       const ip2 = assignedIp2;
-      const boostSelect = document.getElementById('visionBoostSelect');
-      const boostVal = selectedBoost || (boostSelect ? boostSelect.value : 'auto');
+      const boostVal = selectedBoost || 'off';
       const t0 = performance.now();
       const bridgeUrl = `${getBridgeUrl()}/esp32_preview?tm_raw=1&ip=${encodeURIComponent(ip1)}&ip2=${encodeURIComponent(ip2)}&shelf_id=${encodeURIComponent(shelfId)}&boost=${encodeURIComponent(boostVal)}&_t=${Date.now()}`;
 
@@ -3388,7 +3380,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           }
         };
 
-        const uiBoost = document.getElementById('visionBoostSelect')?.value || 'auto';
+        const uiBoost = 'off';
         const attempts = [
           { delay: 0, boost: uiBoost, duty: 140 },
           { delay: 2000, boost: 'auto', duty: 180 },
