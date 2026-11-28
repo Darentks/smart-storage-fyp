@@ -1274,7 +1274,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </select>
               <select id="cctvRoiTool" class="form-control" style="font-size:11px; width:150px; height:28px;" onchange="resetRoiEditor()">
                 <option value="edit">Edit / move ROI</option>
-                <option value="polygon">Draw 4 corners</option>
                 <option value="rectangle">Draw rectangle</option>
               </select>
               <button type="button" class="btn-action" onclick="insetSelectedRoi()" title="Shrink the selected region 5% on every side">Inset 5%</button>
@@ -1287,7 +1286,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <button type="button" class="btn-action" onclick="undoSelectedRoi()" title="Restore only the selected shelf to how it was when calibration opened">Undo this shelf</button>
               <button type="button" class="btn-action" onclick="deleteSelectedRoi()" title="Remove the selected shelf's region so you can draw it again">Delete region</button>
 
-              <span style="font-size: 11px; color: var(--text-muted);">Grid: draw 4 corners in perimeter order, or edit handles. Side: drag a rectangle.</span>
+              <span style="font-size: 11px; color: var(--text-muted);">Drag a rectangle, then drag its corner handles to fit the shelf (side camera: rectangle only).</span>
               <span id="cctvCalibCoordsText"
                 style="font-size: 10px; font-family: var(--font-mono); color: var(--primary); background: rgba(0,0,0,0.3); padding: 2px 6px; border-radius: 4px;">x:
                 0.60–0.81, y: 0.19–0.42</span>
@@ -5143,7 +5142,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     function roiCleared(roi) { return !!roi && Array.isArray(roi.vertices) && roi.vertices.length === 0; }
     function chooseRoiRedrawTool() {
       const tool = document.getElementById('cctvRoiTool');
-      if (tool) tool.value = activeCameraRole === 'SIDE_PRESENCE' ? 'rectangle' : 'polygon';
+      if (tool) tool.value = 'rectangle';
     }
     function deleteSelectedRoi() {
       resetRoiEditor();
@@ -5152,7 +5151,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       chooseRoiRedrawTool();
       initCompartmentTrackers();
       updateCalibCoordsText();
-      showToast(`Deleted the ${id} region. Draw it again (${activeCameraRole === 'SIDE_PRESENCE' ? 'drag a rectangle' : 'click 4 corners'}), or use Undo this shelf.`, 'info');
+      showToast(`Deleted the ${id} region. Drag a rectangle to draw it again, or use Undo this shelf.`, 'info');
     }
     async function clearAllRois() {
       resetRoiEditor();
@@ -5198,15 +5197,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         if (!isCalibratingRoi) return;
         e.preventDefault();canvas.setPointerCapture(e.pointerId);
         const point=pos(e), tool=document.getElementById('cctvRoiTool').value;
-        if (tool==='polygon' && activeCameraRole!=='SIDE_PRESENCE') {
-          roiDraft.push(point);
-          if (roiDraft.length===4) {
-            try { setEditedRoi(roiDraft); document.getElementById('cctvRoiTool').value='edit'; }
-            catch(error) { showToast(error.message,'error'); }
-            roiDraft=[];
-          }
-          return;
-        }
         const points=roiVertices(activeCctvRois[selectedRoiId()],canvas.width,canvas.height);
         const rect=canvas.getBoundingClientRect();
         const vertex=points.findIndex(p=>Math.hypot((p[0]-point[0])*rect.width,(p[1]-point[1])*rect.height)<14);
@@ -5230,9 +5220,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           const dy=Math.max(-Math.min(...edit.points.map(v=>v[1])),Math.min(1-Math.max(...edit.points.map(v=>v[1])),p[1]-edit.start[1]));
           points=edit.points.map(([x,y])=>[x+dx,y+dy]);
         }
-        if (points && validQuad(points)) { setEditedRoi(points);roiDraft=points; }
+        if (points && validQuad(points)) { setEditedRoi(points);roiDraft=points;edit.drew=true; }
       });
-      const finish=()=>{roiPointerEdit=null;roiDraft=[];};
+      const finish=()=>{
+        if (roiPointerEdit?.rectangle && roiPointerEdit.drew) document.getElementById('cctvRoiTool').value='edit';
+        roiPointerEdit=null;roiDraft=[];
+      };
       canvas.addEventListener('pointerup',finish);
       canvas.addEventListener('pointercancel',finish);
       document.getElementById('cctvCalibShelfSelect')?.addEventListener('change',resetRoiEditor);
@@ -5411,7 +5404,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const tool = document.getElementById('cctvRoiTool');
       if (tool) {
         tool.value = 'edit';
-        for (const option of tool.options) if (option.value === 'polygon') option.disabled = activeCameraRole === 'SIDE_PRESENCE';
       }
       const calibSelect = document.getElementById('cctvCalibShelfSelect');
       if (calibSelect) {
