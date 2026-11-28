@@ -6,6 +6,7 @@ for(const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g))new vm.
 assert.doesNotMatch(html,/@latest/,'no unpinned @latest CDN scripts');
 for(const pinned of ['@tensorflow/tfjs@4.22.0/dist/tf.min.js','@teachablemachine/image@0.8.5/dist/teachablemachine-image.min.js','onnxruntime-web@1.19.0/dist/ort.min.js'])
  assert.ok(html.includes('https://cdn.jsdelivr.net/npm/'+pinned),pinned);
+assert.doesNotMatch(html,/<\/main>/,'page container is a <div>; no stray </main>');
 const rewrites=JSON.parse(fs.readFileSync('vercel.json','utf8')).rewrites;
 assert.equal(JSON.parse(fs.readFileSync('vercel.json','utf8')).cleanUrls,true);
 assert.ok(rewrites.every(r=>!r.destination.endsWith('.html')),'cleanUrls rewrite destinations must be extensionless');
