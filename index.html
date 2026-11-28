@@ -923,6 +923,23 @@
     @media(prefers-reduced-motion:reduce) {
       *,*::before,*::after {animation:none !important;transition:none !important;scroll-behavior:auto !important;}
     }
+
+    /* Progressive disclosure keeps setup and technical evidence available without crowding inventory. */
+    .system-settings {margin:16px 0 24px;border:1px solid var(--border);border-radius:12px;background:var(--surface);}
+    .system-settings > summary {padding:12px 16px;cursor:pointer;font-size:14px;font-weight:500;}
+    .system-settings .config-bar {margin:0;border:0;border-top:1px solid var(--border);border-radius:0;}
+    .system-settings .config-bar-left {display:grid;grid-template-columns:repeat(3,max-content);gap:12px;max-width:100%;}
+    .system-settings .config-bar-left label,.system-settings .config-bar-left input,.system-settings .config-bar-left span {grid-column:1/-1;}
+    .system-settings .config-bar-left input {max-width:400px;}
+    .loading-guide {margin:0 16px 16px;}
+    .loading-guide summary,.shelf-details summary,.prediction-details summary,.card-footer summary {cursor:pointer;color:var(--text-secondary);font-size:13px;}
+    .loading-guide p {margin-top:8px;color:var(--text-secondary);max-width:76ch;}
+    .shelf-details {margin-top:8px;font-size:13px;}
+    .shelf-details p {white-space:pre-wrap;color:var(--text-secondary);margin:8px 0;font-size:13px;line-height:1.5;}
+    .prediction-details {margin:12px 0;}
+    .stat-val.qty {font-size:24px;}
+    .card-footer {align-items:flex-start;}
+    @media(max-width:600px) {.system-settings .config-bar-left {display:flex;flex-wrap:wrap;}.system-settings .config-bar-left label,.system-settings .config-bar-left input,.system-settings .config-bar-left span {width:100%;}}
   </style>
   <script>
 /* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
@@ -1087,67 +1104,70 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <div class="brand-title">
           <span>Smart Storage</span> &bull; <span id="dashboardPageTitle">Inventory Dashboard</span>
         </div>
-        <div class="brand-subtitle">
-          Shelf inventory &bull; CCTV Configuration &bull; ESP32 CAMs
-        </div>
+        <div class="brand-subtitle">Rack 01</div>
       </div>
       <div class="status-group">
         <!-- Supabase Status -->
-        <div class="status-pill" title="Supabase Cloud DB Connectivity">
-          <div id="dbStatusDot" class="status-dot"></div>
-          <span id="dbStatusText">Cloud DB: Checking...</span>
+        <div class="status-pill" title="Inventory connection status">
+          <div id="dbStatusDot" class="status-dot" hidden></div>
+          <span id="dbStatusText">Waiting for inventory</span>
         </div>
         <!-- Local Bridge Status -->
         <div class="status-pill" title="Local Python Bridge (camera_service.py on port 8008)">
           <div id="bridgeStatusDot" class="status-dot"></div>
-          <span id="bridgeStatusText">Local Bridge: Idle</span>
+          <span id="bridgeStatusText">Bridge not connected</span>
         </div>
       </div>
     </header>
 
     <nav class="dashboard-nav" aria-label="Main navigation">
-      <a class="btn-action" data-dashboard-link="dashboard" href="/">Inventory Dashboard</a>
-      <a class="btn-action" data-dashboard-link="cctv" href="/cctv-configuration">CCTV Configuration</a>
+      <a class="btn-action" data-dashboard-link="dashboard" href="/">Inventory</a>
+      <a class="btn-action" data-dashboard-link="cctv" href="/cctv-configuration">CCTV setup</a>
     </nav>
-    <p data-dashboard-view="dashboard" style="padding:0 24px;color:var(--text-muted)">Active vision layout: 5 slots. Bottom: F1, M1, B1. Top: M2, B2. Front camera: F1, M1, M2. Back camera: B1, B2; conditional M2 cross-check. Existing database capacities require an explicit layout migration.</p>
-    <p data-dashboard-view="dashboard" style="padding:0 24px;color:var(--text-muted)">Recommended loading practice: Fill B2 before placing M2 to reduce B1 occlusion. This is advice, not a validity rule.</p>
+    <details class="system-settings">
+      <summary>Connection &amp; models</summary>
     <!-- Bridge Config & Quick Action Bar -->
     <div class="config-bar" style="flex-wrap: wrap; gap: 12px;">
       <div class="config-bar-left" style="flex-wrap: wrap; gap: 8px;">
-        <label for="bridgeUrlInput">Local Bridge URL:</label>
+        <label for="bridgeUrlInput">Bridge address</label>
         <input type="text" id="bridgeUrlInput" value="http://localhost:8008" placeholder="http://localhost:8008" />
-        <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check Bridge</button>
-        <a class="btn-action" href="smartstorage://restart" title="Starts the local bridge if it is stopped, or restarts it after confirmation. Restarting clears RAM counts.">Restart local bridge</a>
-        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Downloads and checks the Front and Back models from deploy/tm-model-sources.json while the bridge keeps running. The bridge restarts (clearing counts) only if a model changed.">Get latest TM models</a>
-        <span id="tmModelUpdateStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted)">Model updates run on this PC through the Windows launcher.</span>
+        <button type="button" class="btn-action" onclick="checkLocalBridgeHealth()">Check connection</button>
+        <a class="btn-action" href="smartstorage://restart" title="Starts the local bridge if it is stopped, or restarts it after confirmation. Restarting clears RAM counts.">Restart bridge</a>
+        <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Downloads and checks the Front and Back models from deploy/tm-model-sources.json while the bridge keeps running. The bridge restarts (clearing counts) only if a model changed.">Update models</a>
+        <span id="tmModelUpdateStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted)">Updates use the Windows launcher on this PC.</span>
         <span id="tmLoadedModelVersions" style="font-size:12px;color:var(--text-muted)">Loaded TM versions: waiting for bridge.</span>
-        <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart also starts a stopped bridge; restarting clears counts and scans again.</span>
+        <span style="font-size:12px;color:var(--text-muted)">Restart clears current counts and starts a new scan. Windows launcher required.</span>
       </div>
       <div data-dashboard-view="dashboard" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">CAM2 Front model URL (6 classes):</label>
+        <label for="tmModelUrlInput" style="font-size: 12px; font-weight: 600; color: var(--text-muted);">Front model URL</label>
         <input type="text" id="tmModelUrlInput" style="min-width: 280px;" class="form-control"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
-        <label for="tmBackModelUrlInput">CAM1 Back model URL (4 classes):</label>
+        <label for="tmBackModelUrlInput">Back model URL</label>
         <input type="text" id="tmBackModelUrlInput" class="form-control" style="min-width:280px;"
           placeholder="https://teachablemachine.withgoogle.com/models/.../" />
         <button type="button" class="btn-action" id="loadTmModelBtn" onclick="loadTeachableMachineModel()">
-          Load Both TM Models</button>
+          Load models</button>
       </div>
     </div>
+      <details class="loading-guide" data-dashboard-view="dashboard">
+        <summary>Loading guide</summary>
+        <p>Each shelf holds up to 5 boxes. Bottom: F1, M1, B1. Top: M2, B2.</p>
+        <p>Load B2 before M2 to help the Back camera see B1. If B1 is hidden, the count may be a range.</p>
+      </details>
+    </details>
 
     <div data-dashboard-view="dashboard">
     <!-- Panel 1: Compartment Inventory Grid & Count Checks -->
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title"> Panel 1 &bull; Shelf inventory</h2>
-          <p class="panel-desc">Latest verified stock level, automatic 30-second count checks, and hardware
-            telemetry from the local RAM inventory bridge.</p>
+          <h2 class="panel-title"> Shelf inventory</h2>
+          <p class="panel-desc">Current counts and shelf readiness</p>
         </div>
-        <span class="badge badge-online" id="liveBadge"><span class="pulse-dot"></span>Live Sync Active</span>
+        <span class="badge badge-online" id="liveBadge"><span class="pulse-dot"></span>Automatic checks</span>
       </div>
 
-      <p class="panel-desc">Counts update automatically: each shelf is counted when the bridge starts and re-checked every 30 seconds. If a shelf can't be counted, a <strong>Retry scan</strong> button appears on it.</p>
+      <p class="panel-desc">Counts refresh automatically. Use Retry scan if a shelf needs attention.</p>
       <div id="compartmentsGrid" class="compartments-grid">
         <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: var(--text-muted);">
           Loading local shelf telemetry...
@@ -1159,12 +1179,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     <section class="panel">
       <div class="panel-header">
         <div>
-          <h2 class="panel-title"> Panel 2 &bull; Front/Back Camera Diagnostics
+          <h2 class="panel-title"> Front/Back Camera Diagnostics
           </h2>
-          <p class="panel-desc">Back and Front camera previews with read-only model predictions. Confirmed inventory is shown in Panel 1.</p>
+          <p class="panel-desc">Preview and test camera predictions</p>
         </div>
         <div style="display: flex; gap: 8px; align-items: center;">
-          <span class="badge badge-online" id="tmStatusBadge"><span class="pulse-dot"></span>TM AI Model Active</span>
+          <span class="badge badge-online" id="tmStatusBadge"><span class="pulse-dot"></span>Models loaded</span>
         </div>
       </div>
 
@@ -1175,7 +1195,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div class="dual-preview-grid">
             <!-- CAM 1 Back Box -->
             <div class="cam-box" id="backCamBox">
-              <span class="cam-badge-tag"> CAM 1 (Back Angle)</span>
+              <span class="cam-badge-tag"> Back ? CAM1</span>
               <div id="backPlaceholder" class="snapshot-placeholder">
                 <span>Waiting for Cam 1...</span>
               </div>
@@ -1185,7 +1205,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
             <!-- CAM 2 Front Box -->
             <div class="cam-box" id="frontCamBox">
-              <span class="cam-badge-tag"> CAM 2 (Front Angle)</span>
+              <span class="cam-badge-tag"> Front ? CAM2</span>
               <div id="frontPlaceholder" class="snapshot-placeholder">
                 <span>Waiting for Cam 2...</span>
               </div>
@@ -1199,8 +1219,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div
             style="background: var(--surface-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; margin-bottom: 14px;">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-              <span style="font-size: 13px; font-weight: 600; color: var(--text-muted);"> Combined Stitched
-                Feed [BACK CAM | FRONT CAM]</span>
+              <span style="font-size: 13px; font-weight: 600; color: var(--text-muted);">Back / Front comparison</span>
               <span id="previewOverlayText"
                 style="font-size: 11px; font-family: var(--font-mono); color: var(--primary);">Live Preview Idle</span>
             </div>
@@ -1213,9 +1232,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             </div>
           </div>
 
-          <div id="tmDiagnostics" style="display:none; padding:12px; border:1px solid var(--border); border-radius:8px;"></div>
+          <details class="prediction-details"><summary>Prediction details</summary><div id="tmDiagnostics" style="display:none; padding:12px; border:1px solid var(--border); border-radius:8px;"></div>
 
-          <p class="diagnostic-label">Camera diagnostics <span>Predictions are not confirmed inventory</span></p>
+          </details>
+          <p class="diagnostic-label">Camera diagnostics <span>Diagnostic only ? Does not update inventory</span></p>
           <!-- Prominent status banner -->
           <div id="previewProcessorBanner" role="status">Checking bridge connection...</div>
           <div id="previewModeBadge">No observation</div>
@@ -1792,11 +1812,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         window.tmFrontModel = front;
         window.tmBackModel = back;
         window.tmModel = {front, back};
-        loadTmModelBtn.textContent = 'TM Occupancy: Active';
+        loadTmModelBtn.textContent = 'Models loaded';
         showToast('TM occupancy model loaded. Front: F1/M1/M2; back: B1/B2 with visibility-aware M2 check; capacity: 5.', 'success');
       } catch (error) {
         window.tmModel = window.tmFrontModel = window.tmBackModel = null;
-        loadTmModelBtn.textContent = 'Load Both TM Models';
+        loadTmModelBtn.textContent = 'Load models';
         showToast(error.message, 'error');
       } finally { loadTmModelBtn.disabled = false; }
     }
@@ -2261,14 +2281,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
         if (resp.ok) {
           bridgeStatusDot.className = 'status-dot connected';
-          bridgeStatusText.textContent = `Local Bridge: Active (${url})`;
+          bridgeStatusText.textContent = 'Bridge connected';
           showToast('Local Python bridge connected!', 'success');
         } else {
           throw new Error('Not OK');
         }
       } catch (err) {
         bridgeStatusDot.className = 'status-dot';
-        bridgeStatusText.textContent = 'Local Bridge: Offline';
+        bridgeStatusText.textContent = 'Bridge offline';
       }
     }
 
@@ -3618,9 +3638,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const response=await fetch(`${getBridgeUrl()}/esp32_nodes`,{cache:'no-store'});
         if(!response.ok)throw Error('Local bridge unavailable');
         mergeBridgeTelemetry(await response.json());
-        dbStatusText.textContent='Inventory: Local Bridge';
+        dbStatusText.textContent='Inventory connected';
       } catch(error) {
-        dbStatusText.textContent='Local Bridge offline; displayed inventory may be stale';
+        dbStatusText.textContent='Inventory offline ? Counts may be stale';
       }
       renderCompartments(compartmentsData || []);
       syncSelectedShelfTelemetry();
@@ -3670,7 +3690,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const resp = await fetch(`${getBridgeUrl()}/esp32_nodes`, { cache: 'no-store' });
         if (resp.ok) {
           bridgeStatusDot.className = 'status-dot connected';
-          bridgeStatusText.textContent = 'Local Bridge: Active';
+          bridgeStatusText.textContent = 'Bridge connected';
 
           const bridgeJson = await resp.json();
           if (mergeBridgeTelemetry(bridgeJson)) {
@@ -3681,7 +3701,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         }
       } catch (err) {
         bridgeStatusDot.className = 'status-dot idle';
-        bridgeStatusText.textContent = 'Local Bridge: Offline';
+        bridgeStatusText.textContent = 'Bridge offline';
       }
 
       // An unavailable bridge cannot authorize a displayed live quantity.
@@ -3750,6 +3770,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         return;
       }
 
+      // Keep disclosure choices while telemetry refreshes the shelf cards.
+      const openDetails = new Set(Array.from(compartmentsGrid.querySelectorAll?.('details[data-disclosure][open]') || []).map(node => node.dataset.disclosure));
       compartmentsGrid.innerHTML = items.map((comp) => {
         const isOnline = (comp.status || '').toUpperCase() === 'ONLINE';
         const view=runtimeInventoryView(comp,shelfOperatingStates[comp.shelf_id]);
@@ -3768,8 +3790,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div class="card-top">
               <div>
                 <div class="card-title">${comp.shelf_id}</div>
-                <div style="color:var(--warning);white-space:pre-wrap">${readinessText(view.state)}: ${readinessText(view.reason || shelfOperatingStates[comp.shelf_id]?.reason || 'Waiting for initial camera count')}</div>
-                <div class="card-subtitle">${comp.mqtt_client_id} &bull; ${comp.camera_name || 'ESP32 Node'}</div>
+                <div style="color:var(--warning);white-space:pre-wrap">${readinessText(view.state)}${view.reason?`: ${readinessText(view.reason)}`:''}</div>
+
               </div>
               <div>
                 ${isOnline
@@ -3783,21 +3805,24 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div class="card-stats">
               <div class="stat-item">
                 <span class="stat-lbl">Stock quantity</span>
-                <span class="stat-val qty">${view.display?readinessText(view.display):`${qtyText} / ${maxQty} Boxes`}</span><span style="white-space:pre-wrap;font-size:11px">${readinessText(view.details)}</span>
+                <span class="stat-val qty">${view.display?readinessText(view.display.split('\n')[0].split(' ? ')[0]):`${qtyText} / ${maxQty} Boxes`}</span>
+                <details class="shelf-details" data-disclosure="${readinessText(comp.shelf_id)}:count"><summary>Count details</summary><p>${readinessText(view.display || view.label)}</p><p>${readinessText(view.details)}</p></details>
                 <div class="slot-bar">${slotPillsHtml}</div>
               </div>
               <div class="stat-item">
-                <span class="stat-lbl">Wi-Fi RSSI / IP</span>
+                <details class="shelf-details" data-disclosure="${readinessText(comp.shelf_id)}:device"><summary>Device details</summary>
+                <p>${readinessText(comp.mqtt_client_id || 'Unknown device')} ? ${readinessText(comp.camera_name || 'ESP32 camera')}</p>
+                <span class="stat-lbl">Wi-Fi / address</span>
                 <span class="stat-val" style="font-size: 13px;">${rssi}</span>
                 <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 4px;">
                   ${comp.ip_address || 'DHCP'}
-                </span>
+                </span></details>
               </div>
             </div>
 
             <div class="card-footer">
               <div style="font-size: 11px; color: var(--text-muted);">
-                Heap: <strong>${comp.free_heap_bytes ? Math.round(comp.free_heap_bytes / 1024) + ' KB' : 'N/A'}</strong>
+                <details data-disclosure="${readinessText(comp.shelf_id)}:memory"><summary>Memory</summary><span>${comp.free_heap_bytes ? Math.round(comp.free_heap_bytes / 1024) + ' KB free' : 'Unknown'}</span></details>
               </div>
               <div style="display: flex; gap: 6px;">
                 <span>${view.actions?readinessText(view.actions):'Native validation: monitoring only'}</span>${view.canRetry?`<button type="button" class="btn-action" onclick="requestNativeScan('${comp.shelf_id}')">Retry scan</button>`:''}
@@ -3806,6 +3831,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           </div>
         `;
       }).join('');
+      for (const node of compartmentsGrid.querySelectorAll?.('details[data-disclosure]') || []) node.open = openDetails.has(node.dataset.disclosure);
     }
 
     function renderComparisonLogs() {} // Retained response adapter; Panel 3 is retired.

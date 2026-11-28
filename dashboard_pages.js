@@ -25,7 +25,7 @@ function dashboardPageUrl(page,{calibrate=false}={}) {
 if(isLegacyEsp32Path(location.pathname) && typeof history!=='undefined' && typeof history.replaceState==='function')
   history.replaceState(null,'',dashboardPageUrl('dashboard')+'#all-cameras');
 const DASHBOARD_PAGE=dashboardPageForPath(location.pathname);
-const DASHBOARD_PAGE_TITLES={dashboard:'Inventory Dashboard',cctv:'CCTV Configuration'};
+const DASHBOARD_PAGE_TITLES={dashboard:'Inventory',cctv:'CCTV setup'};
 // #all-cameras opens the section; scroll only once its tab (the Inventory Dashboard view) is showing.
 function openAllCamerasSection() {
   if(location.hash!=='#all-cameras')return;
