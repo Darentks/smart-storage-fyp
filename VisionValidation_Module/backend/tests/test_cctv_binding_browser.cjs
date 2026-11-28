@@ -9,7 +9,7 @@ const vm=require('node:vm');
       executeFullDualCamValidation:async(...args)=>{ctx.execution=args;},
       ValidationQueue:class{constructor(options){ctx.worker=options;}}};
     vm.createContext(ctx);
-    vm.runInContext(html.slice(html.indexOf('    const validationWorker ='),html.indexOf('    let tmExportBusy')),ctx);
+    vm.runInContext(html.slice(html.indexOf('    const validationWorker ='),html.indexOf('    function decodeTMImage(')),ctx);
     const item={shelfId:'s',source:'CCTV',action:'BORROW',trigger:{trigger_id:'selected'},claimed:true};
     await ctx.worker.claim(item,'lease');
     assert.deepEqual(JSON.parse(JSON.stringify(requests.at(-1))),{path:'/cctv_trigger_claim',payload:{trigger_id:'selected',shelf_id:'s',validation_token:'lease'}});

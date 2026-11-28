@@ -103,7 +103,7 @@ class InventoryTests(unittest.TestCase):
             evidence['samples'][0][key]=80
 
     def test_fail_closed(self):
-        for case in ('low', 'nan', 'invalid_back', 'changed', 'duplicate', 'missing', 'stale', 'skew', 'fast', 'count', 'shelf', 'short', 'legacy'):
+        for case in ('low', 'nan', 'invalid_back', 'changed', 'duplicate', 'missing', 'stale', 'skew', 'fast', 'count', 'shelf', 'short', 'long', 'legacy'):
             evidence, captures = self.fixture()
             count, shelf = 3, 's'
             if case == 'low': evidence['samples'][0]['front_confidence'] = 79
@@ -117,7 +117,8 @@ class InventoryTests(unittest.TestCase):
             if case == 'fast': captures['1']['completed_at'] = 90.1
             if case == 'count': count = 4
             if case == 'shelf': shelf = 'other'
-            if case == 'short': evidence['samples'].pop()
+            if case == 'short': del evidence['samples'][inventory.REQUIRED_MATCHING_PAIRS-1:]
+            if case == 'long': evidence['samples'].append(dict(evidence['samples'][0]));evidence['samples'].append(dict(evidence['samples'][0]))
             if case == 'legacy': evidence = None
             with self.subTest(case=case), self.assertRaises(ValueError):
                 inventory.validate_evidence(evidence, count, 100, captures, shelf)
@@ -151,6 +152,31 @@ class TransitionTests(unittest.TestCase):
 
 
 class RangeProofTests(unittest.TestCase):
+    def test_only_two_front_classes_support_hidden_b1(self):
+        for front in inventory.FRONT_STATES:
+            if front in ('Front_011','Front_111'):
+                observed=inventory.decode_observation(front,'Back_X01')
+                self.assertEqual(observed['count_range'],(2,3) if front=='Front_011' else (3,4))
+                self.assertIsNone(observed['slots'][3]);self.assertIsNone(observed['total'])
+            else:
+                with self.assertRaisesRegex(ValueError,'M2 conflict'):inventory.decode_observation(front,'Back_X01')
+
+    def test_all_120_hidden_b1_transitions_keep_conservative_completion_proof(self):
+        states=[]
+        for front in inventory.FRONT_STATES:
+            for back in inventory.BACK_STATES:
+                try:states.append(inventory.decode_observation(front,back)['slots'])
+                except ValueError:pass
+        checked=accepted=0
+        for before in states:
+            for after in states:
+                if None not in (*before,*after):continue
+                for action in ('BORROW','RETURN'):
+                    result=inventory.prove_unit_action(before,after,action)
+                    checked+=1;accepted+=result.accepted
+                    self.assertFalse(result.accepted,(before,after,action))
+        self.assertEqual((checked,accepted),(120,0))
+
     def test_all_24_pairs_keep_exact_range_and_conflict_contract(self):
         exact=partial=conflict=0
         for front in inventory.FRONT_STATES:

@@ -59,6 +59,15 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(status,200);self.assertEqual(result['comparison']['delta'],-1)
             self.assertTrue(all(call.kwargs['table']=='esp32_cameras' for call in transport.call_args_list))
 
+    def test_confirmed_empty_device_database_clears_saved_bindings(self):
+        from src import config_loader
+        cache=dict(data=[dict(shelf_id=SID,ip_address='old')],fetched_at=0)
+        ns=dict(runtime_enabled=runtime_enabled,time=types.SimpleNamespace(time=lambda:self.now),SUPABASE_COMPARTMENTS_CACHE=cache,SUPABASE_CACHE_TTL_SEC=0,RUNTIME_INVENTORY=self.runtime)
+        exec(compile(ast.Module(body=[self.bridge_function('get_cached_compartments')],type_ignores=[]),'bridge','exec'),ns)
+        with patch.object(config_loader,'_supabase_rest',return_value=[]):
+            self.assertEqual(ns['get_cached_compartments'](),[])
+        self.assertEqual(cache['data'],[])
+
     def test_mqtt_disconnect_invalidates_without_browser_and_reconnect_needs_new_pairs(self):
         from src.runtime_validation import reset_runtime_evidence
         from src.mqtt_client import MQTTClientNode
@@ -151,11 +160,12 @@ class RuntimeTests(unittest.TestCase):
         self.now=1000.;self.runtime=RuntimeInventory('run',2,clock=lambda:self.now,monotonic=lambda:self.now)
         self.runtime.snapshot(SID);self.runtime.models_ready=True;self.sequence=0
 
-    def fresh(self,front='Front_111',back='Back_11X',lease='lease'):
+    def fresh(self,front='Front_111',back='Back_11X',lease='lease',down=()):
         born=self.now;self.now+=7
-        for c in ('CCTV_01','CCTV_02','CCTV_03'):self.runtime.camera(c,self.now,True)
+        for c in ('CCTV_01','CCTV_02','CCTV_03'):self.runtime.camera(c,self.now,c not in down)
         samples=[];receipts={}
-        for i in range(3):
+        from src.dual_cam_inventory import REQUIRED_MATCHING_PAIRS
+        for i in range(REQUIRED_MATCHING_PAIRS):
             self.sequence+=1;identity=str(self.sequence)
             receipts[identity]=dict(run_id='run',shelf_id=SID,validation_token=lease,complete=True,completed_at=born+2+i*2,duration_ms=100)
             samples.append(dict(front_class=front,back_class=back,front_confidence=95,back_confidence=94,capture={'id':identity}))
@@ -184,8 +194,30 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.models_ready=False
         with self.assertRaisesRegex(ValueError,'models'):self.runtime.accept(SID,**args)
 
+    def test_initial_missing_cctvs_do_not_interrupt_count_evidence(self):
+        version=self.runtime.snapshot(SID)['version']
+        quiet_since=self.runtime.last_interaction
+        self.now+=3
+        for cid in ('CCTV_01','CCTV_02','CCTV_03'):
+            self.runtime.camera(cid,self.now,False)
+        self.assertEqual(self.runtime.snapshot(SID)['version'],version)
+        self.assertEqual(self.runtime.last_interaction,quiet_since)
+        self.assertTrue(self.runtime.environment_ready(require_cameras=False))
+        samples,receipts=self.fresh(down=('CCTV_01','CCTV_02','CCTV_03'))
+        result=self.runtime.accept(SID,run_id='run',event_id='count-only',expected_version=version,
+            samples=samples,captures=receipts,lease='lease',source='STARTUP')
+        self.assertEqual(result['readiness'],'Ready')
+        self.assertFalse(self.runtime.snapshot(SID)['action_capable'])
+
     def test_camera_outage_invalidates_baseline_and_old_capture_authority(self):
         self.baseline();version=self.runtime.snapshot(SID)['version'];self.runtime.camera('CCTV_02',self.now,False)
+        self.assertEqual(self.runtime.snapshot(SID)['current_quantity'],5)
+        with self.assertRaises(ValueError):self.runtime.environment_ready()
+        self.now+=5
+        self.runtime.camera('CCTV_02',self.now,False)
+        self.assertEqual(self.runtime.snapshot(SID)['version'],version)
+        self.now+=.01
+        self.runtime.camera('CCTV_02',self.now,False)
         state=self.runtime.snapshot(SID);self.assertEqual(state['state'],'Offline');self.assertIsNone(state['current_quantity'])
         self.assertGreater(state['version'],version);self.assertIsNotNone(state['baseline'])
         with self.assertRaises(ValueError):self.runtime.environment_ready()
@@ -193,6 +225,32 @@ class RuntimeTests(unittest.TestCase):
         result=self.runtime.accept(SID,run_id='run',event_id='camera-recovery',expected_version=state['version'],samples=samples,captures=receipts,lease='lease',source='STARTUP')
         self.assertEqual(result['comparison']['state_delta'],'BASELINE');self.assertIsNone(result['comparison']['delta'])
         self.assertEqual(self.runtime.snapshot(SID)['current_quantity'],4)
+
+    def test_cctv_stop_retains_count_timestamp_but_revokes_action_authority(self):
+        self.baseline();before=self.runtime.snapshot(SID)
+        self.runtime.interrupt_actions(disable_actions=True)
+        self.runtime.set_cctv_enabled(False)
+        stopped=self.runtime.snapshot(SID)
+        self.assertEqual(stopped['current_quantity'],before['current_quantity'])
+        self.assertEqual(stopped['observed_at'],before['observed_at'])
+        self.assertFalse(stopped['action_capable']);self.assertFalse(stopped['cctv_enabled'])
+        self.assertGreater(stopped['version'],before['version'])
+        with self.assertRaisesRegex(ValueError,'CCTV'):self.runtime.environment_ready()
+        self.runtime.set_cctv_enabled(True)
+        self.assertFalse(self.runtime.cameras_fresh(),'old feeds cannot become live through Start')
+        self.assertFalse(self.runtime.snapshot(SID)['action_capable'],'fresh count required after Start')
+
+    def test_short_cctv_dropout_recovers_count_without_using_stale_frames(self):
+        self.baseline();before=self.runtime.snapshot(SID)
+        self.runtime.camera('CCTV_02',self.now,False)
+        with self.assertRaisesRegex(ValueError,'CCTV'):self.runtime.environment_ready()
+        self.now+=4.9
+        for cid in ('CCTV_01','CCTV_02','CCTV_03'):self.runtime.camera(cid,self.now,True)
+        after=self.runtime.snapshot(SID)
+        self.assertEqual(after['current_quantity'],before['current_quantity'])
+        self.assertEqual(after['observed_at'],before['observed_at'])
+        self.assertEqual(after['version'],before['version'])
+        self.assertTrue(self.runtime.environment_ready())
 
     def action(self,front='Front_011',back='Back_11X',**changes):
         version=self.runtime.snapshot(SID)['version'];timestamp=self.now+.2;samples,receipts=self.fresh(front,back)
@@ -215,20 +273,21 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result['comparison']['delta'],1)
         self.assertEqual(self.runtime.snapshot(SID)['current_quantity'],5)
 
-    def test_unknown_action_is_held_even_when_f1_removal_is_visible(self):
+    def test_visible_change_with_hidden_b1_is_unattributed_not_an_accepted_action(self):
         self.baseline('Front_111','Back_X01');args=self.action('Front_011','Back_X01')
-        with self.assertRaisesRegex(ValueError,'VISIBLE_CHANGE_NET_UNPROVEN'):self.runtime.accept(SID,**args)
-        state=self.runtime.snapshot(SID);self.assertEqual(state['baseline']['slots'],[1,1,1,None,0])
-        self.assertEqual(state['state'],'Held');self.assertIsNotNone(state['latest_observation'])
+        result=self.runtime.accept(SID,**args)
+        self.assertEqual(result['action'],'UNATTRIBUTED');self.assertFalse(result['action_authorized'])
+        state=self.runtime.snapshot(SID);self.assertEqual(state['baseline']['slots'],[0,1,1,None,0])
+        self.assertEqual(state['state'],'Ready');self.assertIsNone(state['current_quantity'])
 
     def test_stale_event_wrong_action_and_relocation_do_not_change_baseline(self):
-        for overrides in ({'timestamp':1},{'expected_action':'RETURN'},{'shelf_id':'SHELF_R1_C2'},{'validation_token':'other'}):
+        for overrides in ({'timestamp':1},{'shelf_id':'SHELF_R1_C2'},{'validation_token':'other'}):
             self.setUp();self.baseline();args=self.action(**overrides)
             with self.assertRaises(ValueError):self.runtime.accept(SID,**args)
             self.assertEqual(self.runtime.snapshot(SID)['baseline']['total'],5)
 
-    def test_three_distinct_fresh_samples_and_confidence(self):
-        for issue in ('confidence','duplicate','stale','partial','conflict','run','lease','separation','unstable'):
+    def test_two_consecutive_distinct_fresh_samples_and_confidence(self):
+        for issue in ('confidence','duplicate','stale','partial','conflict','run','lease','separation','unstable','too_few','too_many'):
             self.setUp();samples,receipts=self.fresh()
             if issue=='confidence':samples[0]['back_confidence']=79.99
             if issue=='duplicate':samples[1]['capture']=samples[0]['capture']
@@ -239,6 +298,8 @@ class RuntimeTests(unittest.TestCase):
             if issue=='lease':receipts['1']['validation_token']='old'
             if issue=='separation':receipts['2']['completed_at']=receipts['1']['completed_at']+.5
             if issue=='unstable':samples[1]['front_class']='Front_011'
+            if issue=='too_few':samples=samples[:1]
+            if issue=='too_many':samples=samples+[dict(samples[0])]
             with self.assertRaises(ValueError,msg=issue):self.runtime.accept(SID,run_id='run',event_id='baseline',expected_version=0,samples=samples,captures=receipts,lease='lease',source='STARTUP')
             self.assertIsNone(self.runtime.snapshot(SID)['baseline'])
 
@@ -275,11 +336,11 @@ class RuntimeTests(unittest.TestCase):
 
     def test_hold_recovery_uses_new_pairs_and_never_accepts_or_replays_old_intent(self):
         from src.runtime_validation import validate_runtime_request
-        self.baseline('Front_111','Back_X01');args=self.action('Front_011','Back_X01');old_receipts=copy.deepcopy(args['captures'])
+        self.baseline('Front_111','Back_X01');args=self.action('Front_111','Back_X01');old_receipts=copy.deepcopy(args['captures'])
         with tempfile.TemporaryDirectory() as directory:
             context,body=self.range_adapter_fixture(args,directory)
             status,result=validate_runtime_request(body,**context)
-            self.assertEqual(status,409);self.assertEqual(result['code'],'VISIBLE_CHANGE_NET_UNPROVEN')
+            self.assertEqual(status,409);self.assertEqual(result['code'],'UNKNOWN_B1')
             self.assertEqual(self.runtime.snapshot(SID)['baseline']['slots'],[1,1,1,None,0])
             self.assertFalse(self.runtime.snapshot(SID)['latest_observation']['action_authorized'])
             self.assertEqual(context['intents'].snapshot()[0]['status'],'HELD')
@@ -314,7 +375,7 @@ class RuntimeTests(unittest.TestCase):
             context['intents'].update('event','HELD','UNKNOWN_B1')
             self.assertEqual(context['intents'].snapshot()[0]['status'],'ACCEPTED')
 
-    def test_native_range_action_collects_three_pairs_before_server_proof(self):
+    def test_native_range_action_collects_two_matching_pairs_before_server_proof(self):
         from test_autonomous_edge import CoordinatorTests
         fixture=CoordinatorTests();candidate=dict(front_class='Front_011',back_class='Back_X01',front_confidence=95,back_confidence=96,
             slots=[0,1,1,None,0],count_range=[2,3],hold='UNKNOWN_B1')
@@ -322,14 +383,14 @@ class RuntimeTests(unittest.TestCase):
         processor.runtime=Mock();processor.runtime.snapshot.return_value={'version':4}
         processor.validate(dict(shelf_id=SID,ip_address='back',secondary_ip_address='front'),dict(trigger_id='event',source='CCTV',expected_action='BORROW'))
         payload=next(body for path,body in fixture.calls if path=='/esp32_validate')
-        self.assertEqual(payload['source'],'CCTV');self.assertEqual(len(payload['dual_cam_evidence']['samples']),3)
+        self.assertEqual(payload['source'],'CCTV');self.assertEqual(len(payload['dual_cam_evidence']['samples']),2)
         processor.runtime.accept.assert_not_called()
 
     def test_native_scheduler_automatically_selects_held_shelf_for_rebaseline(self):
         from test_autonomous_edge import CoordinatorTests
         fixture=CoordinatorTests();processor=fixture.make()
         shelf=dict(shelf_id=SID,ip_address='back',secondary_ip_address='front')
-        processor.shelves.return_value=[shelf];processor.pending.return_value=[]
+        processor.shelves.return_value=[shelf];processor.pending.return_value=[];processor.models_loaded=True
         processor.request=Mock(return_value={'shelves':{SID:{'state':'Held'}}});processor.validate=Mock()
         processor.stop.is_set.side_effect=[False,True]
         processor._validations();processor.validate.assert_called_once_with(shelf,None)
@@ -343,7 +404,7 @@ class RuntimeTests(unittest.TestCase):
         processor.validate(dict(shelf_id=SID,ip_address='back',secondary_ip_address='front'))
         payload=next(body for path,body in fixture.calls if path=='/esp32_validate')
         self.assertIsNone(payload['predicted_box_count']);self.assertEqual(payload['expected_version'],4)
-        self.assertEqual(len(payload['dual_cam_evidence']['samples']),3)
+        self.assertEqual(len(payload['dual_cam_evidence']['samples']),2)
 
     def test_real_runtime_handler_uses_ram_without_cloud_commit(self):
         path=Path(__file__).parents[2]/'camera_service.py';tree=ast.parse(path.read_text(encoding='utf8'))
@@ -353,7 +414,7 @@ class RuntimeTests(unittest.TestCase):
         cloud=Mock(side_effect=AssertionError('Inventory cloud path must not run'))
         readiness=types.SimpleNamespace(set=Mock())
         from src.runtime_validation import validate_runtime_request
-        ns=dict(LOCAL_INTENTS=None,CCTV_ALIGN_STATE={},validate_runtime_request=validate_runtime_request, CCTV_CONSENSUS_LOCK=threading.RLock(),PENDING_CCTV_TRIGGERS=[],RUNTIME_INVENTORY=self.runtime,RECHECKS=types.SimpleNamespace(global_lock=threading.RLock(),owns=lambda *args:True),
+        ns=dict(CONSENSUS_WINDOW_SEC=4.0,LOCAL_INTENTS=None,CCTV_ALIGN_STATE={},validate_runtime_request=validate_runtime_request, CCTV_CONSENSUS_LOCK=threading.RLock(),PENDING_CCTV_TRIGGERS=[],RUNTIME_INVENTORY=self.runtime,RECHECKS=types.SimpleNamespace(global_lock=threading.RLock(),owns=lambda *args:True),
             mqtt_bridge=types.SimpleNamespace(is_connected=True),DUAL_CAM_CAPTURE_LOCK=threading.Lock(),DUAL_CAM_CAPTURES=receipts,
             READINESS=readiness,failure_code=lambda exc:'VALIDATION_REJECTED',load_inventory_state=cloud,commit_inventory_state=cloud,
             get_cached_compartments=lambda:[dict(shelf_id=SID,ip_address='back',secondary_ip_address='front')])
@@ -364,5 +425,100 @@ class RuntimeTests(unittest.TestCase):
         ns['_runtime_validate'](handler,body)
         self.assertEqual(handler._send_json.call_args.args[0],200)
         self.assertEqual(handler._send_json.call_args.args[1]['precision'],'RANGE');cloud.assert_not_called()
+
+    # ---- count readiness vs action readiness -------------------------------------------------
+    def degraded_baseline(self,front='Front_111',back='Back_11X',transport_ok=True):
+        """Count taken while CCTV is down (or MQTT is down): valid as a count, never as an action baseline."""
+        self.runtime.camera('CCTV_02',self.now,False)  # outage first: the quiet window restarts, then the rack is scanned
+        samples,receipts=self.fresh(front,back,down=('CCTV_02',))
+        return self.runtime.accept(SID,run_id='run',event_id='degraded',expected_version=self.runtime.snapshot(SID)['version'],samples=samples,
+            captures=receipts,lease='lease',source='STARTUP',transport_ok=transport_ok)
+
+    def test_initial_count_is_accepted_without_cctv_but_is_not_action_capable(self):
+        result=self.degraded_baseline();self.assertEqual(result['readiness'],'Ready');self.assertEqual(result['comparison']['quantity_after'],5)
+        snapshot=self.runtime.snapshot(SID);self.assertTrue(snapshot['authoritative']);self.assertFalse(snapshot['action_capable'])
+        with self.assertRaisesRegex(ValueError,'rescan required'):self.runtime.accept(SID,**self.action())
+        self.assertEqual(self.runtime.snapshot(SID)['current_quantity'],5,'a refused action never changes the count')
+
+    def test_cctv_actions_still_require_live_cctv_even_with_an_action_capable_baseline(self):
+        self.baseline();self.assertTrue(self.runtime.snapshot(SID)['action_capable'])
+        args=self.action();self.runtime.camera('CCTV_02',self.now,False)
+        with self.assertRaises(ValueError):self.runtime.accept(SID,**args)
+
+    def test_mqtt_outage_also_makes_the_count_non_actionable(self):
+        samples,receipts=self.fresh()
+        self.runtime.accept(SID,run_id='run',event_id='b',expected_version=0,samples=samples,captures=receipts,lease='lease',source='STARTUP',transport_ok=False)
+        self.assertFalse(self.runtime.snapshot(SID)['action_capable'])
+
+    def test_count_only_baseline_is_replaced_by_a_fresh_scan_once_everything_is_live(self):
+        self.degraded_baseline();samples,receipts=self.fresh('Front_011','Back_11X')  # all CCTV healthy again
+        result=self.runtime.accept(SID,run_id='run',event_id='rescan',expected_version=self.runtime.snapshot(SID)['version'],samples=samples,captures=receipts,lease='lease',source='STARTUP')
+        self.assertEqual(result['comparison']['state_delta'],'BASELINE');self.assertIsNone(result['comparison']['delta'],'a recount is never a historical BORROW/RETURN')
+        self.assertTrue(self.runtime.snapshot(SID)['action_capable']);self.assertEqual(self.runtime.snapshot(SID)['current_quantity'],4)
+        samples,receipts=self.fresh()
+        with self.assertRaisesRegex(ValueError,'cannot be silently rebaselined'):
+            self.runtime.accept(SID,run_id='run',event_id='again',expected_version=self.runtime.snapshot(SID)['version'],samples=samples,captures=receipts,lease='lease',source='STARTUP')
+
+    def test_environment_ready_separates_count_from_action_requirements(self):
+        self.now+=7
+        with self.assertRaisesRegex(ValueError,'CCTV'):self.runtime.environment_ready()
+        self.assertTrue(self.runtime.environment_ready(require_cameras=False))
+        self.runtime.models_ready=False
+        with self.assertRaisesRegex(ValueError,'models'):self.runtime.environment_ready(require_cameras=False)
+        self.runtime.models_ready=True;self.runtime.camera('CCTV_01',self.now,True,True)
+        with self.assertRaisesRegex(ValueError,'Quiet'):self.runtime.environment_ready(require_cameras=False)
+
+    def test_wait_reason_names_only_fresh_interacting_cameras_and_then_quiet_delay(self):
+        self.runtime.camera('CCTV_01',self.now,True,True)
+        self.runtime.camera('CCTV_02',self.now,True,False)
+        self.runtime.camera('CCTV_03',self.now,True,True)
+        reason=self.runtime.environment_wait_reason(require_cameras=False)
+        self.assertIn('CCTV_01 detects someone in a shelf region',reason)
+        self.assertNotIn('CCTV_03',reason)
+        self.assertNotIn('CCTV_02',reason)
+        self.now+=1.6
+        reason=self.runtime.environment_wait_reason(require_cameras=False)
+        self.assertNotIn('detects someone',reason,'stale sightings must not be reported as current people')
+        self.assertIn('another 0.4 s',reason)
+        self.now+=.5
+        self.assertIsNone(self.runtime.environment_wait_reason(require_cameras=False))
+        self.assertTrue(self.runtime.environment_ready(require_cameras=False))
+
+    def test_wait_reason_distinguishes_models_and_action_camera_requirements(self):
+        self.runtime.models_ready=False
+        self.assertIn('models',self.runtime.environment_wait_reason(require_cameras=False))
+        self.runtime.models_ready=True;self.now+=3
+        self.assertIsNone(self.runtime.environment_wait_reason(require_cameras=False))
+        self.assertIn('CCTV_02',self.runtime.environment_wait_reason())
+        self.runtime.set_cctv_enabled(False)
+        self.assertEqual(self.runtime.environment_wait_reason(),'Waiting for CCTV to start')
+        self.assertIsNone(self.runtime.environment_wait_reason(require_cameras=False))
+
+    def test_rescan_resets_only_the_requested_shelf_and_keeps_a_historical_count(self):
+        self.baseline();other=RuntimeInventory('run',2,clock=lambda:self.now,monotonic=lambda:self.now);other.snapshot('SHELF_R1_C2')
+        before=self.runtime.snapshot(SID)['version'];self.runtime.reset_shelf(SID)
+        snapshot=self.runtime.snapshot(SID);self.assertEqual(snapshot['state'],'Starting');self.assertGreater(snapshot['version'],before)
+        self.assertFalse(snapshot['authoritative']);self.assertIsNone(snapshot['current_quantity']);self.assertFalse(snapshot['action_capable'])
+        self.assertEqual(snapshot['historical']['total'],5,'last count stays visible only as history')
+        with self.assertRaises(ValueError):self.runtime.reset_shelf('SHELF_R1_C9')
+        samples,receipts=self.fresh()
+        with self.assertRaisesRegex(ValueError,'Stale run or inventory version'):  # in-flight evidence from before the reset is rejected
+            self.runtime.accept(SID,run_id='run',event_id='late',expected_version=before,samples=samples,captures=receipts,lease='lease',source='STARTUP')
+
+    def test_runtime_adapter_takes_the_initial_count_without_mqtt_but_actions_need_it(self):
+        from src.runtime_validation import validate_runtime_request
+        samples,receipts=self.fresh()
+        for receipt in receipts.values():receipt.update(ip1='back',ip2='front')
+        context=self.adapter_context();context['mqtt']=types.SimpleNamespace(is_connected=False);context['captures']=receipts
+        context['load_mappings'].return_value=[dict(shelf_id=SID,ip_address='back',secondary_ip_address='front')]
+        body=dict(shelf_id=SID,validation_token='lease',source='STARTUP',image_back='b',image_front='f',ip='back',ip2='front',run_id='run',
+            expected_version=0,runtime_event_id='baseline',dual_cam_evidence=dict(version='stacked-visibility-v4-x01',samples=samples))
+        status,result=validate_runtime_request(body,**context)
+        self.assertEqual(status,200);self.assertEqual(result['comparison']['quantity_after'],5)
+        self.assertFalse(self.runtime.snapshot(SID)['action_capable'],'counted without the action transport')
+        self.setUp();samples,receipts=self.fresh()
+        context=self.adapter_context();context['mqtt']=types.SimpleNamespace(is_connected=False)
+        status,result=validate_runtime_request(dict(body,source='CCTV',trigger_id='event'),**context)
+        self.assertEqual(status,409);self.assertIn('MQTT',result['error'])
 
 if __name__=='__main__':unittest.main()

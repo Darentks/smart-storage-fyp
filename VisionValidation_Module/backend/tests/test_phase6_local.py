@@ -38,11 +38,29 @@ class LocalStoreTests(unittest.TestCase):
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
 
     def test_acceptance_distinguishes_skip_failure_and_missing_executable(self):
-        module=self.deployment_module('phase6_acceptance')
+        module=self.deployment_module('run_checks')
         for stdout,code,status in [('ok',0,'PASS'),('SKIP: optional dependency',0,'SKIP'),('',1,'FAIL')]:
             with patch.object(module.subprocess,'run',return_value=types.SimpleNamespace(stdout=stdout,stderr='',returncode=code)):
                 self.assertEqual(module.run_check('fixture',['unused'],{})['status'],status)
         with patch.object(module.subprocess,'run',side_effect=OSError()):self.assertEqual(module.run_check('fixture',['unused'],{})['status'],'BLOCKED')
+
+    def test_generated_report_describes_current_policy_without_approving_hardware(self):
+        from src.dual_cam_inventory import REQUIRED_MATCHING_PAIRS,MAX_PAIRS_PER_ATTEMPT
+        module=self.deployment_module('run_checks')
+        with tempfile.TemporaryDirectory() as directory:
+            output=Path(directory)/'report.json'
+            with patch.object(module.sys,'argv',['runner','--output',str(output)]),patch.object(module,'run_check',return_value={'case':'fixture','status':'PASS'}),patch('builtins.print'):
+                self.assertEqual(module.main(),2)
+            report=json.loads(output.read_text())
+        blocked={row['case']:row for row in report['matrix'] if row['status']=='BLOCKED'}
+        self.assertEqual(len(blocked),15);self.assertEqual(report['release'],'BLOCKED')
+        startup=blocked['fresh_exact_startup_restart']['reason']
+        self.assertIn(f'{REQUIRED_MATCHING_PAIRS} consecutive matching ESP32 pairs',startup)
+        self.assertIn(f'at most {MAX_PAIRS_PER_ATTEMPT} pairs per attempt',startup)
+        self.assertIn('CCTV off',startup)
+        self.assertIn('up to 5 seconds preserve counts',blocked['camera_mqtt_device_database_outage']['reason'])
+        self.assertIn('separate box-count and pose worker',blocked['sustained_cpu_ram_latency']['reason'])
+        self.assertEqual(set(report['status_meanings']),{'PASS','FAIL','SKIP','BLOCKED'})
 
     def test_egress_live_counter_delta_and_restart_are_not_zero_total_claims(self):
         module=self.deployment_module('measure_monitoring_egress')
@@ -172,7 +190,10 @@ class LocalStoreTests(unittest.TestCase):
             if kind=='duplicate':value['cameras'][1]=value['cameras'][0]
             if kind=='missing':value['cameras'].pop()
             if kind=='pixel':value['cameras'][0]['rois']['SHELF_R1_C1']['coordinate_space']='pixels'
-            if kind=='overlap':value['cameras'][0]['rois']['SHELF_R1_C2']=value['cameras'][0]['rois']['SHELF_R1_C1']
+            if kind=='overlap':
+                value['cameras'][0]['rois']['SHELF_R1_C2']=value['cameras'][0]['rois']['SHELF_R1_C1']
+                with self.assertRaisesRegex(ValueError,r'CCTV_01: SHELF_R1_C1 overlaps SHELF_R1_C2'):
+                    validate_rois(value)
             if kind=='secret':value['cameras'][0]['binding']['source']='rtsp://user:password@192.168.0.1:554/stream'
             with self.assertRaises((ValueError,KeyError)):validate_rois(value)
 

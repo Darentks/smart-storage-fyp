@@ -8,6 +8,8 @@ import types
 import unittest
 from unittest.mock import patch
 import numpy as np
+import runpy
+SHELF_SET=runpy.run_path(str(Path(__file__).resolve().parents[1]/'src'/'shelves.py'))['SHELF_SET']  # for AST-isolated bridge functions
 
 # Load only the tested backend modules, without starting application managers.
 package = types.ModuleType("polygon_test_backend")
@@ -101,7 +103,7 @@ class PolygonRoiTests(unittest.TestCase):
         import ast, math, threading, time, uuid
         service = Path(__file__).resolve().parents[2] / "camera_service.py"
         tree = ast.parse(service.read_text(encoding="utf-8"))
-        namespace = dict(math=math,threading=threading,time=time,uuid=uuid,
+        namespace = dict(SHELF_SET=SHELF_SET,math=math,threading=threading,time=time,uuid=uuid,
             CCTV_CAMERA_CONFIG={"CCTV_01":{"camera_role":"GRID_6_ROI","is_active":True},
                 "CCTV_02":{"camera_role":"GRID_6_ROI","is_active":True},
                 "CCTV_03":{"camera_role":"SIDE_PRESENCE","is_active":True}},
@@ -111,7 +113,7 @@ class PolygonRoiTests(unittest.TestCase):
         vote=namespace["record_cctv_consensus"]
         self.assertFalse(vote("SHELF_R1_C2","CCTV_01","BORROW",.9)["consensus_met"])
         self.assertFalse(vote("ANY_SHELF","CCTV_03","BORROW",.9)["consensus_met"])
-        self.assertFalse(vote("SHELF_R1_C5","CCTV_02","BORROW",.9)["consensus_met"])
+        self.assertFalse(vote("SHELF_R1_C3","CCTV_02","BORROW",.9)["consensus_met"])
         self.assertEqual(namespace["PENDING_CCTV_TRIGGERS"],[])
         result=vote("SHELF_R1_C2","CCTV_02","BORROW",.9)
         self.assertTrue(result["consensus_met"])

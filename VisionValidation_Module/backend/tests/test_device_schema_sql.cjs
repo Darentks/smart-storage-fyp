@@ -29,15 +29,15 @@ async function snapshots(db){
 async function freshCase(){
  const db=await setup();try{
   await db.exec(fresh);
-  assert.deepEqual((await db.query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")).rows.map(r=>r.tablename),['camera_shelves','cctv_cameras','esp32_cameras']);
-  assert.equal((await db.query('SELECT count(*)::int AS n FROM camera_shelves')).rows[0].n,6);
+  assert.deepEqual((await db.query("SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename")).rows.map(r=>r.tablename),['cctv_cameras','compartments','esp32_cameras']);
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM compartments')).rows[0].n,6);
   assert.equal((await db.query('SELECT count(*)::int AS n FROM esp32_cameras')).rows[0].n,0);
   assert.equal((await db.query("SELECT has_table_privilege('authenticated','esp32_cameras','TRUNCATE') AS allowed")).rows[0].allowed,false,'authenticated API users cannot bypass RLS using TRUNCATE');
   await rejects(db,fresh,/FRESH INSTALL ONLY/);
   await role(db,'anon');await rejects(db,'SELECT * FROM esp32_cameras',/permission denied/);
   await role(db,'authenticated',ordinary);
   assert.equal((await db.query('SELECT * FROM esp32_cameras')).rows.length,0);
-  await rejects(db,"INSERT INTO esp32_cameras(device_id,camera_name,shelf_id,angle_index) VALUES('no','no','SHELF_R1_C1',1)",/row-level security/);
+  await db.exec("INSERT INTO esp32_cameras(device_id,camera_name,shelf_id,angle_index) VALUES('ordinary','Ordinary','SHELF_R1_C1',1); UPDATE esp32_cameras SET camera_name='Updated' WHERE device_id='ordinary'; DELETE FROM esp32_cameras WHERE device_id='ordinary';");
   await role(db,'authenticated',admin);
   await db.exec("INSERT INTO esp32_cameras(device_id,camera_name,rack_id,shelf_id,angle_index,ip_address) VALUES('back','Back','RACK_01','SHELF_R1_C1',1,'192.0.2.1'); INSERT INTO cctv_cameras(cctv_id,camera_name,rtsp_url,camera_role) VALUES('CCTV_03','Side','rtsp://fixture.invalid/stream','SIDE_PRESENCE');");
   await db.exec("UPDATE esp32_cameras SET ip_address='192.0.2.2' WHERE device_id='back'");
@@ -49,9 +49,9 @@ async function freshCase(){
   await rejects(db,"INSERT INTO esp32_cameras(device_id,camera_name,shelf_id,angle_index) VALUES('duplicate','Duplicate','SHELF_R1_C1',1)",/uq_esp32_camera_shelf_angle/);
   await role(db,'authenticated',admin);await db.exec("DELETE FROM esp32_cameras WHERE device_id='back'; DELETE FROM cctv_cameras;");
   assert.equal((await db.query('SELECT * FROM esp32_cameras')).rows.length,0);
-  await role(db,'service_role');assert.equal((await db.query('SELECT * FROM camera_shelves')).rows.length,6);
+  await role(db,'service_role');assert.equal((await db.query('SELECT * FROM compartments')).rows.length,6);
  }finally{await db.close();}
- console.log('PASS fresh: only three device tables, stable keys, no invented cameras, admin CRUD, checks/FK and anonymous/ordinary-user denial');
+ console.log('PASS fresh: only three device tables, stable keys, no invented cameras, authenticated CRUD without admin claim, checks/FK and anonymous denial');
 }
 async function legacyCase(){
  const db=await setup();try{

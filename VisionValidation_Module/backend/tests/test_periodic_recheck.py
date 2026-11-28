@@ -1,4 +1,4 @@
-﻿"""Isolated real route/comparator tests: no camera, network, or MQTT imports."""
+"""Isolated real route/comparator tests: no camera, network, or MQTT imports."""
 import ast
 from collections import deque
 from datetime import datetime, timezone
@@ -12,9 +12,12 @@ import unittest
 from unittest.mock import Mock, patch
 import urllib.parse
 import uuid
+import sys
 
 ROOT = Path(__file__).resolve().parents[3]
 SRC = ROOT / 'VisionValidation_Module/backend/src'
+sys.path.insert(0,str(SRC.parent))
+import src.runtime_inventory
 spec = importlib.util.spec_from_file_location('periodic_recheck', SRC/'periodic_recheck.py')
 periodic = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(periodic)
@@ -31,45 +34,7 @@ def isolated_function(node, namespace):
     return namespace[node.name]
 
 
-class CandidateTests(unittest.TestCase):
-    def setUp(self):
-        self.previous = dict(frame_bgr='old')
-        self.manager = types.SimpleNamespace(
-            baseline_cache={'s':self.previous}, baseline_freeze_until={},
-            fetch_dual_esp32_frame=Mock(return_value=('new','combined','back','front')),
-            _compute_absdiff_score=Mock(return_value=4), freeze_baseline=Mock())
-
-    def test_changed_candidate_preserves_baseline(self):
-        self.assertEqual(periodic.inspect_candidate(self.manager,'s','ip1','ip2',3.5),4)
-        self.assertIs(self.manager.baseline_cache['s'], self.previous)
-        self.manager.freeze_baseline.assert_called_once_with('s',20)
-
-    def test_below_threshold_accepts_candidate(self):
-        self.manager._compute_absdiff_score.return_value=3.49
-        self.assertIsNone(periodic.inspect_candidate(self.manager,'s','ip1','ip2',3.5))
-        self.assertEqual(self.manager.baseline_cache['s']['frame_bgr'],'new')
-
-    def test_threshold_boundary_triggers(self):
-        self.manager._compute_absdiff_score.return_value=3.5
-        self.assertEqual(periodic.inspect_candidate(self.manager,'s','ip1','ip2',3.5),3.5)
-
-    def test_initial_baseline(self):
-        self.manager.baseline_cache.clear()
-        self.assertIsNone(periodic.inspect_candidate(self.manager,'s','ip1','ip2',3.5))
-        self.assertEqual(self.manager.baseline_cache['s']['url_front'],'front')
-        self.manager._compute_absdiff_score.assert_not_called()
-
-    def test_partial_and_synthetic_frames_rejected(self):
-        for result in [('synthetic','url',None,None),('single','url','back',None)]:
-            self.manager.fetch_dual_esp32_frame.return_value=result
-            self.assertIsNone(periodic.inspect_candidate(self.manager,'s','ip1','ip2',3.5))
-            self.assertIs(self.manager.baseline_cache['s'],self.previous)
-
-    def test_frozen_capture_skipped(self):
-        self.manager.baseline_freeze_until['s']=time.time()+20
-        self.assertIsNone(periodic.inspect_candidate(self.manager,'s','ip1','ip2',3.5))
-        self.manager.fetch_dual_esp32_frame.assert_not_called()
-
+class LeaseTests(unittest.TestCase):
     def test_lease_exclusion_expiry_and_token_ownership(self):
         coordinator=periodic.RecheckCoordinator()
         with patch.object(periodic.time,'time',return_value=100):

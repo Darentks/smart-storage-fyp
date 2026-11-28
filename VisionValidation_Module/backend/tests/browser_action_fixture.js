@@ -11,7 +11,7 @@ for(const scenario of scenarios){
     drawBasicSkeleton(){},drawCompartmentRoiBox(){},validQuad:p=>p.length===4,
     roiVertices:r=>Array.isArray(r)?r:r.vertices||[[r.x_min,r.y_min],[r.x_max,r.y_min],[r.x_max,r.y_max],[r.x_min,r.y_max]]};
   vm.createContext(context);
-  for(const [start,end] of [['    function classifyTrajectoryAction(', '    let recordedVideoUrl'],['    function pointInRoi(', '    function quadRoi('],['    function cancelAmbiguousDwell(', '    const windowUnusedRole'],['    function onPoseResults(', '    function drawCompartmentRoiBox(']])
+  for(const [start,end] of [['    function classifyTrajectoryAction(', '    let isYoloInferencing'],['    function pointInRoi(', '    function quadRoi('],['    function cancelAmbiguousDwell(', '    const windowUnusedRole'],['    function onPoseResults(', '    function drawCompartmentRoiBox(']])
     vm.runInContext(html.slice(html.indexOf(start),html.indexOf(end)),context);
   const camera={role:scenario.role,rois:scenario.rois,canvas:{width:640,height:480},trackers:{}};
   for(const shelf of Object.keys(scenario.rois))camera.trackers[shelf]={state:'IDLE',dwellStartTime:null,lastSeenTime:null,currentDwellDuration:0,dwellThreshold:1.2,dropGracePeriod:.3,trajectoryHistory:[],triggerFired:false,lastConfirmedAction:'BORROW',lastConfirmedConf:0,cooldownUntil:0};

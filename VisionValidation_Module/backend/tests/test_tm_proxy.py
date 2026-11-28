@@ -7,12 +7,15 @@ import os
 from pathlib import Path
 import re
 import tempfile
+import sys
 import time
 import types
 import unittest
 from unittest.mock import Mock
 import urllib.parse
 import urllib.request
+sys.path.insert(0,str(Path(__file__).parents[1]))
+from src.model_assets import ModelAssets
 
 
 class ProxyTests(unittest.TestCase):
@@ -31,6 +34,7 @@ class ProxyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             urllib_fake = types.SimpleNamespace(parse=urllib.parse, request=types.SimpleNamespace(Request=urllib.request.Request, urlopen=fetch))
             ns = dict(urllib=urllib_fake, os=os, json=json, hashlib=hashlib, re=re, time=time,
+                      TM_MODEL_ASSETS=ModelAssets(Path(directory)/'manifest.json'),
                       LAST_TM_BASE_URL='https://wrong.example/', __file__=str(Path(directory)/'camera_service.py'))
             exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])), '<real handler>', 'exec'),ns)
             def request(base, filename):
@@ -46,6 +50,30 @@ class ProxyTests(unittest.TestCase):
             offline = True
             for base in remote:
                 self.assertEqual(request(base, 'weights.bin'), remote[base])
+            self.assertEqual(list(Path(directory).iterdir()),[],'proxy must not recreate disk model caches')
+
+    def test_staged_assets_are_shared_hash_verified_and_never_replaced_by_remote(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);config={'version':1}
+            for role in ('Front','Back'):
+                folder=root/role;folder.mkdir()
+                spec={'source':f'https://models.example/{role}/','weights':[]}
+                for key,name in (('model','model.json'),('metadata','metadata.json')):
+                    data=(role+key).encode();(folder/name).write_bytes(data)
+                    spec[key]={'path':f'{role}/{name}','sha256':hashlib.sha256(data).hexdigest()}
+                data=role.encode();(folder/'model.weights.bin').write_bytes(data)
+                spec['weights']=[{'name':'./model.weights.bin','path':f'{role}/model.weights.bin','sha256':hashlib.sha256(data).hexdigest()}]
+                config[role]=spec
+            manifest=root/'manifest.json';manifest.write_text(json.dumps(config))
+            store=ModelAssets(manifest);fetch=Mock(side_effect=AssertionError('staged source must not fetch online'))
+            for role in ('Front','Back'):
+                self.assertEqual(store.read(config[role]['source'],'model.json',fetch),(role+'model').encode())
+                self.assertEqual(store.read(config[role]['source'],'model.weights.bin',fetch),role.encode())
+            (root/'Front/model.json').write_bytes(b'tampered')
+            with self.assertRaisesRegex(ValueError,'hash mismatch'):store.read(config['Front']['source'],'model.json',fetch)
+            for name in ('../model.json','..','unlisted.bin'):
+                with self.assertRaises(ValueError):store.read(config['Back']['source'],name,fetch)
+            fetch.assert_not_called()
 
 
 if __name__ == '__main__': unittest.main()

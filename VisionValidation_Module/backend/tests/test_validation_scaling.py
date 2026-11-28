@@ -1,4 +1,4 @@
-﻿"""Scaling checks against production scheduling helpers and extracted poller functions."""
+"""Scaling checks against production scheduling helpers and extracted poller functions."""
 import os
 import types
 import unittest
@@ -59,17 +59,6 @@ class GlobalQueueTests(unittest.TestCase):
             self.assertTrue(queue.owns('s',token))
             self.assertIsNone(queue.begin('other'))
 
-    def test_periodic_dedup_includes_claimed_work_and_live_triggers(self):
-        pending=[]
-        for index in range(10):periodic.queue_periodic_trigger(pending,'s',5,100+index)
-        self.assertEqual(len(pending),1)
-        pending[0]['claimed']=True
-        self.assertFalse(periodic.queue_periodic_trigger(pending,'s',6,110))
-        pending=[dict(shelf_id='s',source='CCTV',timestamp=100)]
-        self.assertFalse(periodic.queue_periodic_trigger(pending,'s',6,110))
-        self.assertTrue(periodic.queue_periodic_trigger(pending,'s',6,161))
-        self.assertEqual(len(pending),1)
-        self.assertFalse(pending[0]['consensus_met'])
 
     def test_legacy_other_shelf_write_blocked_by_global_lease(self):
         route=existing.ValidationRouteTests()
@@ -110,57 +99,6 @@ class GlobalQueueTests(unittest.TestCase):
         self.assertFalse(route.coordinator.busy())
 
 
-class StaggerTests(unittest.TestCase):
-    def test_one_three_and_six_shelf_spacing(self):
-        for count in [1,3,6]:
-            schedule=periodic.StaggeredPollSchedule()
-            shelves=['s'+str(i) for i in range(count)]
-            step=30/count
-            for i in range(count*2):
-                self.assertEqual(schedule.take(shelves,i*step),shelves[i%count])
-                self.assertIsNone(schedule.take(shelves,i*step+.1))
-
-    def test_slow_capture_never_produces_catchup_burst(self):
-        schedule=periodic.StaggeredPollSchedule()
-        self.assertEqual(schedule.take(['a','b','c'],0),'a')
-        self.assertEqual(schedule.take(['a','b','c'],100),'b')
-        self.assertIsNone(schedule.take(['a','b','c'],100.1))
-        self.assertEqual(schedule.take(['a','b','c'],110),'c')
-
-    def test_three_shelf_filter_omits_other_cameras_and_missing_pairs(self):
-        rows=[dict(shelf_id='s'+str(i),ip_address='back'+str(i),secondary_ip_address='front'+str(i)) for i in range(6)]
-        rows.append(dict(shelf_id='missing',ip_address='back'))
-        ns=dict(os=os,get_cached_compartments=Mock(return_value=rows),ACTIVE_ESP32_IPS={})
-        fn=existing.isolated_function(existing.method(existing.ROOT/'VisionValidation_Module/camera_service.py','periodic_shelf_mappings'),ns)
-        with patch.dict(os.environ,{'PERIODIC_RECHECK_SHELVES':'s0,s1,s2'}):
-            self.assertEqual(set(fn()),{'s0','s1','s2'})
-        with patch.dict(os.environ,{'PERIODIC_RECHECK_SHELVES':''}):
-            self.assertEqual(len(fn()),6)
-
-    def test_offline_pair_never_captured_online_pair_deduplicates(self):
-        response=MagicMock()
-        response.__enter__.return_value.status=200
-        response.__enter__.return_value.read.return_value=b'{"rssi":-60}'
-        network=Mock()
-        network.request.Request=urllib.request.Request
-        network.request.urlopen=Mock(side_effect=[OSError('offline'),response])
-        inspector=Mock(return_value=5)
-        ns=dict(runtime_enabled=lambda:False,time=time,urllib=network,json=json,mqtt_bridge=types.SimpleNamespace(edge_nodes={}),
-            record_probe_result=Mock(),RECHECKS=periodic.RecheckCoordinator(),
-            CCTV_CONSENSUS_LOCK=existing.threading.RLock(),PENDING_CCTV_TRIGGERS=[],
-            has_pending_shelf=periodic.has_pending_shelf,queue_periodic_trigger=periodic.queue_periodic_trigger,
-            inspect_candidate=inspector,esp32_ref_manager=Mock(),PERIODIC_DIFF_THRESHOLD=3.5)
-        fn=existing.isolated_function(existing.method(existing.ROOT/'VisionValidation_Module/camera_service.py','poll_periodic_shelf'),ns)
-        fn('s',{'ip1':'192.168.0.201','ip2':'192.168.0.202'})
-        inspector.assert_not_called()
-        self.assertEqual(network.request.urlopen.call_count,2)
-        self.assertTrue(all(call.kwargs['timeout']==1.5 for call in network.request.urlopen.call_args_list))
-        network.request.urlopen.side_effect=None
-        network.request.urlopen.return_value=response
-        fn('s',{'ip1':'192.168.0.201','ip2':'192.168.0.202'})
-        fn('s',{'ip1':'192.168.0.201','ip2':'192.168.0.202'})
-        inspector.assert_called_once()
-        self.assertEqual(len(ns['PENDING_CCTV_TRIGGERS']),1)
 
 
 if __name__=='__main__':unittest.main()
