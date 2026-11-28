@@ -1292,35 +1292,20 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </select>
             </div>
 
-            <details class="diagnostic-section"><summary>Camera setup</summary>
+            <details class="diagnostic-section"><summary>Camera addresses</summary>
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refEspIpInput">Back camera</label>
-              <select id="cam1IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
-                onchange="onSelectAssignedCameraIp(1, this.value)"></select>
               <input type="text" id="refEspIpInput" class="form-control" placeholder="192.168.0.201"
-                value="192.168.0.201" oninput="markIpInputDirty(1)" />
+                value="192.168.0.201" readonly />
             </div>
 
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refEspIp2Input">Front camera</label>
-              <select id="cam2IpSelect" class="form-control" style="margin-bottom: 6px; font-size: 12px;"
-                onchange="onSelectAssignedCameraIp(2, this.value)"></select>
               <input type="text" id="refEspIp2Input" class="form-control" placeholder="192.168.0.202"
-                value="192.168.0.202" oninput="markIpInputDirty(2)" />
+                value="192.168.0.202" readonly />
             </div>
 
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;">
-              <button type="button" class="btn-action" id="scanCamIpsBtn"
-                style="height: 36px; justify-content: center; font-size: 11px;" onclick="discoverOnlineEsp32Cameras()">
-                 Find cameras
-              </button>
-              <button type="button" class="btn-action" id="saveCamIpsBtn"
-                style="height: 36px; justify-content: center; font-size: 11px; border-color: var(--success); color: var(--success); background: rgba(16, 185, 129, 0.08);"
-                onclick="saveAssignedShelfIps()">
-                 Save camera assignments
-              </button>
-              <div id="camIpSaveStatus" role="status" aria-live="polite" style="font-size:12px"></div>
-            </div>
+            <p class="panel-desc">Saved camera addresses. Check connections in Camera overview.</p>
 
             </details>
             <div style="display: flex; flex-direction: column; gap: 10px;">
