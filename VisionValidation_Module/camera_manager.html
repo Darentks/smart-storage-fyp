@@ -966,6 +966,30 @@
     .camera-device-details summary,.esp32-overview-actions summary {cursor:pointer;}
     @media(max-width:1100px) {#esp32CameraManagerGrid {grid-template-columns:minmax(0,1fr);}.esp32-thumb img {height:200px;}}
     @media(max-width:420px) {.camera-pair {gap:12px;}.camera-shelf-group {padding:12px;}.esp32-thumb img {height:160px;}}
+
+    /* Rack-first: quantity, count trust, readiness and actions have separate visual roles. */
+    .compartments-grid {grid-template-columns:repeat(3,minmax(0,1fr));}
+    .compartment-card .card-top {align-items:flex-start;gap:12px;}
+    .compartment-card .card-subtitle {font-size:12px;margin-top:4px;overflow-wrap:anywhere;}
+    .compartment-card .card-stats {grid-template-columns:minmax(0,1fr);gap:16px;}
+    .count-trust {color:var(--text-secondary);font-size:14px;margin-bottom:8px;}
+    .rack-count {display:flex;align-items:baseline;flex-wrap:wrap;gap:12px;}
+    .compartment-card .stat-val.qty {font-family:inherit;font-size:clamp(36px,3.5vw,52px);font-weight:500;line-height:1.15;letter-spacing:0;font-variant-numeric:tabular-nums;}
+    .count-unit {font-size:16px;color:var(--text-secondary);}
+    .count-capacity,.count-checked {font-size:13px;color:var(--text-muted);margin-top:8px;}
+    .shelf-readiness {font-size:14px;color:var(--text-secondary);margin-top:16px;}
+    .shelf-hold-reason {font-size:14px;color:var(--warning);line-height:1.5;margin-top:8px;white-space:pre-wrap;}
+    .shelf-action-status {display:flex;flex-direction:column;align-items:flex-start;gap:8px;font-size:14px;flex:1;}
+    .compartment-card .card-footer {gap:16px;align-items:flex-start;}
+    .compartment-card .card-footer > div:first-child {order:2;}
+    .dual-preview-grid {grid-template-columns:repeat(2,minmax(0,1fr));align-items:start;}
+    .dual-preview-grid .cam-box {aspect-ratio:4/3;min-width:0;}
+    .dual-preview-grid .cam-box img {object-fit:contain;}
+    :root {color-scheme:dark;}
+    ::selection {background:var(--primary);color:var(--bg);}
+    input,textarea {caret-color:var(--primary);}
+    @media(max-width:1000px) {.compartments-grid {grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));}}
+    @media(max-width:600px) {.compartments-grid {grid-template-columns:minmax(0,1fr);}.compartment-card .stat-val.qty {font-size:40px;}.dual-preview-grid {grid-template-columns:minmax(0,1fr);}}
   </style>
   <script>
 /* Three live feeds share the existing serial ONNX runner and Python consensus bridge. */
@@ -1286,9 +1310,9 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <div class="form-group" style="margin-bottom: 12px;">
               <label for="refShelfSelect">Shelf</label>
               <select id="refShelfSelect" class="form-control" onchange="onTargetShelfChange()">
-                <option value="SHELF_R1_C1">SHELF_R1_C1 (ESP32 Node R1-C1)</option>
-                <option value="SHELF_R1_C2">SHELF_R1_C2 (ESP32 Node R1-C2)</option>
-                <option value="SHELF_R1_C3">SHELF_R1_C3 (ESP32 Node R1-C3)</option>
+                <option value="SHELF_R1_C1">Compartment C1</option>
+                <option value="SHELF_R1_C2">Compartment C2</option>
+                <option value="SHELF_R1_C3">Compartment C3</option>
               </select>
             </div>
 
@@ -3778,6 +3802,19 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         reason:view.reason || unverifiedReason || (!counted_ready?scan.message:null) || null,
         details:view.details+history+(history?historyTime:'')+checkDetails+hiddenWarning};
     }
+    // Presentation only: trust and retry eligibility remain owned by runtimeInventoryView.
+    function shelfCardPresentation(comp, status, view) {
+      const runtime=status?.runtime || comp;
+      const exact=Number.isInteger(view.quantity);
+      const range=view.state==='Ready Limited' && runtime.precision==='RANGE' && Array.isArray(runtime.count_range);
+      const kept=status?.native && status.state==='Ready' && runtime.state==='Ready' && runtime.count_check_unverified===true ? runtime.baseline : null;
+      const lastKnown=!exact && !range && (Number.isInteger(kept?.total) || Array.isArray(kept?.count_range));
+      const value=exact?String(view.quantity):range?runtime.count_range.join('\u2013'):lastKnown?(Number.isInteger(kept.total)?String(kept.total):kept.count_range.join('\u2013')):'Unknown';
+      const trust=exact?'Verified count':range?'Verified range':lastKnown?'Last known - not verified':'No verified count';
+      const checked=(exact || range || lastKnown) && Number.isFinite(runtime.observed_at) ? `${runtime.cctv_enabled===false?'Last counted (CCTV stopped)':'Checked'} ${new Date(runtime.observed_at*1000).toLocaleTimeString()}` : 'Waiting for a verified scan';
+      const reason=view.reason || status?.reason || (!exact && !range ? view.display : '') || '';
+      return {value,trust,checked,reason,hasCount:exact || range || lastKnown,range};
+    }
     function renderCompartments(items) {
       if (!items || items.length === 0) {
         compartmentsGrid.innerHTML = `
@@ -3796,6 +3833,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const qty=view.quantity;
         const qtyText=view.label;
         const maxQty = comp.max_capacity ?? 5;
+        const presentation=shelfCardPresentation(comp,shelfOperatingStates[comp.shelf_id],view);
 
         let slotPillsHtml = '';
         for (let i = 1; i <= maxQty; i++) {
@@ -3806,14 +3844,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div class="compartment-card ${isOnline ? 'online' : ''}">
             <div class="card-top">
               <div>
-                <div class="card-title">ESP32 Node (${readinessText(comp.shelf_id)})</div>
-                <div style="color:var(--warning);white-space:pre-wrap">${readinessText(view.state)}${view.reason?`: ${readinessText(view.reason)}`:''}</div>
+                <div class="card-title">Compartment ${readinessText(comp.shelf_id.replace('SHELF_R1_',''))}</div>
+                <div class="card-subtitle">ESP32 Node (${readinessText(comp.shelf_id)})</div>
 
               </div>
               <div>
                 ${isOnline
-            ? '<span class="badge badge-online"><span class="pulse-dot"></span>Online</span>'
-            : '<span class="badge badge-offline">Offline</span>'
+            ? '<span class="badge badge-online"><span class="pulse-dot"></span>Device Online</span>'
+            : '<span class="badge badge-offline">Device Offline</span>'
           }
               </div>
             </div>
@@ -3821,8 +3859,12 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
             <!-- Stats & Capacity -->
             <div class="card-stats">
               <div class="stat-item">
-                <span class="stat-lbl">Stock quantity</span>
-                <span class="stat-val qty">${view.display?readinessText(view.display.split('\n')[0].split(' ? ')[0]):`${qtyText} / ${maxQty} Boxes`}</span>
+                <p class="count-trust">${readinessText(presentation.trust)}</p>
+                <div class="rack-count"><span class="stat-val qty">${readinessText(presentation.value)}</span>${presentation.hasCount?'<span class="count-unit">boxes</span>':''}</div>
+                <p class="count-capacity">Capacity ${readinessText(maxQty)}${presentation.range?' ? Exact count unknown; B1 hidden':''}</p>
+                <p class="count-checked">${readinessText(presentation.checked)}</p>
+                <p class="shelf-readiness">Readiness: ${readinessText(view.state)}</p>
+                ${presentation.reason?`<p class="shelf-hold-reason">${readinessText(presentation.reason)}</p>`:''}
                 <details class="shelf-details" data-disclosure="${readinessText(comp.shelf_id)}:count"><summary>Count details</summary><p>${readinessText(view.display || view.label)}</p><p>${readinessText(view.details)}</p></details>
                 <div class="slot-bar">${slotPillsHtml}</div>
               </div>
@@ -3839,8 +3881,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <div style="font-size: 11px; color: var(--text-muted);">
                 <details data-disclosure="${readinessText(comp.shelf_id)}:memory"><summary>Memory</summary><span>${comp.free_heap_bytes ? Math.round(comp.free_heap_bytes / 1024) + ' KB free' : 'Unknown'}</span></details>
               </div>
-              <div style="display: flex; gap: 6px;">
-                <span>${view.actions?readinessText(view.actions):'Native validation: monitoring only'}</span>${view.canRetry?`<button type="button" class="btn-action" onclick="requestNativeScan('${comp.shelf_id}')">Retry scan</button>`:''}
+              <div class="shelf-action-status">
+                <span>${view.actions?readinessText(view.actions):'Action status: monitoring only'}</span>${view.canRetry?`<button type="button" class="btn-action" onclick="requestNativeScan('${comp.shelf_id}')">Retry scan</button>`:''}
               </div>
             </div>
           </div>
