@@ -3809,7 +3809,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const qty=view.quantity;
         const qtyText=view.label;
         const maxQty = comp.max_capacity ?? 5;
-        const rssi = comp.rssi_dbm != null ? `${comp.rssi_dbm} dBm` : 'N/A';
 
         let slotPillsHtml = '';
         for (let i = 1; i <= maxQty; i++) {
@@ -3842,12 +3841,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </div>
               <div class="stat-item">
                 <details class="shelf-details" data-disclosure="${readinessText(comp.shelf_id)}:device"><summary>Device details</summary>
-                <p>${readinessText(comp.mqtt_client_id || 'Unknown device')} ? ${readinessText(comp.camera_name || 'ESP32 camera')}</p>
-                <span class="stat-lbl">Wi-Fi / address</span>
-                <span class="stat-val" style="font-size: 13px;">${rssi}</span>
-                <span style="font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); margin-top: 4px;">
-                  ${comp.ip_address || 'DHCP'}
-                </span></details>
+                <p style="font-family:var(--font-mono)">${readinessText(comp.ip_address || 'Unknown')}<br>${readinessText(comp.secondary_ip_address || 'Unknown')}</p></details>
               </div>
             </div>
 
