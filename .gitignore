@@ -9,3 +9,6 @@ node_modules/
 .env
 /backup/
 /backups/
+
+# Personal Claude Code settings for this laptop (permissions etc.); never shared.
+.claude/settings.local.json
