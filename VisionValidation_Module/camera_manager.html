@@ -248,7 +248,7 @@
     .esp32-thumb {display:block;width:100%;padding:0;border:0;border-radius:6px;background:none;cursor:zoom-in;}
     .esp32-thumb img {display:block;width:100%;height:110px;object-fit:contain;}
     .esp32-picture-head {display:flex;justify-content:space-between;align-items:center;gap:12px;}
-    #roiExitDialog {max-width:420px;}
+    #roiConfirmDialog {max-width:420px;}
     .roi-exit-form {display:flex;flex-direction:column;gap:10px;}
     .roi-exit-form strong {font-size:15px;color:var(--text-primary);}
     .roi-exit-form p {font-size:13px;line-height:1.5;color:var(--text-secondary);margin:0;}
@@ -1285,6 +1285,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <button type="button" id="cctvRoiSwapBtn" class="btn-action" onclick="swapSelectedRoi()">Swap ROIs</button>
               </span>
               <button type="button" class="btn-action" onclick="undoSelectedRoi()" title="Restore only the selected shelf to how it was when calibration opened">Undo this shelf</button>
+              <button type="button" class="btn-action" onclick="deleteSelectedRoi()" title="Remove the selected shelf's region so you can draw it again">Delete region</button>
 
               <span style="font-size: 11px; color: var(--text-muted);">Grid: draw 4 corners in perimeter order, or edit handles. Side: drag a rectangle.</span>
               <span id="cctvCalibCoordsText"
@@ -1300,6 +1301,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               <button type="button" class="btn-action" style="font-size: 10px; padding: 3px 8px;"
                 onclick="resetAllRoiEdits()" title="Restore every shelf on this camera to how it was when calibration opened (last saved)">
                 &#8634; Reset all edits
+              </button>
+              <button type="button" class="btn-action" style="font-size: 10px; padding: 3px 8px; border-color: var(--danger); color: var(--danger);"
+                onclick="clearAllRois()" title="Remove every region on this camera so you can draw them all again">
+                Clear all regions
               </button>
             </div>
           </div>
@@ -1378,10 +1383,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
   </main>
 
 
-  <dialog id="roiExitDialog" aria-labelledby="roiExitTitle" aria-describedby="roiExitDetail">
+  <dialog id="roiConfirmDialog" aria-labelledby="roiConfirmTitle" aria-describedby="roiConfirmDetail">
     <form method="dialog" class="roi-exit-form">
-      <strong id="roiExitTitle">Are you sure you don't want to save?</strong>
-      <p id="roiExitDetail">Your unsaved region changes will be discarded and the saved regions restored.</p>
+      <strong id="roiConfirmTitle">Are you sure you don't want to save?</strong>
+      <p id="roiConfirmDetail">Your unsaved region changes will be discarded and the saved regions restored.</p>
       <div class="roi-exit-actions">
         <button type="submit" class="btn-action" value="no" autofocus>No</button>
         <button type="submit" class="btn-action roi-exit-yes" value="yes">Yes</button>
@@ -5063,6 +5068,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (!shelfSelect || !textEl) return;
       const shelfId = shelfSelect.value;
       const roi = activeCctvRois[shelfId] || DEFAULT_COMPARTMENT_ROIS[shelfId];
+      if (roiCleared(roi)) { textEl.textContent = 'No region yet: draw one'; return; }
       if (roi?.vertices || Array.isArray(roi)) {
         textEl.textContent = (Array.isArray(roi) ? roi : roi.vertices).map(p=>`(${p[0].toFixed(3)}, ${p[1].toFixed(3)})`).join(' ');
         return;
@@ -5106,14 +5112,21 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (!snapshot || snapshot.cctvId !== activeCctvId) return false;
       return stableRoiJson(snapshot.rois) !== stableRoiJson(activeCctvRois);
     }
-    function confirmDiscardRoiEdits() {
-      const dialog = document.getElementById('roiExitDialog');
-      if (!dialog || typeof dialog.showModal !== 'function') return Promise.resolve(false);  // never discard silently
+    // Yes/No popup; anything but Yes (No, Esc, closing it) answers No. Never acts silently without a dialog.
+    function confirmRoiDialog(title, detail) {
+      const dialog = document.getElementById('roiConfirmDialog');
+      if (!dialog || typeof dialog.showModal !== 'function' || dialog.open) return Promise.resolve(false);
+      const titleEl = document.getElementById('roiConfirmTitle'), detailEl = document.getElementById('roiConfirmDetail');
+      if (titleEl) titleEl.textContent = title;
+      if (detailEl) detailEl.textContent = detail;
       return new Promise(resolve => {
         dialog.returnValue = '';
         dialog.addEventListener('close', () => resolve(dialog.returnValue === 'yes'), { once: true });
         dialog.showModal();
       });
+    }
+    function confirmDiscardRoiEdits() {
+      return confirmRoiDialog("Are you sure you don't want to save?", 'Your unsaved region changes will be discarded and the saved regions restored.');
     }
     // Exit Calibration: leave straight away when nothing changed; otherwise ask. Yes discards the edits
     // (restoring the saved regions); No or Esc keeps calibrating with the edits intact.
@@ -5125,6 +5138,32 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       if (snapshot && snapshot.cctvId === activeCctvId) activeCctvRois = JSON.parse(JSON.stringify(snapshot.rois));
       toggleRoiCalibrationMode(false);
       updateCalibCoordsText();
+    }
+    function clearedRoi() { return { vertices: [], coordinate_space: 'normalized' }; }
+    function roiCleared(roi) { return !!roi && Array.isArray(roi.vertices) && roi.vertices.length === 0; }
+    function chooseRoiRedrawTool() {
+      const tool = document.getElementById('cctvRoiTool');
+      if (tool) tool.value = activeCameraRole === 'SIDE_PRESENCE' ? 'rectangle' : 'polygon';
+    }
+    function deleteSelectedRoi() {
+      resetRoiEditor();
+      const id = selectedRoiId();
+      activeCctvRois[id] = clearedRoi();
+      chooseRoiRedrawTool();
+      initCompartmentTrackers();
+      updateCalibCoordsText();
+      showToast(`Deleted the ${id} region. Draw it again (${activeCameraRole === 'SIDE_PRESENCE' ? 'drag a rectangle' : 'click 4 corners'}), or use Undo this shelf.`, 'info');
+    }
+    async function clearAllRois() {
+      resetRoiEditor();
+      if (!(await confirmRoiDialog('Are you sure you want to clear all?',
+        `Every region on ${activeCctvId} will be removed. Draw them again, or use Reset all edits to restore the saved ones.`))) return;
+      const targets = activeCameraRole === 'SIDE_PRESENCE' ? ['RACK_ENTRY_ZONE'] : ALL_SHELF_IDS;
+      for (const id of targets) activeCctvRois[id] = clearedRoi();
+      chooseRoiRedrawTool();
+      initCompartmentTrackers();
+      updateCalibCoordsText();
+      showToast(`Cleared every region on ${activeCctvId}. Pick each shelf in Target Shelf and draw it again before saving.`, 'info');
     }
     function resetAllRoiEdits() {
       resetRoiEditor();
