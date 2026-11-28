@@ -3819,7 +3819,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
           <div class="compartment-card ${isOnline ? 'online' : ''}">
             <div class="card-top">
               <div>
-                <div class="card-title">${comp.shelf_id}</div>
+                <div class="card-title">ESP32 Node (${readinessText(comp.shelf_id)})</div>
                 <div style="color:var(--warning);white-space:pre-wrap">${readinessText(view.state)}${view.reason?`: ${readinessText(view.reason)}`:''}</div>
 
               </div>
@@ -3841,7 +3841,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
               </div>
               <div class="stat-item">
                 <details class="shelf-details" data-disclosure="${readinessText(comp.shelf_id)}:device"><summary>Device details</summary>
-                <p style="font-family:var(--font-mono)">${readinessText(comp.ip_address || 'Unknown')}<br>${readinessText(comp.secondary_ip_address || 'Unknown')}</p></details>
+                <p>ESP32 Node (${readinessText(comp.shelf_id)})</p>
+                <span class="stat-lbl">Wi-Fi / address</span>
+                <span class="stat-val" style="font-size:13px">${comp.rssi_dbm != null ? readinessText(comp.rssi_dbm)+' dBm' : 'Unknown'}</span>
+                <p style="font-family:var(--font-mono)">Back: ${readinessText(comp.ip_address || 'Unknown')}<br>Front: ${readinessText(comp.secondary_ip_address || 'Unknown')}</p></details>
               </div>
             </div>
 
