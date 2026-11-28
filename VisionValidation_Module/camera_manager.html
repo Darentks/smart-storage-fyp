@@ -1121,8 +1121,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         <a class="btn-action" href="smartstorage://update-models" onclick="beginLocalTmUpdate()" title="Downloads and checks the Front and Back models from deploy/tm-model-sources.json while the bridge keeps running. The bridge restarts (clearing counts) only if a model changed.">Get latest TM models</a>
         <span id="tmModelUpdateStatus" role="status" aria-live="polite" style="font-size:12px;color:var(--text-muted)">Model updates run on this PC through the Windows launcher.</span>
         <span id="tmLoadedModelVersions" style="font-size:12px;color:var(--text-muted)">Loaded TM versions: waiting for bridge.</span>
-        <button type="button" class="btn-action" onclick="setNativeCctv(true)">Start CCTV</button>
-        <button type="button" class="btn-action" onclick="setNativeCctv(false)">Stop CCTV</button>
         <span style="font-size:12px;color:var(--text-muted)">Windows launcher required on this PC. Restart also starts a stopped bridge; restarting clears counts and scans again.</span>
       </div>
       <div data-dashboard-view="dashboard" style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -2086,20 +2084,6 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       const links=!sources?'':sources.error?` · Update links (${sources.file}): ${sources.error}`:` · Update links (${sources.file}): Front ${sources.Front} · Back ${sources.Back}`;
       label.textContent=`Loaded TM versions: Front ${version('Front')} · Back ${version('Back')}${links}`;
       renderModelUpdateResult(data.model_update);
-    }
-    async function setNativeCctv(enabled) {
-      try {
-        const headers={'Content-Type':'application/json'};
-        const token=window.smartStorageDeviceAdminSession?.access_token;
-        if(token)headers.Authorization=`Bearer ${token}`;
-        const response=await fetch(`${getBridgeUrl()}/cctv_control`,{method:'POST',headers,
-          body:JSON.stringify({enabled}),cache:'no-store',signal:AbortSignal.timeout(15000)});
-        const result=await response.json();
-        if(!response.ok)throw Error(result.error || 'CCTV control failed');
-        showToast(result.status,'success');
-        await pollEdgeProcessor();
-        if(typeof pollShelfReadiness==='function')void pollShelfReadiness();
-      } catch(error) {showToast(error.message,'error');}
     }
     async function requestNativeScan(shelfId) {
       // A request to the shared native scanner; the browser never captures pictures or writes inventory.
