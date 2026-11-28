@@ -248,6 +248,13 @@
     .esp32-thumb {display:block;width:100%;padding:0;border:0;border-radius:6px;background:none;cursor:zoom-in;}
     .esp32-thumb img {display:block;width:100%;height:110px;object-fit:contain;}
     .esp32-picture-head {display:flex;justify-content:space-between;align-items:center;gap:12px;}
+    #roiExitDialog {max-width:420px;}
+    .roi-exit-form {display:flex;flex-direction:column;gap:10px;}
+    .roi-exit-form strong {font-size:15px;color:var(--text-primary);}
+    .roi-exit-form p {font-size:13px;line-height:1.5;color:var(--text-secondary);margin:0;}
+    .roi-exit-actions {display:flex;justify-content:flex-end;gap:8px;}
+    .roi-exit-actions .btn-action {min-width:72px;justify-content:center;}
+    .roi-exit-yes {border-color:var(--danger);color:var(--danger);}
     #esp32PictureDialog img {display:block;max-width:100%;max-height:75vh;margin:12px auto 0;}
     #cctvSingleView[hidden],#cctvConsensusTest[hidden] {display:none;}
     .cctv-consensus-test {display:flex;flex-direction:column;gap:12px;}
@@ -1270,13 +1277,14 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 <option value="polygon">Draw 4 corners</option>
                 <option value="rectangle">Draw rectangle</option>
               </select>
-              <button type="button" class="btn-action" onclick="insetSelectedRoi()">Inset 5%</button>
+              <button type="button" class="btn-action" onclick="insetSelectedRoi()" title="Shrink the selected region 5% on every side">Inset 5%</button>
+              <button type="button" class="btn-action" onclick="outsetSelectedRoi()" title="Grow the selected region 5% on every side (undoes one Inset)">Outset 5%</button>
               <span id="cctvRoiSwapControls" style="display:inline-flex;align-items:center;gap:6px;">
                 <label for="cctvRoiSwapSelect" style="font-size:11px;">Swap with:</label>
                 <select id="cctvRoiSwapSelect" class="form-control" style="font-size:11px;width:145px;height:28px;"></select>
                 <button type="button" id="cctvRoiSwapBtn" class="btn-action" onclick="swapSelectedRoi()">Swap ROIs</button>
               </span>
-              <button type="button" class="btn-action" onclick="resetRoiEditor()">Cancel drawing</button>
+              <button type="button" class="btn-action" onclick="undoSelectedRoi()" title="Restore only the selected shelf to how it was when calibration opened">Undo this shelf</button>
 
               <span style="font-size: 11px; color: var(--text-muted);">Grid: draw 4 corners in perimeter order, or edit handles. Side: drag a rectangle.</span>
               <span id="cctvCalibCoordsText"
@@ -1290,8 +1298,8 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
                 &#128190; Save ROIs &amp; Finish Calibration
               </button>
               <button type="button" class="btn-action" style="font-size: 10px; padding: 3px 8px;"
-                onclick="resetDefaultRois()">
-                &#8634; Reset Defaults
+                onclick="resetAllRoiEdits()" title="Restore every shelf on this camera to how it was when calibration opened (last saved)">
+                &#8634; Reset all edits
               </button>
             </div>
           </div>
@@ -1369,6 +1377,17 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
     </div>
   </main>
 
+
+  <dialog id="roiExitDialog" aria-labelledby="roiExitTitle" aria-describedby="roiExitDetail">
+    <form method="dialog" class="roi-exit-form">
+      <strong id="roiExitTitle">Are you sure you don't want to save?</strong>
+      <p id="roiExitDetail">Your unsaved region changes will be discarded and the saved regions restored.</p>
+      <div class="roi-exit-actions">
+        <button type="submit" class="btn-action" value="no" autofocus>No</button>
+        <button type="submit" class="btn-action roi-exit-yes" value="yes">Yes</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="esp32PictureDialog" aria-labelledby="esp32PictureCaption">
     <div class="esp32-picture-head">
@@ -4254,13 +4273,41 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       initCompartmentTrackers();
       updateCalibCoordsText();
     }
-    function insetSelectedRoi() {
+    // ROIs as they were when calibration opened for this camera (the last saved configuration).
+    // Undo this shelf / Reset all edits restore from it; nothing is removed from browser storage.
+    let roiCalibrationSnapshot = null;
+    function captureRoiSnapshot() {
+      roiCalibrationSnapshot = { cctvId: activeCctvId, rois: JSON.parse(JSON.stringify(activeCctvRois)) };
+    }
+    function roiSnapshotForActiveCamera() {
+      if (roiCalibrationSnapshot && roiCalibrationSnapshot.cctvId === activeCctvId) return roiCalibrationSnapshot.rois;
+      showToast('Nothing to restore: open Calibrate ROI for this camera first.', 'info');
+      return null;
+    }
+    // Scale the selected region about its centre. Inset (0.9) and Outset (1/0.9) undo each other exactly
+    // unless Outset had to clamp a corner to the frame edge.
+    function scaleSelectedRoi(factor) {
       const canvas = document.getElementById('cctvPoseCanvas');
       const points = roiVertices(activeCctvRois[selectedRoiId()],canvas.width,canvas.height);
       if (!validQuad(points)) return;
       const center = [0,1].map(axis => points.reduce((sum,p)=>sum+p[axis],0)/4);
-      setEditedRoi(points.map(p=>p.map((v,i)=>center[i]+(v-center[i])*.9)));
+      const scaled = points.map(p=>p.map((v,i)=>Math.min(1, Math.max(0, center[i]+(v-center[i])*factor))));
+      if (!validQuad(scaled)) { showToast('That change would collapse the region; redraw it instead.', 'error'); return; }
+      setEditedRoi(scaled);
       resetRoiEditor();
+    }
+    function insetSelectedRoi() { scaleSelectedRoi(0.9); }
+    function outsetSelectedRoi() { scaleSelectedRoi(1 / 0.9); }
+    function undoSelectedRoi() {
+      resetRoiEditor();  // also discards a half-drawn polygon
+      const saved = roiSnapshotForActiveCamera();
+      if (!saved) return;
+      const id = selectedRoiId();
+      if (Object.hasOwn(saved, id)) activeCctvRois[id] = JSON.parse(JSON.stringify(saved[id]));
+      else delete activeCctvRois[id];
+      initCompartmentTrackers();
+      updateCalibCoordsText();
+      showToast(`Restored ${id} to how it was when calibration opened.`, 'info');
     }
     function cancelAmbiguousDwell(tracker) {
       Object.assign(tracker,{state:'IDLE',dwellStartTime:null,lastSeenTime:0,currentDwellDuration:0,triggerFired:false,trajectoryHistory:[]});
@@ -4903,7 +4950,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
 
     // Toolbar Calibrate ROI: binds the picked camera first (as calibrateCctvRoi always did), or exits calibration.
     function onCalibrateRoiClicked() {
-      if (isCalibratingRoi) { toggleRoiCalibrationMode(false); return; }
+      if (isCalibratingRoi) { exitRoiCalibration(); return; }
       const cam = pickedCctvCamera();
       if (!cam) { showToast('Choose a single camera from the Camera list first.', 'info'); focusCctvCameraPicker(); return; }
       calibrateCctvRoi(cam.cctv_id, cam.rtsp_url);
@@ -4997,9 +5044,10 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         calibBtn.innerHTML = isCalibratingRoi ? '&#10005; Exit Calibration' : '&#127919; Calibrate ROI';
       }
       if (isCalibratingRoi) {
+        captureRoiSnapshot();
         updateCalibCoordsText();
         showToast('ROI Calibration mode active. Drag on canvas to set box.', 'info');
-      }
+      } else roiCalibrationSnapshot = null;
       updateCctvTrackingHelp();
     }
 
@@ -5046,14 +5094,46 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       }
     }
 
-    function resetDefaultRois() {
-      activeCctvRois = { ...DEFAULT_COMPARTMENT_ROIS };
-      try {
-        localStorage.removeItem(roiStorageKey());
-        localStorage.removeItem(`${roiStorageKey()}_binding`);
-      } catch (_) { }
+    // Unsaved = an unfinished outline, or any region that differs from the opening snapshot (key order ignored).
+    function stableRoiJson(value) {
+      if (Array.isArray(value)) return '[' + value.map(stableRoiJson).join(',') + ']';
+      if (value && typeof value === 'object') return '{' + Object.keys(value).sort().map(k => JSON.stringify(k) + ':' + stableRoiJson(value[k])).join(',') + '}';
+      return JSON.stringify(value);
+    }
+    function roiEditsPending() {
+      if (roiDraft.length) return true;
+      const snapshot = roiCalibrationSnapshot;
+      if (!snapshot || snapshot.cctvId !== activeCctvId) return false;
+      return stableRoiJson(snapshot.rois) !== stableRoiJson(activeCctvRois);
+    }
+    function confirmDiscardRoiEdits() {
+      const dialog = document.getElementById('roiExitDialog');
+      if (!dialog || typeof dialog.showModal !== 'function') return Promise.resolve(false);  // never discard silently
+      return new Promise(resolve => {
+        dialog.returnValue = '';
+        dialog.addEventListener('close', () => resolve(dialog.returnValue === 'yes'), { once: true });
+        dialog.showModal();
+      });
+    }
+    // Exit Calibration: leave straight away when nothing changed; otherwise ask. Yes discards the edits
+    // (restoring the saved regions); No or Esc keeps calibrating with the edits intact.
+    async function exitRoiCalibration() {
+      if (roiEditsPending() && !(await confirmDiscardRoiEdits())) return;
+      if (!isCalibratingRoi) return;
+      resetRoiEditor();
+      const snapshot = roiCalibrationSnapshot;
+      if (snapshot && snapshot.cctvId === activeCctvId) activeCctvRois = JSON.parse(JSON.stringify(snapshot.rois));
+      toggleRoiCalibrationMode(false);
       updateCalibCoordsText();
-      showToast('Reset all compartment ROIs to defaults.', 'info');
+    }
+    function resetAllRoiEdits() {
+      resetRoiEditor();
+      const saved = roiSnapshotForActiveCamera();
+      if (!saved) return;
+      activeCctvRois = JSON.parse(JSON.stringify(saved));
+      initCompartmentTrackers();
+      updateCalibCoordsText();
+      showToast(`Restored every ROI on ${activeCctvId} to how it was when calibration opened.`, 'info');
     }
 
     function drawCalibratingBox(ctx, width, height) {
@@ -5302,6 +5382,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       activeCctvSourceUrl = rtspUrl;
       syncRoiSwapOptions();
       activeCctvRois = loadStoredRois();
+      if (isCalibratingRoi) captureRoiSnapshot();
       initCompartmentTrackers();
       updateCalibCoordsText();
       updateActiveCctvSourceText();
