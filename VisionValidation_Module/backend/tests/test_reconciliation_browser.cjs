@@ -8,10 +8,10 @@ for(const file of ['index.html','VisionValidation_Module/camera_manager.html']) 
  const exact={state:'Ready',authoritative:true,precision:'EXACT',current_quantity:4,baseline:{slots:[0,1,1,1,1]},latest_observation:{slots:[0,1,1,1,1]}};
  assert.equal(context.runtimeInventoryView(exact).label,'Exact 4');
  const range={...exact,precision:'RANGE',current_quantity:null,count_range:[2,3],baseline:{slots:[0,1,1,null,0]}};
- const view=context.runtimeInventoryView(range);assert.equal(view.label,'Estimated 2\u20133');assert.equal(view.state,'Ready Limited');assert.match(view.details,/B1=unknown/);
+ const view=context.runtimeInventoryView(range);assert.equal(view.label,'2\u20133 boxes · B1 hidden — range');assert.equal(view.state,'Ready Limited');assert.match(view.details,/B1=unknown/);
  const held={...range,state:'Held',authoritative:false,latest_observation:{slots:[0,1,1,null,0],hold_code:'VISIBLE_CHANGE_NET_UNPROVEN'}};
- assert.equal(context.runtimeInventoryView(held).label,'Unverified');assert.match(context.runtimeInventoryView(held).details,/VISIBLE_CHANGE_NET_UNPROVEN/);
- assert.equal(context.runtimeInventoryView(exact,{state:'Offline'}).label,'Unverified');
+ assert.equal(context.runtimeInventoryView(held).label,'Scan needed');assert.match(context.runtimeInventoryView(held).details,/VISIBLE_CHANGE_NET_UNPROVEN/);
+ assert.equal(context.runtimeInventoryView(exact,{state:'Offline'}).label,'Scan needed');
  assert.match(html,/window.inventoryMode = 'runtime'/);
  assert.ok(!html.includes('Physical recount (operator)'));
  assert.ok(!html.includes('supabase.createClient'));
@@ -20,15 +20,14 @@ for(const file of ['index.html','VisionValidation_Module/camera_manager.html']) 
 }
 
 (async()=>{
- for(const file of ['index.html','VisionValidation_Module/camera_manager.html','src/services/esp32CameraService.js']) {
-  const source=fs.readFileSync(file,'utf8'),react=file.endsWith('.js');let calls=0,mode='ok';
+ for(const file of ['index.html','VisionValidation_Module/camera_manager.html']) {
+  const source=fs.readFileSync(file,'utf8');let calls=0,mode='ok';
   let sent;
   const ctx={window:{},TextEncoder,SUPABASE_URL:'https://fixture.invalid',SUPABASE_ANON_KEY:'fixture',URL,atob,
    fetch:async(url,options)=>{sent=options;calls++;if(mode==='offline')throw Error('offline');return {ok:mode==='ok',status:mode==='ok'?200:500,text:async()=>mode==='ok'?'[]':'sensitive server detail'};}};
   vm.createContext(ctx);
-  const script=react?source.slice(source.indexOf('async function supabaseRestRequest('),source.indexOf('/**',source.indexOf('async function supabaseRestRequest('))):
-   source.slice(source.indexOf('    const cloudRequestMetrics ='),source.indexOf('    // DOM Elements'));
-  vm.runInContext(script,ctx);const request=react?ctx.supabaseRestRequest:ctx.sbRest;
+  const script=source.slice(source.indexOf('    const cloudRequestMetrics ='),source.indexOf('    // DOM Elements'));
+  vm.runInContext(script,ctx);const request=ctx.sbRest;
   for(const table of ['compartments','rpc/commit_inventory_observation'])await assert.rejects(()=>request(table));
   await assert.rejects(()=>request('esp32_cameras','GET','?select=compartments%28current_quantity%29'));
   assert.equal(calls,0,'scope rejected before network/counter increment');
@@ -46,10 +45,8 @@ for(const file of ['index.html','VisionValidation_Module/camera_manager.html']) 
    ctx.window.smartStorageDeviceAdminSession={access_token:secret};await assert.rejects(()=>request('cctv_cameras'),/session required/);
   }
   assert.equal(calls,5,'server secret/expired session never reaches fetch');delete ctx.window.smartStorageDeviceAdminSession;
-  if(!react){
-   vm.runInContext(source.slice(source.indexOf('    function cctvSourceBinding('),source.indexOf('    function validateCctvBinding(')),ctx);
-   assert.equal(ctx.cctvSourceBinding('rtsp://operator:password@HOST/stream?channel=1&token=secret&api_key=secret&subtype=0'),'rtsp://host:554/stream?channel=1&subtype=0');
-  }
+  vm.runInContext(source.slice(source.indexOf('    function cctvSourceBinding('),source.indexOf('    function validateCctvBinding(')),ctx);
+  assert.equal(ctx.cctvSourceBinding('rtsp://operator:password@HOST/stream?channel=1&token=secret&api_key=secret&subtype=0'),'rtsp://host:554/stream?channel=1&subtype=0');
   console.log('PASS: '+file+' device-only REST metrics, no embedded inventory, null Prefer deletion and redacted failure; binding token exclusion');
  }
 })().catch(error=>{console.error(error);process.exitCode=1;});

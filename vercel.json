@@ -15,7 +15,7 @@
       "destination": "/models/:path*"
     },
     {
-      "source": "/((?!models/|src/|(?:esp32_camera_manager|dashboard_pages)\\.js$|VisionValidation_Module/).*)",
+      "source": "/((?!models/|(?:esp32_camera_manager|dashboard_pages)\\.js$|VisionValidation_Module/).*)",
       "destination": "/"
     }
   ],
