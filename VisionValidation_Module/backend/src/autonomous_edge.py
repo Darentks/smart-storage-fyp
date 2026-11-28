@@ -433,7 +433,7 @@ class AutonomousProcessor:
             elif active and active!=sid:scan['message']=f'Waiting for {active} to finish its camera check'
         paused=self.actions_blocker()
         if isinstance(self.runtime,RuntimeInventory) and sid in self.runtime.maintenance:
-            scan.update(state='Maintenance',message='Replacement maintenance; verify camera, then Retry scan if required')
+            scan.update(state='Maintenance',message='Held by an unfinished wired-replacement record; recover it with the previous bridge version')
             paused='Replacement maintenance'
         if sid==self.training_shelf:
             scan.update(state='Waiting',message='Training capture on this shelf; it is counted fresh afterwards')

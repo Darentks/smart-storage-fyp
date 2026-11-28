@@ -153,3 +153,29 @@ class LocalFailures:
             atomic_json(self.path,self.values)
     def snapshot(self):
         with self.lock:return json.loads(json.dumps(self.values))
+
+
+def legacy_maintenance_holds(path):
+    """Shelves still held by a leftover wired-replacement record.
+
+    Wired replacement was removed, but a record left on a bridge laptop keeps its shelves on hold
+    (fail-closed) exactly as before: a valid record holds its shelves; an unreadable or invalid one
+    holds every shelf. Returns (shelves, message) with message None when nothing is held.
+    """
+    from .camera_slots import SLOTS, slot_for
+    path=Path(path)
+    if not path.exists():return set(),None
+    try:
+        value=json.loads(path.read_text(encoding='utf8'))
+        if not isinstance(value,list):raise ValueError()
+        seen=set()
+        for row in value:
+            slot=slot_for(row.get('camera_slot'))
+            if (set(row)!={'camera_slot','shelf_id','state'} or not slot or
+                row['shelf_id']!=slot['shelf_id'] or row['state']!='Maintenance' or row['shelf_id'] in seen):raise ValueError()
+            seen.add(row['shelf_id'])
+    except (OSError,ValueError,TypeError,AttributeError):
+        return ({s['shelf_id'] for s in SLOTS},
+                'Wired-replacement maintenance record is unreadable; every shelf is held. Recover it with the previous bridge version.')
+    if not seen:return set(),None
+    return seen,'Unfinished wired-replacement record holds '+', '.join(sorted(seen))+'; recover it with the previous bridge version.'

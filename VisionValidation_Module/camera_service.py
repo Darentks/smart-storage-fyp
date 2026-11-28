@@ -83,9 +83,8 @@ from src.runtime_validation import validate_runtime_request, discard_runtime_att
 RUNTIME_INVENTORY = None
 from src.local_operations import LatestIntents, RoiStore, LocalFailures, CLOUD_METRICS
 from src.bridge_access import BridgeAccessError, require_application_user
-from src.camera_slots import SLOTS, match_registrations, discovery_addresses
-from src.replacement import MaintenanceStore, ReplacementService, validate_browser, camera_status
-REPLACEMENT = None
+from src.camera_slots import SLOTS, discovery_addresses
+from src.local_operations import legacy_maintenance_holds
 
 LOCAL_INTENTS = None
 LOCAL_ROIS = None
@@ -109,7 +108,6 @@ DUAL_CAM_CAPTURES = {}
 CONFIRMED_OCCUPANCY = {}
 DUAL_CAM_CAPTURE_LOCK = threading.Lock()
 
-from src.replay_manager import CctvReplayManager
 from src.spatial_mapper import SpatialMapper  # type: ignore
 from src.mqtt_client import MQTTClientNode  # type: ignore
 from src.reference_validator import (  # type: ignore
@@ -205,7 +203,7 @@ def consensus_view():
 def record_cctv_consensus(shelf_id, camera_id, action, confidence, camera_role=None,
                           trigger_id=None, dwell_duration_seconds=1.2, consensus_context=None, detected_at=None, queue_ready=None):
     """Atomically align distinct enabled cameras and queue one claimable validation."""
-    # Replays use isolated buffers/configuration and never enter the live trigger queue.
+    # An explicit consensus_context uses isolated buffers/configuration and never enters the live trigger queue.
     camera_config = CCTV_CAMERA_CONFIG if consensus_context is None else consensus_context["cameras"]
     align_state = CCTV_ALIGN_STATE if consensus_context is None else consensus_context["votes"]
     seen_ids = CCTV_SEEN_TRIGGER_IDS if consensus_context is None else consensus_context["seen_ids"]
@@ -311,8 +309,6 @@ def recent_cctv_consensus():
             if not 0<=now-row['timestamp']<60:CCTV_LAST_CONSENSUS.pop(sid,None)
         return [dict(row) for row in CCTV_LAST_CONSENSUS.values()]
 
-
-CCTV_REPLAY_MANAGER = CctvReplayManager(record_cctv_consensus, window_seconds=CONSENSUS_WINDOW_SEC)
 
 def claim_cctv_trigger(trigger_id, shelf_id=None, validation_token=None):
     """Bind one queued event to its owning shelf lease before taking evidence."""
@@ -892,14 +888,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             super().log_message(format, *args)
 
     def _send_cors_headers(self):
-        if urllib.parse.urlparse(self.path).path.startswith('/replacement/'):
-            origin=os.getenv('SMART_STORAGE_LOCAL_ORIGIN','http://127.0.0.1:8008')
-            if self.headers.get('Origin')==origin:self.send_header('Access-Control-Allow-Origin',origin)
-            self.send_header('Vary','Origin')
-            self.send_header('Access-Control-Allow-Methods','GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers','Content-Type')
-            self.send_header('Cache-Control','no-store')
-            return
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, HEAD, POST, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Training-Session")
@@ -995,7 +983,7 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             for sid in ([shelf] if shelf else sorted(SHELF_SET)):
                 snapshot = authority.snapshot(sid)
                 if sid in authority.maintenance:
-                    busy.append(sid);continue  # replacement has its own verified explicit Retry Scan
+                    busy.append(sid);continue  # held by a leftover wired-replacement record (fail-closed)
                 if RECHECKS.busy(sid):
                     busy.append(sid);continue  # a scan or action is already in flight for this shelf
                 if not shelf and snapshot['state'] == 'Ready' and snapshot['action_capable']:
@@ -1103,51 +1091,9 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             release_freeze=lambda shelf:esp32_ref_manager.baseline_freeze_until.pop(shelf,None),consensus_window=CONSENSUS_WINDOW_SEC)
         self._send_json(status_code, payload)
 
-    def _replacement_route(self,path,mutation=False):
-        try:
-            validate_browser(self.client_address[0],self.headers,
-                os.getenv('SMART_STORAGE_LOCAL_ORIGIN','http://127.0.0.1:8008'),mutation)
-        except ValueError as exc:
-            self._send_json(403,{'error':str(exc)});return
-        service=REPLACEMENT
-        if service is None:
-            self._send_json(503,{'error':'Replacement service unavailable'});return
-        # Wired replacement is retired. Keep only already-persisted recovery available;
-        # never clear a legacy maintenance record or create a new replacement job.
-        if not service.store.blocked():
-            self._send_json(410,{'error':'Wired replacement retired; cameras use fixed registrations'});return
-        try:
-            body=self._read_json_body() if mutation else {}
-            if not isinstance(body,dict):raise ValueError('Expected JSON object')
-            if mutation and body.get('camera_slot') not in {row['camera_slot'] for row in service.store.records}:
-                self._send_json(410,{'error':'New replacement jobs are disabled; only existing maintenance recovery is allowed'});return
-            if path=='/replacement/status' and not mutation:
-                result=service.status()
-                if AUTONOMOUS and service.job:result['native']=AUTONOMOUS.shelf_status(service.job['shelf_id'],RUNTIME_INVENTORY.snapshot(service.job['shelf_id']))
-            elif path=='/replacement/ports' and not mutation:result={'ports':service.ports()}
-            elif path=='/replacement/begin' and mutation:result=service.begin(body.get('camera_slot'))
-            elif path in ('/replacement/flash','/replacement/verify','/replacement/repair') and mutation:
-                result=service.start(body.get('camera_slot'),body.get('port'),body.get('disconnected'),retry=path.endswith('/verify'),repair=path.endswith('/repair'))
-            elif path=='/replacement/retry' and mutation:
-                job=service.job
-                if not job or job.get('camera_slot')!=body.get('camera_slot') or job.get('busy') or not job.get('verified'):raise ValueError('Verify the replacement camera first')
-                from src.camera_slots import slot_for
-                service.recover(slot_for(job['camera_slot']))
-                AUTONOMOUS.reset_scan_budget(job['shelf_id'])  # explicit operator Retry Scan only
-                result=service.status()
-            else:
-                self._send_json(404,{'error':'Unknown replacement operation'});return
-            self._send_json(200,result)
-        except ValueError as exc:
-            self._send_json(409,{'error':str(exc)} )
-        except (OSError,subprocess.SubprocessError):
-            self._send_json(409,{'error':'Replacement operation rejected. Check maintenance, selected port, configuration and service status.'})
-
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path.startswith('/replacement/'):
-            self._replacement_route(path);return
         if path in ('/esp32_camera_manager.js','/dashboard_pages.js'):
             data=(Path(__file__).resolve().parent.parent/path.lstrip('/')).read_bytes()
             self.send_response(200);self.send_header('Content-Type','application/javascript; charset=utf-8');self.end_headers();self.wfile.write(data);return
@@ -1535,9 +1481,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
-        if path == "/esp32_ota_info":
-            self._send_json(410,{'error':'Dashboard firmware updates have been removed'});return
-
         if path == "/esp32_probe":
             raw_ip = query.get("ip", [""])[0]
             clean_ip = str(raw_ip).replace("http://", "").replace("https://", "").split("/")[0].strip()
@@ -1565,10 +1508,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
-        if path in ('/esp32_ota_upload','/esp32_ota_flash'):
-            self._send_json(410,{'error':'Dashboard firmware updates have been removed'});return
-        if path.startswith('/replacement/'):
-            self._replacement_route(path,True);return
         if (globals().get('RUNTIME_INVENTORY') is not None or PROCESSOR_AUTHORITY == 'service') and path not in {'/esp32_assign_ips','/esp32_nvs_config','/reconciliation_context','/reconcile_inventory','/local_rois','/scan_request','/cctv_control','/training_session'} and getattr(self,'_processor_capability',None) is not _PROCESSOR_CAPABILITY:
             self._send_json(403,{'error':'Service owns processing; normal dashboard operations are monitoring-only'})
             return
@@ -1595,13 +1534,6 @@ class CameraServiceRequestHandler(BaseHTTPRequestHandler):
 
         if path == '/cctv_control':
             self._control_cctv(body)
-            return
-
-        if path == "/cctv_replay":
-            try:
-                self._send_json(200, CCTV_REPLAY_MANAGER.request(body))
-            except (ValueError, TypeError, KeyError) as exc:
-                self._send_json(400, {"status": "error", "error": str(exc)})
             return
 
         if path == "/cctv_alignment_config":
@@ -2392,7 +2324,7 @@ def _run_service(host="0.0.0.0", port=8008, ssl_cert: Optional[str] = None, ssl_
 
 
 def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
-    global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY, LOCAL_INTENTS, LOCAL_ROIS, RUNTIME_INVENTORY, READINESS, NATIVE_CALIBRATION_RELOAD, REPLACEMENT
+    global EDGE_SHADOW, AUTONOMOUS, PROCESSOR_AUTHORITY, LOCAL_INTENTS, LOCAL_ROIS, RUNTIME_INVENTORY, READINESS, NATIVE_CALIBRATION_RELOAD
     NATIVE_CALIBRATION_RELOAD=None
     runtime=os.path.join(os.path.dirname(__file__),'..','.runtime')
     from src.config_loader import find_and_load_env
@@ -2424,8 +2356,11 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
             if runtime_enabled():
                 if mode not in {'browser','shadow','service'}:raise ValueError('Invalid processor mode')
                 RUNTIME_INVENTORY=RuntimeInventory(READINESS.run_id,int(os.getenv('SMART_STORAGE_QUIET_SECONDS','2')))
-                maintenance=MaintenanceStore(data_dir/'replacement-maintenance.json')
-                for sid in maintenance.blocked():RUNTIME_INVENTORY.enter_maintenance(sid)
+                # Wired replacement is removed. A leftover record still holds its shelves (fail-closed);
+                # an unreadable record holds every shelf. Recover that laptop with the previous bridge version.
+                held,hold_issue=legacy_maintenance_holds(data_dir/'replacement-maintenance.json')
+                for sid in held:RUNTIME_INVENTORY.enter_maintenance(sid)
+                if hold_issue:print('[CameraService] Setup needed: '+hold_issue)
                 CONFIRMED_OCCUPANCY.clear();SUPABASE_COMPARTMENTS_CACHE.update(data=[],fetched_at=0)
                 mqtt_bridge.sync_supabase=False
             if mode=='service':
@@ -2496,49 +2431,6 @@ def run_service(host="0.0.0.0",port=8008,ssl_cert=None,ssl_key=None):
                     cameras,reports,local_request,capture_single_frame,get_cached_compartments,pending,invalidate,event,
                     pose_native=NativeClient(root,READINESS.run_id,manifest,os.getenv('SMART_STORAGE_NODE','node'),kind='pose'),cctv_busy=cctv_busy,training_paused=RECHECKS.training_shelf,training_capturing=RECHECKS.training_capturing,preview_shelf=RECHECKS.preview_shelf)
                 AUTONOMOUS.runtime=RUNTIME_INVENTORY
-                def enter_replacement(slot):
-                    from src.config_loader import _supabase_rest, ESP32_CAMERAS_COLS
-                    rows=_supabase_rest(table='esp32_cameras',query='?select='+ESP32_CAMERAS_COLS)
-                    registrations=[r for r in match_registrations(rows)['slots'] if r['shelf_id']==slot['shelf_id']]
-                    if any(r['status']!='Registered' for r in registrations):raise ValueError('Resolve camera registration in Panel 2 before replacement')
-                    with RECHECKS.global_lock:
-                        maintenance.begin(slot)  # persist before authorizing any physical work
-                        RUNTIME_INVENTORY.enter_maintenance(slot['shelf_id'])
-                        reset_shelf_evidence(slot['shelf_id'],authority=RUNTIME_INVENTORY,coordinator=RECHECKS,
-                            consensus_lock=CCTV_CONSENSUS_LOCK,pending=PENDING_CCTV_TRIGGERS,
-                            capture_lock=DUAL_CAM_CAPTURE_LOCK,captures=DUAL_CAM_CAPTURES,votes=CCTV_ALIGN_STATE,
-                            readiness=READINESS,intents=LOCAL_INTENTS,reason='Replacement maintenance')
-                        AUTONOMOUS.replacement_recovery.discard(slot['shelf_id'])
-                def verify_replacement(slot,boundary):
-                    status=camera_status(slot['ip_address'])
-                    if not status:raise ValueError('Camera not reachable')
-                    for key in ('device_id','shelf_id','ip_address'):
-                        if status.get(key)!=slot[key]:raise ValueError('Camera '+key+' mismatch')
-                    if status.get('camera_role')!=slot['role'] or status.get('angle_index')!=slot['angle_index']:
-                        raise ValueError('Camera role mismatch; selected firmware required')
-                    # Fresh device-reported MQTT connection plus post-upload health, not cached liveness.
-                    node=mqtt_bridge.edge_nodes.get(slot['device_id'],{})
-                    if not status.get('mqtt_connected') or node.get('mqtt_observed_at',0)<=boundary:raise ValueError('Waiting for fresh MQTT health')
-                    if str(node.get('mqtt_mac_address','')).lower()!=str(status.get('mac_address','')).lower() or not status.get('mac_address'):raise ValueError('MQTT physical identity mismatch')
-                    with urllib.request.urlopen('http://'+slot['ip_address']+'/capture?mode=live&flash=255',timeout=8) as response:
-                        data=response.read(2_000_001)
-                        if not data.startswith(b'\xff\xd8') or not data.endswith(b'\xff\xd9'):raise ValueError('Fresh JPEG capture failed')
-                def recover_replacement(slot):
-                    from src.config_loader import _supabase_rest, ESP32_CAMERAS_COLS
-                    rows=_supabase_rest(table='esp32_cameras',query='?select='+ESP32_CAMERAS_COLS)
-                    if any(r['status']!='Registered' for r in match_registrations(rows)['slots'] if r['shelf_id']==slot['shelf_id']):
-                        raise ValueError('Resolve paired camera registrations in Panel 2 before baseline recovery')
-                    AUTONOMOUS.replacement_recovery.add(slot['shelf_id'])  # budgets intentionally unchanged
-                def finish_replacement(sid):
-                    with RECHECKS.global_lock,RUNTIME_INVENTORY.guard:
-                        try:maintenance.finish(sid)
-                        except OSError:
-                            RUNTIME_INVENTORY.enter_maintenance(sid)
-                            raise
-                        RUNTIME_INVENTORY.leave_maintenance(sid)
-                        if REPLACEMENT and REPLACEMENT.job:REPLACEMENT.update(stage='Shelf ready')
-                AUTONOMOUS.replacement_finished=finish_replacement
-                REPLACEMENT=ReplacementService(root,maintenance,enter_replacement,verify_replacement,recover_replacement)
                 AUTONOMOUS.acceptance='ACCEPTED' if accepted else 'NOT_FIELD_ACCEPTED'
                 if setup_issue:AUTONOMOUS.calibration_issue=setup_issue
                 processor,authority=AUTONOMOUS,RUNTIME_INVENTORY
