@@ -1135,7 +1135,7 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
       <div class="status-group">
         <!-- Supabase Status -->
         <div class="status-pill" title="Inventory connection status">
-          <div id="dbStatusDot" class="status-dot" hidden></div>
+          <div id="dbStatusDot" class="status-dot"></div>
           <span id="dbStatusText">Waiting for inventory</span>
         </div>
         <!-- Local Bridge Status -->
@@ -3669,9 +3669,11 @@ if(typeof module!=='undefined')module.exports=ThreeCameraDashboard;
         const response=await fetch(`${getBridgeUrl()}/esp32_nodes`,{cache:'no-store'});
         if(!response.ok)throw Error('Local bridge unavailable');
         mergeBridgeTelemetry(await response.json());
+        dbStatusDot.classList.add('connected');
         dbStatusText.textContent='Inventory connected';
       } catch(error) {
-        dbStatusText.textContent='Inventory offline ? Counts may be stale';
+        dbStatusDot.classList.remove('connected');
+        dbStatusText.textContent='Inventory offline - Counts may be stale';
       }
       renderCompartments(compartmentsData || []);
       syncSelectedShelfTelemetry();
